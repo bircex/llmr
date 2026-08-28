@@ -352,6 +352,12 @@ impl Provider for OpenAiCompatible {
                 content: blocks,
             },
             stop_reason: read_stop(choice.get("finish_reason").and_then(Value::as_str)),
+            // Kept as the provider's own word, including one this crate does not know.
+            // `StopReason::Other` says code cannot act on it; this says what it was.
+            stop_details: choice
+                .get("finish_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             usage: read_usage(parsed.get("usage")),
             model: parsed
                 .get("model")

@@ -142,6 +142,8 @@ impl Anthropic {
                 Effort::Low => 2_048,
                 Effort::Medium => 8_192,
                 Effort::High => 24_576,
+                Effort::XHigh => 49_152,
+                Effort::Max => 98_304,
             };
             body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget.min(max_tokens.saturating_sub(1)) });
         }
@@ -316,6 +318,10 @@ impl Provider for Anthropic {
                 content: blocks,
             },
             stop_reason: read_stop(parsed.get("stop_reason").and_then(Value::as_str)),
+            stop_details: parsed
+                .get("stop_sequence")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             usage: read_usage(parsed.get("usage")),
             model: parsed
                 .get("model")

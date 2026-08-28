@@ -235,6 +235,9 @@ impl Provider for LocalCli {
             // than as a completed turn, because a truncated reply would otherwise look
             // finished.
             stop_reason: StopReason::Other,
+            // Not a refusal and not a completed turn. A command line tool does not say, and
+            // this records that rather than leaving the reason blank.
+            stop_details: Some("a command line tool does not report why it stopped".into()),
             // Nothing was measured. Not zero.
             usage: Usage::absent(),
             model: request.model.clone(),

@@ -13,6 +13,12 @@ pub struct ChatResponse {
     pub message: Message,
     /// Why it stopped. Check [`StopReason::is_complete`] before you use the text.
     pub stop_reason: StopReason,
+    /// What the provider said about why it stopped, when it said anything.
+    ///
+    /// Usually present on a refusal and often absent even then, so read it defensively. It
+    /// is diagnostic text for a person, never something to branch on: [`StopReason`] is
+    /// what code should read.
+    pub stop_details: Option<String>,
     /// What the call consumed, as far as the provider reported it.
     pub usage: Usage,
     /// Which model actually served this.
@@ -35,9 +41,17 @@ impl ChatResponse {
         Self {
             message,
             stop_reason,
+            stop_details: None,
             usage,
             model,
         }
+    }
+
+    /// Records what the provider said about why it stopped.
+    #[must_use]
+    pub fn with_stop_details(mut self, details: impl Into<String>) -> Self {
+        self.stop_details = Some(details.into());
+        self
     }
 
     /// The reply as plain text, with tool calls left out.
@@ -71,6 +85,7 @@ mod tests {
                 content: vec![ContentBlock::Text("half an answ".into())],
             },
             stop_reason: stop,
+            stop_details: None,
             usage: Usage::absent(),
             model: "m".into(),
         }

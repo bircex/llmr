@@ -20,29 +20,43 @@ pub struct ToolSchema {
 ///
 /// A named level rather than a token count. Providers scale these differently, and a number
 /// tuned against one model is quietly wrong on the next.
+///
+/// Five levels rather than three, because vendors expose five and a library with fewer
+/// makes the top two unreachable. A provider whose model stops at three maps the last two
+/// onto its own highest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Effort {
     /// Barely any.
     Low,
     /// A working default.
     Medium,
-    /// As much as the model will spend.
+    /// More than the default.
     High,
+    /// Well beyond the default.
+    XHigh,
+    /// As much as the model will spend.
+    Max,
 }
 
 /// Whether the model should reason before answering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Three states rather than a bool, and the third is the one that matters. On some models
+/// reasoning is on by default and on others it is off, so collapsing "no opinion" into
+/// "off" silently changes behaviour the moment a model id changes.
+///
+/// Whether a model *can* reason is a different question, answered by
+/// [`crate::ModelCapabilities::thinking`]. It is deliberately not a variant here: a request
+/// says what you want, a capability says what is possible, and one enum carrying both would
+/// be two answers to two questions in one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Thinking {
+    /// No opinion. Whatever the model does by default.
+    #[default]
+    Unset,
     /// Do not reason.
     Off,
     /// Reason at this level.
     On(Effort),
-    /// This model has no reasoning to ask for.
-    ///
-    /// Not the same as [`Thinking::Off`]. Off is a choice you made, and this is the absence
-    /// of the option. Keeping them apart is what lets a table describing one vendor say
-    /// something true about another.
-    Unavailable,
 }
 
 /// Sampling settings.
@@ -109,7 +123,7 @@ impl ChatRequest {
             messages,
             tools: Vec::new(),
             generation: Generation::default(),
-            thinking: Thinking::Off,
+            thinking: Thinking::Unset,
             response_schema: None,
             cache_breakpoints: Vec::new(),
         }
@@ -253,9 +267,19 @@ mod tests {
     }
 
     #[test]
-    fn thinking_off_is_not_thinking_unavailable() {
-        // Off is a choice. Unavailable is the absence of the option, and a table that
-        // could not say so would describe one vendor and mislead about another.
-        assert_ne!(Thinking::Off, Thinking::Unavailable);
+    fn no_opinion_is_not_the_same_as_off() {
+        // The distinction a bool cannot hold. On a model that reasons by default, sending
+        // `Off` turns it off and sending `Unset` leaves it on, and a caller that meant
+        // neither gets whichever the library chose for it.
+        assert_ne!(Thinking::Unset, Thinking::Off);
+        assert_eq!(Thinking::default(), Thinking::Unset);
+    }
+
+    #[test]
+    fn no_opinion_asks_for_nothing() {
+        // `Unset` must not read as a request for reasoning, or every default request would
+        // be billed for thinking tokens nobody asked for.
+        let request = ChatRequest::new("m", vec![Message::user("hi")]);
+        assert!(!request.needs().thinking);
     }
 }

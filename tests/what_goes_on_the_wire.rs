@@ -491,3 +491,77 @@ async fn a_tool_schema_reaches_the_wire_in_this_protocols_shape() {
     assert_eq!(sent["tools"][0]["type"], "function");
     assert_eq!(sent["tools"][0]["function"]["name"], "search");
 }
+
+// ---- the vocabulary a second consumer asked for ----------------------------------------
+
+#[tokio::test]
+async fn no_opinion_about_thinking_sends_nothing_about_it() {
+    // The state a bool cannot hold. On a model that reasons by default, sending "off"
+    // turns it off and sending nothing leaves it on. A caller who meant neither would get
+    // whichever this crate had chosen for them.
+    let transport = Recorded::replying(200, anthropic_reply());
+    let _ = anthropic(Arc::clone(&transport))
+        .chat(ChatRequest::new(
+            "claude-sonnet-5",
+            vec![Message::user("hi")],
+        ))
+        .await;
+
+    assert!(
+        transport.body()["thinking"].is_null(),
+        "a request with no opinion about reasoning asked for some"
+    );
+}
+
+#[tokio::test]
+async fn the_two_highest_effort_levels_are_reachable() {
+    // Vendors expose five levels. With three, the top two are names a caller can write and
+    // nothing can act on.
+    let mut budgets = Vec::new();
+    for effort in [
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::XHigh,
+        Effort::Max,
+    ] {
+        let transport = Recorded::replying(200, anthropic_reply());
+        let _ = anthropic(Arc::clone(&transport))
+            .chat(
+                ChatRequest::new("claude-sonnet-5", vec![Message::user("hi")])
+                    .with_thinking(Thinking::On(effort))
+                    .with_max_tokens(200_000),
+            )
+            .await;
+        budgets.push(
+            transport.body()["thinking"]["budget_tokens"]
+                .as_u64()
+                .unwrap_or(0),
+        );
+    }
+
+    let mut sorted = budgets.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        5,
+        "two effort levels produced the same budget, so one of them does nothing: {budgets:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_provider_keeps_what_it_was_told_about_why_it_stopped() {
+    // Diagnostic text for a person. `StopReason` is what code reads; this is what somebody
+    // reads when the stop reason is one this crate does not know.
+    let mut body = openai_reply();
+    body["choices"][0]["finish_reason"] = json!("content_filter");
+
+    let reply = openai(Recorded::replying(200, body), Reach::FirstPartyApi)
+        .chat(ChatRequest::new("gpt-test", vec![Message::user("hi")]))
+        .await
+        .expect("a reply");
+
+    assert_eq!(reply.stop_reason, StopReason::Refusal);
+    assert_eq!(reply.stop_details.as_deref(), Some("content_filter"));
+}
