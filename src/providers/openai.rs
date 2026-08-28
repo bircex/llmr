@@ -41,18 +41,18 @@ use std::sync::Arc;
 /// Immutable once built. No lock, no interior mutability, safe to share across tasks.
 ///
 /// ```no_run
-/// use modelreach::providers::openai::OpenAiCompatible;
-/// use modelreach::{ChatRequest, Message, Provider, Reach, Registry, Secret};
+/// use llmr::providers::openai::OpenAiCompatible;
+/// use llmr::{ChatRequest, Message, Provider, Reach, Registry, Secret};
 /// use std::sync::Arc;
 /// use std::time::Duration;
 ///
-/// # async fn example() -> modelreach::Result<()> {
+/// # async fn example() -> llmr::Result<()> {
 /// // A model running on this machine. Nothing leaves the hardware, and saying so is
 /// // what lets a privacy rule downstream act on it.
 /// let ollama = OpenAiCompatible::at(
 ///     "ollama",
 ///     "http://localhost:11434/v1",
-///     Arc::new(modelreach::http::Reqwest::new(Duration::from_secs(120))?),
+///     Arc::new(llmr::http::Reqwest::new(Duration::from_secs(120))?),
 ///     Secret::new("ollama", "not-needed"),
 ///     Reach::SelfHosted,
 ///     Arc::new(Registry::empty("ollama", Reach::SelfHosted)),

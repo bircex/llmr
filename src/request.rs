@@ -65,7 +65,7 @@ pub struct Generation {
 /// with a literal will not compile from outside this crate.
 ///
 /// ```
-/// use modelreach::{ChatRequest, Message};
+/// use llmr::{ChatRequest, Message};
 ///
 /// let request = ChatRequest::new("claude-sonnet-5", vec![Message::user("Hello")])
 ///     .with_system("You answer in one sentence.")

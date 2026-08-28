@@ -20,3 +20,9 @@ First release. Nothing published yet.
 - `Registry` and `PriceBook`, both carrying where their facts came from and when a person
   last checked them.
 - `testkit`, a contract suite for providers written outside this crate.
+- A dated Anthropic model table and price book, both refusing a row with no provenance.
+- Examples: `ask`, `what_it_cost`, and `anything_openai_shaped`.
+
+### Not in this release
+
+Streaming, retries, images, embeddings. See the README for what each one costs you.

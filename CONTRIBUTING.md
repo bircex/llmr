@@ -44,8 +44,8 @@ Implement `Provider`, then run the contract suite against it:
 
 ```rust,no_run
 # #[cfg(feature = "testkit")]
-# async fn example(mine: &impl modelreach::Provider) {
-modelreach::testkit::assert_provider_contract(mine, "a-model-you-serve").await;
+# async fn example(mine: &impl llmr::Provider) {
+llmr::testkit::assert_provider_contract(mine, "a-model-you-serve").await;
 # }
 ```
 

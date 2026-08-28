@@ -15,8 +15,8 @@
 //!
 //! ```no_run
 //! # #[cfg(feature = "testkit")]
-//! # async fn example(mine: &impl modelreach::Provider) {
-//! use modelreach::testkit::assert_provider_contract;
+//! # async fn example(mine: &impl llmr::Provider) {
+//! use llmr::testkit::assert_provider_contract;
 //!
 //! assert_provider_contract(mine, "the-model-you-serve").await;
 //! # }
@@ -53,7 +53,7 @@ pub async fn assert_provider_contract(provider: &impl Provider, known_model: &st
     // A model nobody serves must answer None rather than something plausible. The two are
     // different questions, and a caller that cannot tell them apart will send a request to
     // a model that does not exist and read the failure as a network problem.
-    let unknown = ModelId::from("modelreach-contract-no-such-model");
+    let unknown = ModelId::from("llmr-contract-no-such-model");
     assert!(
         provider.capabilities(&unknown).is_none(),
         "{id} claims to know a model that does not exist. None means unknown; a capability \

@@ -12,7 +12,7 @@ use std::fmt;
 /// compile errors and unreadable output instead of a key in a log file.
 ///
 /// ```
-/// use modelreach::Secret;
+/// use llmr::Secret;
 ///
 /// let key = Secret::new("api-key", "sk-not-a-real-key");
 /// assert_eq!(format!("{key:?}"), "Secret(api-key)");
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn an_unset_variable_reads_as_an_authentication_problem() {
-        let missing = Secret::from_env("api-key", "MODELREACH_TEST_DEFINITELY_UNSET");
+        let missing = Secret::from_env("api-key", "LLMR_TEST_DEFINITELY_UNSET");
         assert!(matches!(missing, Err(crate::Error::Auth(_))));
     }
 }

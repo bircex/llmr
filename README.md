@@ -1,19 +1,19 @@
-# modelreach
+# llmr
 
 Reach language models across providers, with capabilities you can read before you ask and
 usage you can trust.
 
 ```toml
 [dependencies]
-modelreach = "0.1"
+llmr = "0.1"
 ```
 
 ```rust,no_run
-use modelreach::providers::anthropic::Anthropic;
-use modelreach::{ChatRequest, Message, Provider};
+use llmr::providers::anthropic::Anthropic;
+use llmr::{ChatRequest, Message, Provider};
 use std::time::Duration;
 
-# async fn example() -> modelreach::Result<()> {
+# async fn example() -> llmr::Result<()> {
 let claude = Anthropic::from_env(Duration::from_secs(60))?;
 
 let reply = claude
@@ -42,7 +42,7 @@ axis from which vendor made the model, and collapsing the two is how a customer 
 up at a third party.
 
 ```rust
-use modelreach::Reach;
+use llmr::Reach;
 
 // A vendor command line tool signs in on your laptop and still sends every prompt away.
 assert!(Reach::LocalCli.uses_local_credential());
@@ -64,7 +64,7 @@ answers for the pairing.
 Ask before you send, and find out what would be dropped:
 
 ```rust
-use modelreach::{ChatRequest, Message, ModelCapabilities, Reach};
+use llmr::{ChatRequest, Message, ModelCapabilities, Reach};
 
 let request = ChatRequest::new("some-model", vec![Message::user("hi")])
     .with_response_schema(serde_json::json!({ "type": "object" }));
@@ -82,7 +82,7 @@ A subscription command line tool reports no token counts. Writing zero would tur
 cost into a free one in every report that adds it up.
 
 ```rust
-use modelreach::{Usage, UsageCoverage};
+use llmr::{Usage, UsageCoverage};
 
 assert_eq!(Usage::absent().coverage(), UsageCoverage::Absent);
 ```
@@ -110,7 +110,7 @@ Each provider is behind a feature, so a program that only reaches a local tool d
 an HTTP client and a TLS stack.
 
 ```toml
-modelreach = { version = "0.1", default-features = false, features = ["cli"] }
+llmr = { version = "0.1", default-features = false, features = ["cli"] }
 ```
 
 ## Concurrency
@@ -131,13 +131,13 @@ Implement `Provider`, then check it against the contract suite:
 
 ```toml
 [dev-dependencies]
-modelreach = { version = "0.1", features = ["testkit"] }
+llmr = { version = "0.1", features = ["testkit"] }
 ```
 
 ```rust,no_run
 # #[cfg(feature = "testkit")]
-# async fn example(mine: &impl modelreach::Provider) {
-use modelreach::testkit::assert_provider_contract;
+# async fn example(mine: &impl llmr::Provider) {
+use llmr::testkit::assert_provider_contract;
 
 assert_provider_contract(mine, "the-model-you-serve").await;
 # }
@@ -145,6 +145,17 @@ assert_provider_contract(mine, "the-model-you-serve").await;
 
 Every provider in this crate passes the same suite. A suite only one implementation can pass
 has stopped being a specification.
+
+## Examples
+
+```sh
+ANTHROPIC_API_KEY=... cargo run --example ask -- "what is a monad"
+ANTHROPIC_API_KEY=... cargo run --example what_it_cost
+cargo run --example anything_openai_shaped
+```
+
+The last one needs no key. It sets up three very different endpoints through one provider
+and asks each what it serves, which is the quickest way to see what `Reach` is for.
 
 ## Model tables and prices
 
@@ -167,6 +178,27 @@ that belongs where your roles and your rules are.
 It is not an agent framework. No tool loop, no memory, no orchestration. It answers one
 question: how do I reach this model, and what did it cost.
 
+## What is not here yet
+
+Said plainly, because finding a gap by hitting it is worse than reading about it.
+
+**Streaming.** `chat` sends a request and waits for the whole reply. There is no token by
+token API. If you are building something a person watches, this will feel slow, and no
+workaround here will fix it. It changes the shape of the `Provider` trait, so it is a version
+rather than a patch.
+
+**Retries.** `Error::is_retryable` tells you a failure was not your fault and not permanent.
+Nothing acts on it. That is deliberate for now: a retry is safe or not depending on your
+request, and a library that decided for you would double a bill on a timeout.
+
+**Images and other input.** `ContentBlock` carries text, reasoning and tool calls. No images,
+audio or documents.
+
+**Anything that is not chat.** No embeddings, no reranking, no completion endpoints.
+
+**Model catalogues, mostly.** Only the OpenAI shaped provider implements `catalogue()`. The
+others answer `Error::Unsupported`, which is an answer and not an empty list.
+
 ## License
 
-MIT. See [LICENSE](https://github.com/birceX/modelreach/blob/main/LICENSE).
+MIT. See [LICENSE](https://github.com/recepkizilarslan/llmr/blob/main/LICENSE).

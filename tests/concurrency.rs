@@ -16,9 +16,9 @@
 
 #![cfg(feature = "anthropic")]
 
-use modelreach::http::{HttpRequest, HttpResponse, HttpTransport};
-use modelreach::providers::anthropic::Anthropic;
-use modelreach::{ChatRequest, Message, Provider, Reach, Registry, Secret};
+use llmr::http::{HttpRequest, HttpResponse, HttpTransport};
+use llmr::providers::anthropic::Anthropic;
+use llmr::{ChatRequest, Message, Provider, Reach, Registry, Secret};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,7 +46,7 @@ impl Slow {
 
 #[async_trait::async_trait]
 impl HttpTransport for Slow {
-    async fn send(&self, _request: HttpRequest) -> modelreach::Result<HttpResponse> {
+    async fn send(&self, _request: HttpRequest) -> llmr::Result<HttpResponse> {
         self.started.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(self.delay).await;
         self.finished.fetch_add(1, Ordering::SeqCst);
@@ -164,7 +164,7 @@ async fn one_call_failing_does_not_take_the_others_with_it() {
 
     #[async_trait::async_trait]
     impl HttpTransport for SometimesBroken {
-        async fn send(&self, _request: HttpRequest) -> modelreach::Result<HttpResponse> {
+        async fn send(&self, _request: HttpRequest) -> llmr::Result<HttpResponse> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             tokio::task::yield_now().await;
             if n.is_multiple_of(2) {

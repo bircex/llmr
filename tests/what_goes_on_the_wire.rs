@@ -8,10 +8,10 @@
 
 #![cfg(all(feature = "anthropic", feature = "openai"))]
 
-use modelreach::http::{HttpRequest, HttpResponse, HttpTransport};
-use modelreach::providers::anthropic::Anthropic;
-use modelreach::providers::openai::OpenAiCompatible;
-use modelreach::{
+use llmr::http::{HttpRequest, HttpResponse, HttpTransport};
+use llmr::providers::anthropic::Anthropic;
+use llmr::providers::openai::OpenAiCompatible;
+use llmr::{
     ChatRequest, ContentBlock, Effort, Error, Message, Provider, Reach, Registry, Secret,
     StopReason, Thinking, ToolSchema, UsageCoverage,
 };
@@ -59,7 +59,7 @@ impl Recorded {
 
 #[async_trait::async_trait]
 impl HttpTransport for Recorded {
-    async fn send(&self, request: HttpRequest) -> modelreach::Result<HttpResponse> {
+    async fn send(&self, request: HttpRequest) -> llmr::Result<HttpResponse> {
         self.sent.lock().expect("not poisoned").push(request);
         Ok(self.reply.clone())
     }
@@ -132,7 +132,7 @@ async fn anthropic_keeps_the_signature_on_a_thinking_block() {
     let history = vec![
         Message::user("first"),
         Message {
-            role: modelreach::Role::Assistant,
+            role: llmr::Role::Assistant,
             content: vec![ContentBlock::Thinking {
                 text: "considering".into(),
                 signature: Some("sig-abc".into()),
@@ -376,7 +376,7 @@ async fn a_tool_result_becomes_its_own_message() {
         .chat(ChatRequest::new(
             "gpt-test",
             vec![Message {
-                role: modelreach::Role::User,
+                role: llmr::Role::User,
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "call-1".into(),
                     content: "42".into(),
@@ -398,7 +398,7 @@ async fn a_failed_tool_says_so_in_the_only_place_this_protocol_has() {
         .chat(ChatRequest::new(
             "gpt-test",
             vec![Message {
-                role: modelreach::Role::User,
+                role: llmr::Role::User,
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "call-1".into(),
                     content: "no such file".into(),

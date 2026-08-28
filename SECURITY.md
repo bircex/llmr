@@ -24,7 +24,7 @@ find every place it happens.
 security problem in a program using this crate:
 
 ```rust
-use modelreach::Reach;
+use llmr::Reach;
 
 assert!(Reach::LocalCli.uses_local_credential());
 assert!(!Reach::LocalCli.is_on_device());

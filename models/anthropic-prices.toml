@@ -1,0 +1,49 @@
+# What Anthropic charges, as dated data.
+#
+# Prices change on the vendor's schedule and some carry conditions a flat number cannot
+# express: introductory rates that expire, bands that step up past a context threshold,
+# partner pricing that differs from the vendor's own. This file is a planning table. Where a
+# provider reports cost directly on the response, that wins outright.
+#
+# Written as decimal text rather than numbers. Money is integer arithmetic all the way down,
+# and 0.1 is not a value a binary float holds exactly.
+#
+# There is deliberately no table for the local command line reach. A subscription tool
+# reports no usage, and a price applied to an invented token count produces a number that
+# looks like a receipt. An unpriced call stays unpriced, and a report says so.
+
+id             = "anthropic-2026-08"
+provider       = "anthropic"
+effective_from = "2026-08-01"
+source         = "vendor pricing page"
+verified_at    = "2026-08-24"
+currency       = "USD"
+
+# Per million tokens.
+[[price]]
+model       = "claude-opus-5"
+input       = "15.00"
+output      = "75.00"
+cache_read  = "1.50"
+cache_write = "18.75"
+
+[[price]]
+model       = "claude-opus-4-8"
+input       = "15.00"
+output      = "75.00"
+cache_read  = "1.50"
+cache_write = "18.75"
+
+[[price]]
+model       = "claude-sonnet-5"
+input       = "3.00"
+output      = "15.00"
+cache_read  = "0.30"
+cache_write = "3.75"
+
+[[price]]
+model       = "claude-haiku-4-5"
+input       = "1.00"
+output      = "5.00"
+cache_read  = "0.10"
+cache_write = "1.25"

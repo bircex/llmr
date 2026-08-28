@@ -1,12 +1,12 @@
 [package]
-name          = "modelreach"
+name          = "llmr"
 version       = "0.1.0"
 edition       = "2021"
 rust-version  = "1.90"
 license       = "MIT"
 description   = "Reach language models across providers, with capabilities you can read before you ask and usage you can trust."
-repository    = "https://github.com/birceX/modelreach"
-documentation = "https://docs.rs/modelreach"
+repository    = "https://github.com/recepkizilarslan/llmr"
+documentation = "https://docs.rs/llmr"
 readme        = "README.md"
 keywords      = ["llm", "anthropic", "openai", "ai", "provider"]
 categories    = ["api-bindings", "asynchronous"]
@@ -38,6 +38,21 @@ tokio       = { version = "1", optional = true, default-features = false }
 [dev-dependencies]
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }
 async-trait = "0.1"
+
+# An example that needs a provider is not built when that provider is off. Cargo's own
+# mechanism rather than a cfg attribute inside the file, so `cargo run --example` also
+# reports the missing feature instead of building an empty binary.
+[[example]]
+name              = "ask"
+required-features = ["anthropic"]
+
+[[example]]
+name              = "what_it_cost"
+required-features = ["anthropic"]
+
+[[example]]
+name              = "anything_openai_shaped"
+required-features = ["openai"]
 
 [package.metadata.docs.rs]
 all-features = true

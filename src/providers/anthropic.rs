@@ -18,6 +18,7 @@ use crate::error::{Error, Result};
 use crate::http::{HttpRequest, HttpTransport};
 use crate::message::{ContentBlock, Message, Role, StopReason};
 use crate::model::{ModelCapabilities, ModelId};
+use crate::pricing::PriceBook;
 use crate::provider::Provider;
 use crate::registry::Registry;
 use crate::request::{ChatRequest, Effort, Thinking};
@@ -40,11 +41,11 @@ const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 /// one instance serves any number of concurrent calls with nothing to contend on.
 ///
 /// ```no_run
-/// use modelreach::providers::anthropic::Anthropic;
-/// use modelreach::{ChatRequest, Message, Provider, Secret};
+/// use llmr::providers::anthropic::Anthropic;
+/// use llmr::{ChatRequest, Message, Provider, Secret};
 /// use std::time::Duration;
 ///
-/// # async fn example() -> modelreach::Result<()> {
+/// # async fn example() -> llmr::Result<()> {
 /// let provider = Anthropic::from_env(Duration::from_secs(60))?;
 /// let reply = provider
 ///     .chat(ChatRequest::new("claude-sonnet-5", vec![Message::user("Hello")])
@@ -333,4 +334,29 @@ impl Provider for Anthropic {
 pub fn shipped_registry() -> Registry {
     Registry::parse(include_str!("../../models/anthropic.toml"))
         .unwrap_or_else(|_| Registry::empty("anthropic", crate::Reach::FirstPartyApi))
+}
+
+/// What this release believes Anthropic charges.
+///
+/// Dated, like the registry, and for the same reason. Read
+/// [`crate::PriceBook::verified_at`] before you trust a total: a price checked in August is
+/// a price from August, and this crate has no way to know that a vendor changed it.
+///
+/// Where a provider reports cost directly on a response, that wins over anything here.
+///
+/// There is no table for the local command line reach. A subscription tool reports no
+/// usage, and a price applied to an invented token count produces a number that looks like
+/// a receipt.
+pub fn shipped_prices() -> PriceBook {
+    PriceBook::parse(include_str!("../../models/anthropic-prices.toml")).unwrap_or_else(|_| {
+        PriceBook {
+            id: "unavailable".into(),
+            provider: "anthropic".into(),
+            effective_from: String::new(),
+            source: String::new(),
+            verified_at: String::new(),
+            currency: "USD".into(),
+            rates: Default::default(),
+        }
+    })
 }

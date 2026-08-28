@@ -6,12 +6,12 @@
 
 #![cfg(all(feature = "testkit", feature = "anthropic", feature = "openai"))]
 
-use modelreach::http::{HttpRequest, HttpResponse, HttpTransport};
-use modelreach::providers::anthropic::Anthropic;
-use modelreach::providers::openai::OpenAiCompatible;
-use modelreach::registry::{Entry, Registry};
-use modelreach::testkit::assert_provider_contract;
-use modelreach::{Reach, Secret};
+use llmr::http::{HttpRequest, HttpResponse, HttpTransport};
+use llmr::providers::anthropic::Anthropic;
+use llmr::providers::openai::OpenAiCompatible;
+use llmr::registry::{Entry, Registry};
+use llmr::testkit::assert_provider_contract;
+use llmr::{Reach, Secret};
 use std::sync::Arc;
 
 /// Answers everything with the same recorded reply.
@@ -19,7 +19,7 @@ struct Always(Vec<u8>);
 
 #[async_trait::async_trait]
 impl HttpTransport for Always {
-    async fn send(&self, _request: HttpRequest) -> modelreach::Result<HttpResponse> {
+    async fn send(&self, _request: HttpRequest) -> llmr::Result<HttpResponse> {
         Ok(HttpResponse::new(200, self.0.clone()))
     }
 }
@@ -91,7 +91,7 @@ async fn the_local_command_line_provider_honours_the_contract() {
     // `cat` reads the prompt and prints it back. Not a model, and enough to check the
     // shape: a reply arrives, it says which model served it, and usage comes back absent
     // rather than as zeros.
-    use modelreach::providers::cli::LocalCli;
+    use llmr::providers::cli::LocalCli;
     use std::time::Duration;
 
     let provider = LocalCli::new(

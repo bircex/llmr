@@ -39,11 +39,11 @@ use tokio::io::AsyncWriteExt;
 /// between concurrent calls and nothing to lock.
 ///
 /// ```no_run
-/// use modelreach::providers::cli::LocalCli;
-/// use modelreach::{ChatRequest, Message, Provider};
+/// use llmr::providers::cli::LocalCli;
+/// use llmr::{ChatRequest, Message, Provider};
 /// use std::time::Duration;
 ///
-/// # async fn example() -> modelreach::Result<()> {
+/// # async fn example() -> llmr::Result<()> {
 /// let claude = LocalCli::new("claude-cli", "claude", ["-p"], Duration::from_secs(300));
 /// let reply = claude
 ///     .chat(ChatRequest::new("claude-sonnet-5", vec![Message::user("Hello")]))
@@ -289,7 +289,7 @@ mod tests {
     async fn a_missing_tool_is_an_error_rather_than_an_empty_answer() {
         let cli = LocalCli::new(
             "missing",
-            "modelreach-definitely-not-a-real-program",
+            "llmr-definitely-not-a-real-program",
             [] as [&str; 0],
             Duration::from_secs(5),
         );

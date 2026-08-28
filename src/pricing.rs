@@ -10,10 +10,63 @@ use std::collections::BTreeMap;
 /// Integers all the way down. Token prices have six significant decimal places and a binary
 /// float cannot hold `0.1` exactly, so a total built by adding floats drifts. Millionths of
 /// a dollar hold every published price without rounding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Micros(pub i64);
 
 impl Micros {
+    /// Reads an amount written the way a price list writes it, such as `15.00` or `0.30`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the text is not a decimal number. More than six decimal
+    /// places is an error rather than a rounding, because a price with seven places is one
+    /// somebody copied from a different unit and the rounded version would look right.
+    pub fn parse(text: &str) -> std::result::Result<Micros, String> {
+        let text = text.trim();
+        let (negative, digits) = match text.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, text),
+        };
+
+        let (whole, fraction) = match digits.split_once('.') {
+            Some((w, f)) => (w, f),
+            None => (digits, ""),
+        };
+        if whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
+            return Err(format!("{text:?} is not a decimal number"));
+        }
+        if !fraction.chars().all(|c| c.is_ascii_digit()) {
+            return Err(format!("{text:?} is not a decimal number"));
+        }
+        if fraction.len() > 6 {
+            return Err(format!(
+                "{text:?} has more than six decimal places. A price written to seven is one \
+                 copied from a different unit, and rounding it would look correct"
+            ));
+        }
+
+        let whole: i64 = whole
+            .parse()
+            .map_err(|_| format!("{text:?} is too large to hold"))?;
+        let mut padded = fraction.to_string();
+        while padded.len() < 6 {
+            padded.push('0');
+        }
+        let fraction: i64 = if padded.is_empty() {
+            0
+        } else {
+            padded
+                .parse()
+                .map_err(|_| format!("{text:?} is not a decimal number"))?
+        };
+
+        let total = whole
+            .checked_mul(1_000_000)
+            .and_then(|w| w.checked_add(fraction))
+            .ok_or_else(|| format!("{text:?} is too large to hold"))?;
+        Ok(Micros(if negative { -total } else { total }))
+    }
+
     /// The amount, written out with six decimal places.
     ///
     /// Six rather than two. Rounding a per call cost to cents turns most calls into zero,
@@ -22,6 +75,20 @@ impl Micros {
         let sign = if self.0 < 0 { "-" } else { "" };
         let n = self.0.unsigned_abs();
         format!("{sign}{}.{:06}", n / 1_000_000, n % 1_000_000)
+    }
+}
+
+impl Serialize for Micros {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.exact())
+    }
+}
+
+impl<'de> Deserialize<'de> for Micros {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let text = String::deserialize(deserializer)?;
+        Micros::parse(&text).map_err(D::Error::custom)
     }
 }
 
@@ -71,8 +138,72 @@ pub struct PriceBook {
     /// The currency, as an ISO code such as `USD`.
     pub currency: String,
     /// Rates by model name.
-    #[serde(default)]
+    #[serde(default, rename = "price", with = "rows")]
     pub rates: BTreeMap<String, Rate>,
+}
+
+/// A price file writes an array of tables; this reads it into a map keyed by model.
+///
+/// A model listed twice is refused. Whichever row came last would win, and nothing anywhere
+/// would say that the other one had been overruled.
+mod rows {
+    use super::{Micros, Rate};
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    #[derive(Serialize, Deserialize)]
+    struct Row {
+        model: String,
+        input: Micros,
+        output: Micros,
+        #[serde(default)]
+        cache_read: Micros,
+        #[serde(default)]
+        cache_write: Micros,
+    }
+
+    pub fn serialize<S: Serializer>(
+        rates: &BTreeMap<String, Rate>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        rates
+            .iter()
+            .map(|(model, rate)| Row {
+                model: model.clone(),
+                input: rate.input,
+                output: rate.output,
+                cache_read: rate.cache_read,
+                cache_write: rate.cache_write,
+            })
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, Rate>, D::Error> {
+        let rows = Vec::<Row>::deserialize(deserializer)?;
+        let mut rates = BTreeMap::new();
+        for row in rows {
+            if rates.contains_key(&row.model) {
+                return Err(D::Error::custom(format!(
+                    "{} is priced twice. One row would silently overrule the other",
+                    row.model
+                )));
+            }
+            rates.insert(
+                row.model,
+                Rate {
+                    input: row.input,
+                    output: row.output,
+                    cache_read: row.cache_read,
+                    cache_write: row.cache_write,
+                },
+            );
+        }
+        Ok(rates)
+    }
 }
 
 /// A cost, and how much of it rests on numbers that were actually reported.
