@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      # Every feature combination, because a lint that only fires under one of them is a
+      # lint that fires for the first person to enable it.
+      - name: Clippy, default features
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy, no features
+        run: cargo clippy --no-default-features --all-targets -- -D warnings
+      - name: Clippy, all features
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      # Docs are part of the deliverable. A broken intra doc link ships to docs.rs and
+      # stays there until the next release.
+      - name: Documentation
+        run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features
+
+  features:
+    name: each provider alone
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # A caller who wants only the local command line provider should not be building an
+      # HTTP client and a TLS stack. These builds are the check that the features actually
+      # separate, which a single all-features build cannot see.
+      - run: cargo build --no-default-features
+      - run: cargo build --no-default-features --features cli
+      - run: cargo build --no-default-features --features anthropic
+      - run: cargo build --no-default-features --features openai
+      - run: cargo build --no-default-features --features testkit
+
+  msrv:
+    name: minimum supported rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Stated in Cargo.toml. Untested, it is a claim rather than a promise.
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all-features

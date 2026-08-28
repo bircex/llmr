@@ -1,0 +1,55 @@
+[package]
+name          = "modelreach"
+version       = "0.1.0"
+edition       = "2021"
+rust-version  = "1.90"
+license       = "MIT"
+description   = "Reach language models across providers, with capabilities you can read before you ask and usage you can trust."
+repository    = "https://github.com/birceX/modelreach"
+documentation = "https://docs.rs/modelreach"
+readme        = "README.md"
+keywords      = ["llm", "anthropic", "openai", "ai", "provider"]
+categories    = ["api-bindings", "asynchronous"]
+exclude       = ["/.github"]
+
+[features]
+default = ["anthropic", "openai"]
+
+# Providers. Each one pulls only what it needs.
+anthropic = ["http"]
+openai    = ["http"]
+cli       = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/time"]
+
+# The shared HTTP transport, and a reqwest implementation of it.
+http = ["dep:reqwest"]
+
+# The contract suite, for anyone writing a provider of their own.
+testkit = []
+
+[dependencies]
+async-trait = "0.1"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+thiserror   = "2"
+toml        = "1.1"
+reqwest     = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+tokio       = { version = "1", optional = true, default-features = false }
+
+[dev-dependencies]
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }
+async-trait = "0.1"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+# Only the lints that should hold in tests as well as in the library live here.
+# The rest are inner attributes in lib.rs, so a test may still call `expect`.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# The two that catch a deadlock before it can happen. A lock held across an await
+# point is how an async program stops for good, and it is not obvious in review.
+await_holding_lock        = "deny"
+await_holding_refcell_ref = "deny"

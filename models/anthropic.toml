@@ -1,0 +1,111 @@
+# The Anthropic models this release knows about.
+#
+# A starting point, not a source of truth. Vendors add and retire models on their own
+# schedule, so every row carries where the facts came from and when a person last checked
+# them. A row with no provenance is a claim, and the first time one of them is wrong there
+# is no way to tell which of the others still hold.
+#
+# Supply your own Registry when you need one that is current. `Registry::stale` and
+# `Registry::unlisted` compare this table against what a provider says it serves.
+
+provider = "anthropic"
+reach    = "FirstPartyApi"
+
+[[model]]
+id                = "claude-opus-5"
+context_window    = 1000000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+source            = "vendor documentation"
+verified_at       = "2026-08-24"
+
+[[model]]
+id                = "claude-opus-4-8"
+context_window    = 1000000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+source            = "vendor documentation"
+verified_at       = "2026-08-24"
+
+[[model]]
+id                = "claude-opus-4-7"
+context_window    = 1000000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+source            = "vendor documentation"
+verified_at       = "2026-08-24"
+
+[[model]]
+id                = "claude-sonnet-5"
+context_window    = 1000000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+source            = "vendor documentation"
+verified_at       = "2026-08-24"
+
+[[model]]
+id                = "claude-fable-5"
+context_window    = 1000000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+source            = "vendor documentation"
+verified_at       = "2026-08-24"
+
+[[model]]
+id                = "claude-mythos-5"
+context_window    = 1000000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+source            = "vendor documentation"
+verified_at       = "2026-08-24"
+
+[[model]]
+id                = "claude-opus-4-6"
+context_window    = 1000000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+source            = "vendor documentation"
+verified_at       = "2026-08-24"
+
+[[model]]
+id                = "claude-sonnet-4-6"
+context_window    = 1000000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+source            = "vendor documentation"
+verified_at       = "2026-08-24"
+
+[[model]]
+id                = "claude-haiku-4-5"
+context_window    = 200000
+max_output        = 64000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+source            = "vendor documentation"
+verified_at       = "2026-08-24"
