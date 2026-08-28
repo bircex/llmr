@@ -195,6 +195,10 @@ fn wire_block(block: &ContentBlock) -> Result<Value> {
         ContentBlock::ToolUse { id, name, input } => {
             json!({ "type": "tool_use", "id": id, "name": name, "input": input })
         }
+        // Sent back exactly as it arrived. This is the point of keeping it: the provider
+        // checks the history against what it produced, and a block we reshaped is a block
+        // it will not recognise.
+        ContentBlock::Opaque { raw, .. } => raw.clone(),
         ContentBlock::ToolResult {
             tool_use_id,
             content,
@@ -229,7 +233,13 @@ fn read_block(value: &Value) -> Option<ContentBlock> {
             name: value.get("name")?.as_str()?.to_string(),
             input: value.get("input").cloned().unwrap_or(json!({})),
         }),
-        _ => None,
+        // Anything else is kept rather than dropped. A redacted reasoning blob replayed
+        // without this block is a continuation the provider rejects, and the first version
+        // of this function silently threw them away.
+        kind => Some(ContentBlock::Opaque {
+            kind: kind.to_string(),
+            raw: value.clone(),
+        }),
     }
 }
 
@@ -240,6 +250,8 @@ fn read_stop(reason: Option<&str>) -> StopReason {
         Some("stop_sequence") => StopReason::StopSequence,
         Some("max_tokens") => StopReason::MaxTokens,
         Some("refusal") => StopReason::Refusal,
+        Some("pause_turn") => StopReason::PauseTurn,
+        Some("model_context_window_exceeded") => StopReason::ContextWindowExceeded,
         // A reason this crate has not seen is kept as unknown rather than mapped to the
         // nearest one. Guessing here would report a complete answer for a truncated reply.
         _ => StopReason::Other,

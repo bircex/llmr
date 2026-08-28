@@ -565,3 +565,70 @@ async fn a_provider_keeps_what_it_was_told_about_why_it_stopped() {
     assert_eq!(reply.stop_reason, StopReason::Refusal);
     assert_eq!(reply.stop_details.as_deref(), Some("content_filter"));
 }
+
+#[tokio::test]
+async fn a_block_this_crate_does_not_model_survives_the_round_trip() {
+    // The first version of the reader dropped anything it did not recognise. A redacted
+    // reasoning blob replayed without it is a continuation the provider rejects, and the
+    // failure arrives one turn later than the mistake.
+    let mut body = anthropic_reply();
+    body["content"] = json!([
+        { "type": "redacted_thinking", "data": "EroBCkYIBRgCKkBd..." },
+        { "type": "text", "text": "Here is the answer." }
+    ]);
+
+    let reply = anthropic(Recorded::replying(200, body))
+        .chat(ChatRequest::new(
+            "claude-sonnet-5",
+            vec![Message::user("hi")],
+        ))
+        .await
+        .expect("a reply");
+
+    let kept = reply
+        .message
+        .content
+        .iter()
+        .find(|b| matches!(b, ContentBlock::Opaque { .. }));
+    assert!(
+        kept.is_some(),
+        "the block was dropped: {:?}",
+        reply.message.content
+    );
+    assert_eq!(kept.and_then(|b| b.text()), None, "it is not an answer");
+
+    // And back out again, byte for byte.
+    let transport = Recorded::replying(200, anthropic_reply());
+    let _ = anthropic(Arc::clone(&transport))
+        .chat(ChatRequest::new("claude-sonnet-5", vec![reply.message]))
+        .await;
+
+    let sent = transport.body();
+    assert_eq!(
+        sent["messages"][0]["content"][0]["type"],
+        "redacted_thinking"
+    );
+    assert_eq!(
+        sent["messages"][0]["content"][0]["data"], "EroBCkYIBRgCKkBd...",
+        "the block was reshaped, so the provider will not recognise it"
+    );
+}
+
+#[tokio::test]
+async fn a_paused_turn_is_reported_as_paused_rather_than_finished() {
+    let mut body = anthropic_reply();
+    body["stop_reason"] = json!("pause_turn");
+    let reply = anthropic(Recorded::replying(200, body))
+        .chat(ChatRequest::new(
+            "claude-sonnet-5",
+            vec![Message::user("hi")],
+        ))
+        .await
+        .expect("a reply");
+
+    assert_eq!(reply.stop_reason, StopReason::PauseTurn);
+    assert!(
+        !reply.is_complete(),
+        "a paused turn read as a finished answer"
+    );
+}

@@ -185,6 +185,10 @@ fn wire_message(message: &Message) -> Vec<Value> {
             // Reasoning is not sent back. This protocol has no place to put it, and there
             // is no signature to preserve, so dropping it changes nothing the model checks.
             ContentBlock::Thinking { .. } => {}
+            // Nor is an opaque block. It came from a different protocol, and this one has
+            // nowhere to put it. Dropped rather than guessed at, which is safe here for the
+            // same reason: nothing in this protocol checks the history against a signature.
+            ContentBlock::Opaque { .. } => {}
             ContentBlock::ToolUse { id, name, input } => calls.push(json!({
                 "id": id,
                 "type": "function",
@@ -229,6 +233,7 @@ fn read_stop(reason: Option<&str>) -> StopReason {
         Some("tool_calls") | Some("function_call") => StopReason::ToolUse,
         Some("length") => StopReason::MaxTokens,
         Some("content_filter") => StopReason::Refusal,
+        Some("context_length_exceeded") => StopReason::ContextWindowExceeded,
         _ => StopReason::Other,
     }
 }

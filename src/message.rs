@@ -48,6 +48,22 @@ pub enum ContentBlock {
         input: serde_json::Value,
     },
 
+    /// A block this crate does not model.
+    ///
+    /// A redacted reasoning blob, a server side tool result, something a vendor added after
+    /// this code was written. Kept **verbatim** so a turn can be replayed to the provider
+    /// that produced it without loss.
+    ///
+    /// This is not an answer and must never be read as one. Dropping it silently corrupts a
+    /// conversation, because the provider checks what it sent you against what you send
+    /// back. Interpreting it would be a guess about a format nobody here has seen.
+    Opaque {
+        /// The provider's own name for this kind of block.
+        kind: String,
+        /// Exactly what arrived.
+        raw: serde_json::Value,
+    },
+
     /// Your answer to a [`ContentBlock::ToolUse`].
     ToolResult {
         /// The id from the call this answers.
@@ -70,7 +86,7 @@ impl ContentBlock {
             ContentBlock::Text(text) => Some(text),
             ContentBlock::Thinking { text, .. } => Some(text),
             ContentBlock::ToolResult { content, .. } => Some(content),
-            ContentBlock::ToolUse { .. } => None,
+            ContentBlock::ToolUse { .. } | ContentBlock::Opaque { .. } => None,
         }
     }
 }
@@ -139,6 +155,12 @@ pub enum StopReason {
     MaxTokens,
     /// The provider declined to continue.
     Refusal,
+    /// A server side tool loop hit its own limit. Resumable, and capped.
+    ///
+    /// Not a failure and not a finished answer. Send the turn back to continue it.
+    PauseTurn,
+    /// The conversation no longer fits. Nothing will fix this except sending less.
+    ContextWindowExceeded,
     /// The provider reported a reason this crate does not know.
     ///
     /// Kept rather than mapped to something close, because a stop reason invented on the
@@ -167,6 +189,29 @@ mod tests {
     fn a_truncated_answer_is_not_complete() {
         assert!(!StopReason::MaxTokens.is_complete());
         assert!(!StopReason::Refusal.is_complete());
+    }
+
+    #[test]
+    fn a_paused_turn_is_not_a_finished_one() {
+        // Resumable, which is neither a failure nor an answer. A caller that read it as
+        // complete would show a user half of what the model was saying.
+        assert!(!StopReason::PauseTurn.is_complete());
+        assert!(!StopReason::ContextWindowExceeded.is_complete());
+    }
+
+    #[test]
+    fn a_block_this_crate_does_not_know_survives_a_round_trip() {
+        // The property a conversation depends on. A provider checks what it sent against
+        // what comes back, so a dropped block is a rejected continuation.
+        let block = ContentBlock::Opaque {
+            kind: "redacted_thinking".into(),
+            raw: serde_json::json!({ "type": "redacted_thinking", "data": "EroBCkY..." }),
+        };
+        let json = serde_json::to_string(&block).unwrap_or_default();
+        let back: ContentBlock =
+            serde_json::from_str(&json).unwrap_or(ContentBlock::Text("lost".into()));
+        assert_eq!(block, back);
+        assert_eq!(block.text(), None, "an opaque block is not an answer");
     }
 
     #[test]
