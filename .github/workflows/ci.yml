@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # For the job that looks ahead of the pinned toolchain. Monday morning, so a bump waiting
+  # to be done is found on a weekday rather than in somebody's pull request.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,9 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # No toolchain named here. `rust-toolchain.toml` is the one place that says which
+      # compiler this crate is checked against, and rustup installs it on the first cargo
+      # call. Naming a version here as well is how the two drift apart.
       - uses: Swatinem/rust-cache@v2
 
       - name: Formatting
@@ -61,7 +66,6 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features
 
@@ -70,7 +74,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       # A caller who wants only the local command line provider should not be building an
@@ -90,4 +93,29 @@ jobs:
       # Stated in Cargo.toml. Untested, it is a claim rather than a promise.
       - uses: dtolnay/rust-toolchain@1.90.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --all-features
+      # `+1.90.0` rather than a bare cargo, because `rust-toolchain.toml` outranks the
+      # toolchain the step above installed. Without it this job would build with the pinned
+      # compiler and report the minimum version as tested when nothing had tested it.
+      - run: cargo +1.90.0 build --all-features
+      - run: cargo +1.90.0 --version
+
+  ahead-of-stable:
+    name: what the next toolchain would say
+    # Only on the schedule and on demand. A new clippy lint is news, and news that fails
+    # somebody's unrelated pull request is how a team learns to ignore a red tick.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # Deliberately floating, and deliberately not on the request path. When this goes red,
+      # raising the channel in `rust-toolchain.toml` is the work, and it is scheduled rather
+      # than sprung on whoever pushed next.
+      - name: Clippy on current stable
+        run: |
+          rustup run stable cargo clippy --all-features --all-targets -- -D warnings
+          rustup run stable cargo clippy --no-default-features --all-targets -- -D warnings

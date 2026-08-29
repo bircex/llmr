@@ -18,11 +18,10 @@ As of commit `d30640f`.
 | Public items | 189 |
 | Dependency tree, default features | 52 crates |
 | Published | no |
-| CI on GitHub | has never run, see phase 4 |
+| CI on GitHub | runs, and is green as of phase 4 |
 
-Everything below is green locally: `cargo fmt --check`, clippy under three feature
-combinations, `cargo doc` with warnings denied, every feature built alone, and the full test
-suite.
+Everything below is green: `cargo fmt --check`, clippy under three feature combinations,
+`cargo doc` with warnings denied, every feature built alone, and the full test suite.
 
 ```sh
 cargo fmt --all -- --check
@@ -33,8 +32,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 cargo test --all-features
 ```
 
-Run all six before any commit. The third one catches more than it looks like it should,
-because a lint can fire under one feature set and not another.
+Run all six before any commit, and run them on the toolchain in `rust-toolchain.toml` rather
+than whatever a laptop happens to have. That file is the reason these commands mean the same
+thing here as on a runner; without it they passed on 1.97 and failed on 1.98 for months.
+
+The third one catches more than it looks like it should, because a lint can fire under one
+feature set and not another.
 
 ---
 
@@ -172,11 +175,21 @@ and a call with the feature off emits nothing.
 tests on three operating systems, every feature built alone, and the stated minimum Rust
 version. Every one of those passes locally.
 
-**On GitHub every job has finished in three seconds with zero steps.** Nothing ran. The
-repository is private, private repositories draw on the account's Actions allowance, and that
-account is blocked for billing. Public repositories get unlimited free minutes and do not
-touch the allowance, so making this one public is likely to fix it outright and is worth
-trying before assuming anything else is wrong.
+**It runs. The diagnosis that used to be written here was wrong**, and the wrong part is
+worth keeping because it is the interesting bit: this section said every job finished in three
+seconds having done nothing, and blamed a private repository drawing on a blocked Actions
+allowance. The repository is public, Actions is enabled, and every run had in fact executed
+and gone red. Nobody had opened one.
+
+What was actually failing: CI asked for `stable`, 1.98 landed on 2026-08-20 with a new
+`clippy::manual_slice_fill`, and `Secret::drop` zeroed its bytes with a loop. The crate had
+not changed. Six commands passing on a laptop running 1.97 said nothing about a runner
+running 1.98, so **green locally was not a claim about anything**.
+
+`rust-toolchain.toml` now pins the compiler, so the six commands mean the same thing in both
+places, and raising it is a deliberate commit. A weekly `ahead-of-stable` job runs clippy on
+whatever stable is now, so a bump waiting to be done is news on a Monday rather than a red
+tick on somebody's unrelated pull request.
 
 ### Still to add
 
@@ -192,7 +205,8 @@ trying before assuming anything else is wrong.
 ### Done when
 
 A green run exists on GitHub, on three operating systems, with a job identifier somebody can
-open.
+open. **Open it.** The failure this section describes survived for as long as it did because
+a red tick was read as the thing that was already known to be broken.
 
 ---
 
