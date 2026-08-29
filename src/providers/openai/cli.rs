@@ -1,9 +1,14 @@
 //! The Codex command line tool.
 //!
-//! Same shape as every other preset here: a program, its arguments, and what it prints. The
+//! Same shape as every other preset: a program, its arguments, and what it prints. The
 //! running, the deadline and the failure cases are [`LocalCli`]'s.
+//!
+//! It sits under `openai` because that is whose tool it is. What it can carry has nothing to
+//! do with `providers::openai::api` beside it, and everything to do with being a
+//! subprocess — which is what [`crate::Reach`] on its capabilities says, and the module path
+//! does not.
 
-use super::{Envelope, LocalCli, UsageNames};
+use crate::providers::cli::{Envelope, LocalCli, UsageNames};
 use std::time::Duration;
 
 /// The program this preset runs.

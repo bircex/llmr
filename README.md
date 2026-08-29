@@ -9,12 +9,12 @@ llmr = { version = "0.1", features = ["reqwest"] }
 ```
 
 ```rust,no_run
-use llmr::providers::api::anthropic;
+use llmr::providers::anthropic;
 use llmr::{ChatRequest, Message, Provider};
 use std::time::Duration;
 
 # async fn example() -> llmr::Result<()> {
-let claude = anthropic::from_env(Duration::from_secs(60))?;
+let claude = anthropic::api::from_env(Duration::from_secs(60))?;
 
 let reply = claude
     .chat(ChatRequest::new("claude-sonnet-5", vec![Message::user("Hello")]))
@@ -148,22 +148,31 @@ configured and simply never needed.
 
 | Module | Feature | Reach | Covers |
 |---|---|---|---|
-| `providers::api::anthropic` | `anthropic` | first party API | Anthropic Messages |
-| `providers::api::openai` | `openai` | you say | Anything speaking OpenAI chat completions |
-| `providers::cli::claude` | `cli` | local CLI | The Claude Code tool |
-| `providers::cli::codex` | `cli` | local CLI | The Codex tool |
+| `providers::anthropic::api` | `anthropic` | first party API | Anthropic Messages |
+| `providers::anthropic::cli` | `cli` | local CLI | The Claude Code tool |
+| `providers::openai::api` | `openai` | you say | Anything speaking OpenAI chat completions |
+| `providers::openai::cli` | `cli` | local CLI | The Codex tool |
 
-They are grouped by how they are reached rather than by vendor, because that is the
-difference that matters: what a provider can carry, what it reports, and whose credential
-pays all follow from it.
+They are grouped by vendor and then by reach, because which vendor is what you know first
+and the same models turn up behind more than one reach. Anthropic's are reachable over the
+API and through Claude Code, and those two differ in what they can carry rather than in what
+they are, so the choice belongs in one place.
+
+Grouping this way does not soften what `Reach` is for. It is still the axis that decides
+where your data goes and whose credential pays, and it still travels on `capabilities()`
+where a caller can read it before sending. A module path could never be read that way:
+`anthropic::api` and `anthropic::cli` are the same vendor and the same models, and they are
+not the same place for a prompt to go.
 
 The OpenAI provider is written against a shape rather than a vendor. OpenAI, Groq, Together,
 Fireworks, vLLM, Ollama, LM Studio, OpenRouter and LiteLLM all answer at
 `/v1/chat/completions` with the same envelope, so the base URL is a constructor argument and
-one provider covers them all.
+one provider covers them all. It sits under `openai` because that is what the ecosystem
+calls the shape, not because reaching Ollama is reaching OpenAI.
 
-The reach is given rather than guessed, because a model on your laptop and a hosted API look
-identical from here and are not the same place for your data to go.
+Which is why it is the one provider whose reach you supply. Everywhere else the module
+settles it; there a model on your laptop and a hosted API look identical from here and are
+not the same place for your data to go.
 
 ## Features
 
@@ -186,20 +195,26 @@ llmr = { version = "0.1", default-features = false, features = ["cli"] }
 The transport, the credential, the status codes and the error mapping are shared. A provider
 supplies only the part that differs.
 
+Note where the two live. What is *shared* is under the reach, because reach is what decides
+how a model is spoken to. What is *chosen* is under the vendor, because that is what a caller
+picks. So you build on `providers::api` and `providers::cli`, and what you write lands beside
+`providers::anthropic` and `providers::openai`.
+
 For something over the network, implement `providers::api::Protocol`: what URL, what headers,
 what JSON goes out, what comes back. There is no client in it and nowhere to hold state, so a
 protocol is a set of pure functions and the shared machinery does the rest.
 
 For a command line tool, there is not even that. `providers::cli::LocalCli` does the spawning,
 the deadline, the kill on drop and the difference between a missing binary and a silent one.
-A vendor preset is a program name, its arguments, and the shape of what it prints:
+A vendor preset is a program name, its arguments, and the shape of what it prints, which is
+why the vendor files are forty lines:
 
 ```rust,no_run
-use llmr::providers::cli::{claude, codex};
+use llmr::providers::{anthropic, openai};
 use std::time::Duration;
 
-let tool = claude::provider(Duration::from_secs(300)).serving(["claude-sonnet-5"]);
-let other = codex::provider(Duration::from_secs(300)).serving(["gpt-5.3-codex"]);
+let tool = anthropic::cli::provider(Duration::from_secs(300)).serving(["claude-sonnet-5"]);
+let other = openai::cli::provider(Duration::from_secs(300)).serving(["gpt-5.3-codex"]);
 ```
 
 ## Concurrency

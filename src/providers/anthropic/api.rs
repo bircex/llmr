@@ -16,13 +16,13 @@
 //! cache, and the cached parts separately. That is exactly what [`crate::Usage`] means, so
 //! nothing is adjusted here. The OpenAI shape does adjust, and says so.
 
-use super::{ApiProvider, Protocol};
 use crate::chat::{
     ChatRequest, ChatResponse, ContentBlock, Effort, Message, Role, StopReason, Thinking,
 };
 use crate::cost::Usage;
 use crate::error::{Error, Result};
 use crate::model::{ModelId, Reach};
+use crate::providers::api::{ApiProvider, Protocol};
 use crate::registry::Registry;
 use crate::secret::Secret;
 use crate::transport::HttpTransport;

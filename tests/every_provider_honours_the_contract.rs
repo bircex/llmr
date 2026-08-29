@@ -6,8 +6,8 @@
 
 #![cfg(all(feature = "testkit", feature = "anthropic", feature = "openai"))]
 
-use llmr::providers::api::anthropic;
-use llmr::providers::api::openai;
+use llmr::providers::anthropic;
+use llmr::providers::openai;
 use llmr::registry::{Entry, Registry};
 use llmr::testkit::assert_provider_contract;
 use llmr::transport::{HttpRequest, HttpResponse, HttpTransport};
@@ -50,7 +50,7 @@ verified_at = "2026-08-28"
 
 #[tokio::test]
 async fn the_anthropic_provider_honours_the_contract() {
-    let provider = anthropic::with(
+    let provider = anthropic::api::with(
         always(serde_json::json!({
             "model": "claude-sonnet-5",
             "stop_reason": "end_turn",
@@ -66,7 +66,7 @@ async fn the_anthropic_provider_honours_the_contract() {
 
 #[tokio::test]
 async fn the_openai_shaped_provider_honours_the_contract() {
-    let provider = openai::at(
+    let provider = openai::api::at(
         "test-endpoint",
         "https://example.invalid/v1",
         always(serde_json::json!({

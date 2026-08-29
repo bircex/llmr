@@ -4,7 +4,7 @@
 //! [`crate::Reach::LocalCli`] rather than self hosted: the credential is local and the data
 //! is not.
 
-use super::{Envelope, LocalCli, UsageNames};
+use crate::providers::cli::{Envelope, LocalCli, UsageNames};
 use std::time::Duration;
 
 /// The program this preset runs.
@@ -27,12 +27,12 @@ pub fn envelope() -> Envelope {
 /// serves, so a provider that answered for every name would turn a typo into a real model.
 ///
 /// ```no_run
-/// use llmr::providers::cli::claude;
+/// use llmr::providers::anthropic::cli;
 /// use llmr::{ChatRequest, Message, Provider};
 /// use std::time::Duration;
 ///
 /// # async fn example() -> llmr::Result<()> {
-/// let claude = claude::provider(Duration::from_secs(300))
+/// let claude = cli::provider(Duration::from_secs(300))
 ///     .serving(["claude-sonnet-5"]);
 ///
 /// let reply = claude

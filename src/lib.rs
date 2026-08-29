@@ -22,7 +22,6 @@ pub mod router;
 pub mod secret;
 pub mod transport;
 
-/// The providers that ship with this crate.
 pub mod providers;
 
 #[cfg(feature = "testkit")]

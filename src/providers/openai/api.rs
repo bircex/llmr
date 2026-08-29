@@ -22,11 +22,11 @@
 //! Without that, the same conversation through two providers would report different input
 //! numbers, and a cost report comparing them would be comparing two different things.
 
-use super::{ApiProvider, Protocol};
 use crate::chat::{ChatRequest, ChatResponse, ContentBlock, Message, Role, StopReason};
 use crate::cost::Usage;
 use crate::error::{Error, Result};
 use crate::model::{ModelId, Reach};
+use crate::providers::api::{ApiProvider, Protocol};
 use crate::registry::Registry;
 use crate::secret::Secret;
 use crate::transport::HttpTransport;

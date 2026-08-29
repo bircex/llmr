@@ -1,4 +1,8 @@
-//! Providers reached over the network.
+//! The machinery every provider reached over the network shares.
+//!
+//! Nothing vendor specific lives here. The providers themselves are under their vendor —
+//! `providers::anthropic::api`, `providers::openai::api` — because that is
+//! what a caller picks. This is what a contributor implements.
 //!
 //! # One machine, many protocols
 //!
@@ -13,6 +17,12 @@
 //!
 //! The generic is a type parameter rather than a trait object, so the protocol call is
 //! resolved at compile time. There is no vtable on the path a request takes.
+//!
+//! # No feature gate
+//!
+//! This module is always present, including with no features at all. [`Protocol`] is the
+//! extension point for a protocol nobody has written yet, and needing somebody else's vendor
+//! feature switched on to reach it would be a strange toll to pay.
 
 use crate::chat::{ChatRequest, ChatResponse};
 use crate::error::{Error, Result};
@@ -24,14 +34,6 @@ use crate::transport::{HttpRequest, HttpTransport};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-
-#[cfg(feature = "anthropic")]
-#[cfg_attr(docsrs, doc(cfg(feature = "anthropic")))]
-pub mod anthropic;
-
-#[cfg(feature = "openai")]
-#[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
-pub mod openai;
 
 /// What one vendor's HTTP protocol says, and nothing else.
 ///

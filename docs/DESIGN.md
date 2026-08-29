@@ -141,6 +141,47 @@ A protocol holds no state. Every method is a pure function over a request or a b
 
 ---
 
+## The module tree groups by vendor; the shared machinery groups by reach
+
+`providers::anthropic::{api, cli}` and `providers::openai::{api, cli}` are what a caller
+imports. `providers::api` and `providers::cli` are what a contributor builds on.
+
+This was the other way round once — `api::anthropic` beside `cli::claude` — on the reasoning
+that reach is the difference that matters. Reach *is* the difference that matters, and that
+turned out to be an argument for something else.
+
+**What is shared follows the reach.** Everything an API provider does apart from writing JSON
+is identical, and so is everything a subprocess does apart from its arguments. That is why
+`ApiProvider` and `LocalCli` exist and why they sit under `api/` and `cli/`. Reach is the
+axis the *code* is organised by, and it still is.
+
+**What is chosen follows the vendor.** A caller knows which vendor before they know which
+reach, and the same models turn up behind more than one. Anthropic's answer over the Messages
+API and through Claude Code, and those differ in what they can carry rather than in what they
+are. Reach-first put that comparison two directories apart, and named the halves
+inconsistently while it was at it: `api::anthropic` for the company, `cli::claude` for the
+product. A caller weighing one against the other could not see there was a choice.
+
+**If this became reach-first again**, the vendor files would have to move but nothing would
+break, because the engines are not in them — `anthropic/cli.rs` is forty lines. The cost is
+paid by the reader, not the compiler, which is exactly the kind of cost that goes unnoticed
+until somebody sends a prompt through the tool because they never saw the API beside it.
+
+### What this does not mean
+
+It does not put reach in the type system's back seat. A module path is read once, by whoever
+writes the import; `Reach` has to be readable by a program deciding at runtime whether a
+prompt may go somewhere. That is why it lives on `ModelCapabilities` and always did. The
+directory layout never answered that question and never could.
+
+`providers::openai::api` is the one name wider than what it holds: it serves Groq, vLLM,
+Ollama and the rest. It sits there because the shape is OpenAI's and that is what everyone
+calls it. It is also the one provider whose reach is a constructor argument, for the reason
+in the section above — and the module header says so, because a name that is nearly right is
+worse than one that is obviously approximate.
+
+---
+
 ## Nothing holds a lock across an await
 
 Every provider is immutable once built. `chat` takes `&self`, and anything shared is either

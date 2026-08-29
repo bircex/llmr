@@ -9,11 +9,11 @@ reason.
 
 ## Where it stands
 
-As of commit `b9add1b`.
+As of the vendor-first provider tree.
 
 | | |
 |---|---:|
-| Source | 4,577 lines across 23 files |
+| Source | 4,694 lines across 25 files |
 | Tests | 124 passing |
 | Public items | 180 |
 | Dependency tree, default features | 52 crates |
@@ -21,8 +21,8 @@ As of commit `b9add1b`.
 | CI on GitHub | has never run, see phase 4 |
 
 Everything below is green locally: `cargo fmt --check`, clippy under three feature
-combinations, `cargo doc` with warnings denied, every feature built alone, and the full test
-suite.
+combinations, `cargo doc` with warnings denied under both feature sets, every feature built
+alone, and the full test suite.
 
 ```sh
 cargo fmt --all -- --check
@@ -30,11 +30,14 @@ cargo clippy --all-features --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --all-features
 ```
 
-Run all six before any commit. The third one catches more than it looks like it should,
-because a lint can fire under one feature set and not another.
+Run all seven before any commit. The third one catches more than it looks like it should,
+because a lint can fire under one feature set and not another, and the sixth is there for
+the same reason: a doc link to a feature gated item resolves under `--all-features` and
+nowhere else.
 
 ---
 
@@ -42,11 +45,18 @@ because a lint can fire under one feature set and not another.
 
 Two things that are cheap before publish and breaking after it.
 
-**The tree follows how a model is reached.** `providers/api/` and `providers/cli/` are
-separate because the difference between them is what `Reach` exists to name: what a provider
-can carry, what it reports, and whose credential pays. `chat/` is what a call is made of,
+**The tree separates what is shared from what is chosen.** `providers/api/` and
+`providers/cli/` hold the machinery, which follows the reach because reach is what decides
+how a model is spoken to. `providers/anthropic/` and `providers/openai/` hold the providers,
+which follow the vendor because that is what a caller picks — and because the same models
+turn up behind more than one reach, so putting the Messages API and Claude Code two
+directories apart hid a choice rather than presenting it. `chat/` is what a call is made of,
 `cost/` is what it consumed and what that is worth. Everything else is flat, deliberately: a
 directory holding one file is a directory that exists to look organised.
+
+This does not make `Reach` a directory. It is a runtime value on `ModelCapabilities`, which
+is the only form a caller can read before sending, and the only form that could ever have
+answered "may this prompt go there".
 
 **A provider writes a protocol, not a client.** `ApiProvider` does the transport, the
 credential, the status codes and the error mapping. A vendor supplies `Protocol`: what URL,
@@ -147,9 +157,9 @@ and a call with the feature off emits nothing.
 
 ## Phase 4 — the pipeline, actually running
 
-`.github/workflows/ci.yml` covers formatting, three clippy passes, docs with warnings denied,
-tests on three operating systems, every feature built alone, and the stated minimum Rust
-version. Every one of those passes locally.
+`.github/workflows/ci.yml` covers formatting, three clippy passes, docs with warnings denied
+under two feature sets, tests on three operating systems, every feature built alone, and the
+stated minimum Rust version. Every one of those passes locally.
 
 **On GitHub every job has finished in three seconds with zero steps.** Nothing ran. The
 repository is private, private repositories draw on the account's Actions allowance, and that
@@ -203,9 +213,9 @@ Not planned in detail, and roughly in this order.
 
 | | Why it is not before 0.1 |
 |---|---|
-| Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl and adds nothing breaking |
+| Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl under its own vendor directory, and adds nothing breaking |
 | Images and other input | `ContentBlock` gains a variant. It is `#[non_exhaustive]`, so this is additive |
-| More CLI presets | Gemini CLI and whatever else appears. A preset is a file |
+| More CLI presets | Gemini CLI and whatever else appears. A preset is a file, and it goes beside its vendor's other reaches |
 | Cost accumulation | `Usage::merge` exists; a ledger over a run does not. Additive |
 | Embeddings | A different question from chat, and arguably a different crate |
 
