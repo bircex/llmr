@@ -33,8 +33,13 @@ pub fn envelope() -> Envelope {
 ///
 /// It knows no models until you name them, for the same reason every command line provider
 /// does not: the tool cannot be asked.
+///
+/// The probe is `--version`, which says the tool is installed and says nothing about whether
+/// it is signed in. See [`LocalCli::with_probe`] for why that is the strongest free question
+/// here.
 pub fn provider(timeout: Duration) -> LocalCli {
     LocalCli::new("codex-cli", PROGRAM, ["exec", "--json"], timeout)
         .reading(envelope())
         .with_model_flag("--model")
+        .with_probe(["--version"])
 }

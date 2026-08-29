@@ -87,9 +87,7 @@ impl Drop for Secret {
     fn drop(&mut self) {
         // Overwritten rather than just freed. It does not defeat a memory dump taken while
         // the process is alive, and it does shorten the window.
-        for byte in &mut self.bytes {
-            *byte = 0;
-        }
+        self.bytes.fill(0);
     }
 }
 
