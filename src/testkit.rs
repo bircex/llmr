@@ -26,11 +26,11 @@
 // panicking is lifted here and nowhere else.
 #![allow(clippy::panic)]
 
-use crate::message::Message;
+use crate::chat::message::Message;
+use crate::chat::request::ChatRequest;
+use crate::cost::usage::UsageCoverage;
 use crate::model::ModelId;
 use crate::provider::Provider;
-use crate::request::ChatRequest;
-use crate::usage::UsageCoverage;
 
 /// Checks the promises a provider makes.
 ///

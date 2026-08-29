@@ -9,10 +9,35 @@ use crate::{Error, Result};
 use async_trait::async_trait;
 use std::time::Duration;
 
+/// Which HTTP verb.
+///
+/// Two, because two is what these protocols use. A chat is a POST and a model list is a
+/// GET, and a transport that assumed one of them would make the other work by accident on
+/// some servers and fail on others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    /// Read.
+    Get,
+    /// Send a body.
+    Post,
+}
+
+impl Method {
+    /// The verb, as it goes on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::Get => "GET",
+            Method::Post => "POST",
+        }
+    }
+}
+
 /// One HTTP request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct HttpRequest {
+    /// Which verb.
+    pub method: Method,
     /// Where to send it.
     pub url: String,
     /// Header names and values, in the order they should be sent.
@@ -22,12 +47,23 @@ pub struct HttpRequest {
 }
 
 impl HttpRequest {
-    /// A request with no headers.
+    /// A POST with a body and no headers.
     pub fn new(url: impl Into<String>, body: Vec<u8>) -> Self {
         Self {
+            method: Method::Post,
             url: url.into(),
             headers: Vec::new(),
             body,
+        }
+    }
+
+    /// A GET with no headers.
+    pub fn get(url: impl Into<String>) -> Self {
+        Self {
+            method: Method::Get,
+            url: url.into(),
+            headers: Vec::new(),
+            body: Vec::new(),
         }
     }
 
@@ -121,14 +157,14 @@ pub trait HttpTransport: Send + Sync {
 ///
 /// Holds one client, which `reqwest` documents as cheap to clone and safe to share. There
 /// is no lock in here, so any number of calls can be in flight at once.
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+#[cfg(feature = "reqwest")]
+#[cfg_attr(docsrs, doc(cfg(feature = "reqwest")))]
 #[derive(Debug, Clone)]
 pub struct Reqwest {
     client: reqwest::Client,
 }
 
-#[cfg(feature = "http")]
+#[cfg(feature = "reqwest")]
 impl Reqwest {
     /// A transport with a request timeout.
     ///
@@ -150,11 +186,14 @@ impl Reqwest {
     }
 }
 
-#[cfg(feature = "http")]
+#[cfg(feature = "reqwest")]
 #[async_trait]
 impl HttpTransport for Reqwest {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse> {
-        let mut builder = self.client.post(&request.url).body(request.body);
+        let mut builder = match request.method {
+            Method::Get => self.client.get(&request.url),
+            Method::Post => self.client.post(&request.url).body(request.body),
+        };
         for (name, value) in &request.headers {
             builder = builder.header(name, value);
         }

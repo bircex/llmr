@@ -8,9 +8,9 @@
 
 #![cfg(all(feature = "anthropic", feature = "openai"))]
 
-use llmr::http::{HttpRequest, HttpResponse, HttpTransport};
-use llmr::providers::anthropic::Anthropic;
-use llmr::providers::openai::OpenAiCompatible;
+use llmr::providers::api::anthropic;
+use llmr::providers::api::openai;
+use llmr::transport::{HttpRequest, HttpResponse, HttpTransport};
 use llmr::{
     ChatRequest, ContentBlock, Effort, Error, Message, Provider, Reach, Registry, Secret,
     StopReason, Thinking, ToolSchema, UsageCoverage,
@@ -81,8 +81,8 @@ fn anthropic_reply() -> Value {
     })
 }
 
-fn anthropic(transport: Arc<Recorded>) -> Anthropic {
-    Anthropic::new(
+fn anthropic(transport: Arc<Recorded>) -> anthropic::Anthropic {
+    anthropic::with(
         transport,
         Secret::new("key", "sk-test"),
         Arc::new(Registry::empty("anthropic", Reach::FirstPartyApi)),
@@ -295,8 +295,8 @@ fn openai_reply() -> Value {
     })
 }
 
-fn openai(transport: Arc<Recorded>, reach: Reach) -> OpenAiCompatible {
-    OpenAiCompatible::at(
+fn openai(transport: Arc<Recorded>, reach: Reach) -> openai::OpenAiCompatible {
+    openai::at(
         "test-endpoint",
         "https://example.invalid/v1/",
         transport,

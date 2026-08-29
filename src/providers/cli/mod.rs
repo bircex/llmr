@@ -1,4 +1,13 @@
-//! A vendor command line tool, used as a provider.
+//! Vendor command line tools, used as providers.
+//!
+//! # One runner, many tools
+//!
+//! [`LocalCli`] does everything a subprocess needs: spawn, write the prompt, close stdin,
+//! wait with a deadline, kill on drop, read stdout, tell a missing binary from a silent one.
+//! A vendor supplies only what differs, which is the program name, its arguments, and the
+//! shape of what it prints.
+//!
+//! Those live in one module each, beside this one. Adding a tool is a preset, not a client.
 //!
 //! # Why this is a provider and not a client
 //!
@@ -21,13 +30,16 @@
 //! Absent is the important one. A subscription tool has no per call price, and writing zero
 //! would turn an unknown cost into a free one in every report that adds it up.
 
+pub mod claude;
+pub mod codex;
+
+use crate::chat::message::{ContentBlock, Message, Role, StopReason};
+use crate::chat::request::ChatRequest;
+use crate::chat::response::ChatResponse;
+use crate::cost::usage::Usage;
 use crate::error::{Error, Result};
-use crate::message::{ContentBlock, Message, Role, StopReason};
 use crate::model::{ModelCapabilities, ModelId, Reach};
 use crate::provider::Provider;
-use crate::request::ChatRequest;
-use crate::response::ChatResponse;
-use crate::usage::Usage;
 use async_trait::async_trait;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -198,11 +210,6 @@ impl Envelope {
         self.usage = Some(pointer.into());
         self.names = names;
         self
-    }
-
-    /// What Anthropic's command line tool prints in its JSON mode.
-    pub fn claude() -> Self {
-        Self::at("/result").with_usage("/usage", UsageNames::anthropic())
     }
 }
 
@@ -693,7 +700,7 @@ mod tests {
             Some(0),
             an_envelope("Four."),
         ))))
-        .reading(Envelope::claude());
+        .reading(claude::envelope());
 
         let reply = cli.chat(request()).await.expect("a reply");
         assert_eq!(reply.text(), "Four.");
@@ -707,7 +714,7 @@ mod tests {
             Some(0),
             an_envelope("Four."),
         ))))
-        .reading(Envelope::claude());
+        .reading(claude::envelope());
 
         let usage = cli
             .chat(request())
@@ -726,7 +733,7 @@ mod tests {
             Some(0),
             b"just some words".to_vec(),
         ))))
-        .reading(Envelope::claude());
+        .reading(claude::envelope());
 
         let refused = cli.chat(request()).await;
         assert!(matches!(refused, Err(Error::Unreadable(_))), "{refused:?}");
@@ -739,7 +746,7 @@ mod tests {
         let bare =
             serde_json::to_vec(&serde_json::json!({ "result": "Four." })).unwrap_or_default();
         let cli =
-            cli(Scripted::new(Ok(ProcessOutput::new(Some(0), bare)))).reading(Envelope::claude());
+            cli(Scripted::new(Ok(ProcessOutput::new(Some(0), bare)))).reading(claude::envelope());
 
         let usage = cli
             .chat(request())

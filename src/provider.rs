@@ -1,8 +1,8 @@
 //! The one trait every provider implements.
 
+use crate::chat::request::ChatRequest;
+use crate::chat::response::ChatResponse;
 use crate::model::{ModelCapabilities, ModelId};
-use crate::request::ChatRequest;
-use crate::response::ChatResponse;
 use crate::Result;
 use async_trait::async_trait;
 

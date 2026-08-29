@@ -1,8 +1,8 @@
 //! What a model gives back.
 
-use crate::message::{ContentBlock, Message, StopReason};
+use crate::chat::message::{ContentBlock, Message, StopReason};
+use crate::cost::usage::Usage;
 use crate::model::ModelId;
-use crate::usage::Usage;
 use serde::{Deserialize, Serialize};
 
 /// One reply from one model.
@@ -76,7 +76,7 @@ impl ChatResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Role;
+    use crate::chat::message::Role;
 
     fn reply(stop: StopReason) -> ChatResponse {
         ChatResponse {

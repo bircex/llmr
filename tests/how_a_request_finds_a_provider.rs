@@ -3,11 +3,11 @@
 //! Every test here is a claim about a decision somebody would otherwise make by hand in
 //! every program that talks to more than one model.
 
-use llmr::message::{Message, Role, StopReason};
+use llmr::chat::message::{Message, Role, StopReason};
+use llmr::chat::request::ChatRequest;
+use llmr::chat::response::ChatResponse;
 use llmr::model::{ModelCapabilities, ModelId, Reach};
 use llmr::provider::Provider;
-use llmr::request::ChatRequest;
-use llmr::response::ChatResponse;
 use llmr::router::{Requirements, Route, Router};
 use llmr::{Error, ToolSchema, Usage};
 use std::sync::atomic::{AtomicUsize, Ordering};

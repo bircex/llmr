@@ -7,8 +7,8 @@
 //! cargo run --example anything_openai_shaped
 //! ```
 
-use llmr::providers::openai::OpenAiCompatible;
-use llmr::{http::Reqwest, Provider, Reach, Registry, Secret};
+use llmr::providers::api::openai;
+use llmr::{transport::Reqwest, Provider, Reach, Registry, Secret};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,10 +40,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for (id, url, reach, key) in endpoints {
-        let provider = OpenAiCompatible::at(
+        let provider = openai::at(
             id,
             url,
-            Arc::clone(&transport) as Arc<dyn llmr::http::HttpTransport>,
+            Arc::clone(&transport) as Arc<dyn llmr::transport::HttpTransport>,
             key,
             reach,
             Arc::new(Registry::empty(id, reach)),

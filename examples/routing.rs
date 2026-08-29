@@ -7,9 +7,9 @@
 //! Needs no key and reaches nothing. Both providers are unreachable on purpose, which is
 //! what makes the last case worth watching.
 
-use llmr::providers::openai::OpenAiCompatible;
+use llmr::providers::api::openai;
 use llmr::{
-    http::Reqwest, Message, Provider, Reach, Registry, Requirements, Route, Router, Secret,
+    transport::Reqwest, Message, Provider, Reach, Registry, Requirements, Route, Router, Secret,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,16 +20,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // A model on this machine, and a hosted one. Same protocol, completely different places
     // for your data to go, and only you can say which is which.
-    let local = Arc::new(OpenAiCompatible::at(
+    let local = Arc::new(openai::at(
         "ollama",
         "http://localhost:11434/v1",
-        Arc::clone(&transport) as Arc<dyn llmr::http::HttpTransport>,
+        Arc::clone(&transport) as Arc<dyn llmr::transport::HttpTransport>,
         Secret::new("ollama", "not-needed"),
         Reach::SelfHosted,
         Arc::new(shelf("llama3", Reach::SelfHosted)),
     ));
 
-    let hosted = Arc::new(OpenAiCompatible::at(
+    let hosted = Arc::new(openai::at(
         "vendor",
         "https://api.example.invalid/v1",
         transport,

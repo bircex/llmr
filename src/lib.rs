@@ -12,21 +12,15 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod chat;
+pub mod cost;
 pub mod error;
-pub mod message;
 pub mod model;
-pub mod pricing;
 pub mod provider;
 pub mod registry;
-pub mod request;
-pub mod response;
 pub mod router;
 pub mod secret;
-pub mod usage;
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-pub mod http;
+pub mod transport;
 
 /// The providers that ship with this crate.
 pub mod providers;
@@ -35,14 +29,15 @@ pub mod providers;
 #[cfg_attr(docsrs, doc(cfg(feature = "testkit")))]
 pub mod testkit;
 
+pub use chat::{
+    ChatRequest, ChatResponse, ContentBlock, Effort, Generation, Message, Needs, Role, StopReason,
+    Thinking, ToolSchema,
+};
+pub use cost::{Micros, PriceBook, Priced, Rate, Usage, UsageCoverage};
 pub use error::{Error, Result};
-pub use message::{ContentBlock, Message, Role, StopReason};
 pub use model::{ModelCapabilities, ModelId, Reach};
-pub use pricing::{Micros, PriceBook, Priced, Rate};
 pub use provider::Provider;
 pub use registry::Registry;
-pub use request::{ChatRequest, Effort, Generation, Needs, Thinking, ToolSchema};
-pub use response::ChatResponse;
 pub use router::{Requirements, Route, Routed, Router};
 pub use secret::Secret;
-pub use usage::{Usage, UsageCoverage};
+pub use transport::{HttpRequest, HttpResponse, HttpTransport, Method};

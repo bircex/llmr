@@ -5,16 +5,16 @@ usage you can trust.
 
 ```toml
 [dependencies]
-llmr = "0.1"
+llmr = { version = "0.1", features = ["reqwest"] }
 ```
 
 ```rust,no_run
-use llmr::providers::anthropic::Anthropic;
+use llmr::providers::api::anthropic;
 use llmr::{ChatRequest, Message, Provider};
 use std::time::Duration;
 
 # async fn example() -> llmr::Result<()> {
-let claude = Anthropic::from_env(Duration::from_secs(60))?;
+let claude = anthropic::from_env(Duration::from_secs(60))?;
 
 let reply = claude
     .chat(ChatRequest::new("claude-sonnet-5", vec![Message::user("Hello")]))
@@ -24,6 +24,9 @@ println!("{}", reply.text());
 # Ok(())
 # }
 ```
+
+The `reqwest` feature is the bundled HTTP client. Without it you get both protocols and
+supply your own transport, which costs 52 crates instead of 250.
 
 ## What this is for
 
@@ -143,11 +146,16 @@ configured and simply never needed.
 
 ## Providers
 
-| Provider | Feature | Reach | Covers |
+| Module | Feature | Reach | Covers |
 |---|---|---|---|
-| `anthropic` | `anthropic` | first party API | Anthropic Messages API |
-| `openai` | `openai` | you say | Any endpoint speaking OpenAI chat completions |
-| `cli` | `cli` | local CLI | A vendor command line tool as a subprocess |
+| `providers::api::anthropic` | `anthropic` | first party API | Anthropic Messages |
+| `providers::api::openai` | `openai` | you say | Anything speaking OpenAI chat completions |
+| `providers::cli::claude` | `cli` | local CLI | The Claude Code tool |
+| `providers::cli::codex` | `cli` | local CLI | The Codex tool |
+
+They are grouped by how they are reached rather than by vendor, because that is the
+difference that matters: what a provider can carry, what it reports, and whose credential
+pays all follow from it.
 
 The OpenAI provider is written against a shape rather than a vendor. OpenAI, Groq, Together,
 Fireworks, vLLM, Ollama, LM Studio, OpenRouter and LiteLLM all answer at
@@ -157,11 +165,41 @@ one provider covers them all.
 The reach is given rather than guessed, because a model on your laptop and a hosted API look
 identical from here and are not the same place for your data to go.
 
-Each provider is behind a feature, so a program that only reaches a local tool does not build
-an HTTP client and a TLS stack.
+## Features
+
+| Feature | Crates | What you get |
+|---|---:|---|
+| `anthropic`, `openai` | 52 | Both protocols. You supply the transport |
+| `+ reqwest` | 250 | And a bundled client, with `from_env` |
+| `cli` alone | 53 | A local tool as a subprocess, no network code |
+| `testkit` | 52 | The contract suite for your own providers |
+
+The first two are on by default. `reqwest` is not, because almost every program already has
+an HTTP client and adding this crate should not add two hundred more.
 
 ```toml
 llmr = { version = "0.1", default-features = false, features = ["cli"] }
+```
+
+## Adding a provider
+
+The transport, the credential, the status codes and the error mapping are shared. A provider
+supplies only the part that differs.
+
+For something over the network, implement `providers::api::Protocol`: what URL, what headers,
+what JSON goes out, what comes back. There is no client in it and nowhere to hold state, so a
+protocol is a set of pure functions and the shared machinery does the rest.
+
+For a command line tool, there is not even that. `providers::cli::LocalCli` does the spawning,
+the deadline, the kill on drop and the difference between a missing binary and a silent one.
+A vendor preset is a program name, its arguments, and the shape of what it prints:
+
+```rust,no_run
+use llmr::providers::cli::{claude, codex};
+use std::time::Duration;
+
+let tool = claude::provider(Duration::from_secs(300)).serving(["claude-sonnet-5"]);
+let other = codex::provider(Duration::from_secs(300)).serving(["gpt-5.3-codex"]);
 ```
 
 ## Concurrency

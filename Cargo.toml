@@ -13,15 +13,20 @@ categories    = ["api-bindings", "asynchronous"]
 exclude       = ["/.github"]
 
 [features]
+# Both protocols, and no HTTP client. You supply a transport, which almost every program
+# already has: adding this crate should not add 200 more.
 default = ["anthropic", "openai"]
 
-# Providers. Each one pulls only what it needs.
-anthropic = ["http"]
-openai    = ["http"]
-cli       = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/time"]
+# Protocol translations. These are pure functions over JSON and pull nothing.
+anthropic = []
+openai    = []
 
-# The shared HTTP transport, and a reqwest implementation of it.
-http = ["dep:reqwest"]
+# A command line tool as a subprocess. No network code at all.
+cli = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/time"]
+
+# The bundled `reqwest` transport, and the `from_env` constructors that need one. Opt in
+# when you would rather not wire your own client.
+reqwest = ["dep:reqwest"]
 
 # The contract suite, for anyone writing a provider of their own.
 testkit = []
@@ -42,21 +47,22 @@ async-trait = "0.1"
 # An example that needs a provider is not built when that provider is off. Cargo's own
 # mechanism rather than a cfg attribute inside the file, so `cargo run --example` also
 # reports the missing feature instead of building an empty binary.
+# Every example reaches something, so each needs the bundled client as well as a protocol.
 [[example]]
 name              = "ask"
-required-features = ["anthropic"]
+required-features = ["anthropic", "reqwest"]
 
 [[example]]
 name              = "what_it_cost"
-required-features = ["anthropic"]
+required-features = ["anthropic", "reqwest"]
 
 [[example]]
 name              = "anything_openai_shaped"
-required-features = ["openai"]
+required-features = ["openai", "reqwest"]
 
 [[example]]
 name              = "routing"
-required-features = ["openai"]
+required-features = ["openai", "reqwest"]
 
 [package.metadata.docs.rs]
 all-features = true

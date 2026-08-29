@@ -1,6 +1,6 @@
 //! What you ask a model for.
 
-use crate::message::Message;
+use crate::chat::message::Message;
 use crate::model::ModelId;
 use serde::{Deserialize, Serialize};
 

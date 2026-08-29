@@ -23,11 +23,11 @@
 //! That line is what keeps the router useful to more than one program. A router that knew
 //! what a security review was would be one only its author could use.
 
+use crate::chat::request::ChatRequest;
+use crate::chat::response::ChatResponse;
 use crate::error::{Error, Result};
 use crate::model::{ModelCapabilities, ModelId};
 use crate::provider::Provider;
-use crate::request::ChatRequest;
-use crate::response::ChatResponse;
 use std::sync::Arc;
 
 /// One way to reach one model.

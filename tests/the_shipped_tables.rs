@@ -6,7 +6,7 @@
 
 #![cfg(feature = "anthropic")]
 
-use llmr::providers::anthropic::{shipped_prices, shipped_registry};
+use llmr::providers::api::anthropic::{shipped_prices, shipped_registry};
 use llmr::{Micros, ModelId, Reach, Usage, UsageCoverage};
 
 #[test]

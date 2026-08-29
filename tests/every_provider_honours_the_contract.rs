@@ -6,11 +6,11 @@
 
 #![cfg(all(feature = "testkit", feature = "anthropic", feature = "openai"))]
 
-use llmr::http::{HttpRequest, HttpResponse, HttpTransport};
-use llmr::providers::anthropic::Anthropic;
-use llmr::providers::openai::OpenAiCompatible;
+use llmr::providers::api::anthropic;
+use llmr::providers::api::openai;
 use llmr::registry::{Entry, Registry};
 use llmr::testkit::assert_provider_contract;
+use llmr::transport::{HttpRequest, HttpResponse, HttpTransport};
 use llmr::{Reach, Secret};
 use std::sync::Arc;
 
@@ -50,7 +50,7 @@ verified_at = "2026-08-28"
 
 #[tokio::test]
 async fn the_anthropic_provider_honours_the_contract() {
-    let provider = Anthropic::new(
+    let provider = anthropic::with(
         always(serde_json::json!({
             "model": "claude-sonnet-5",
             "stop_reason": "end_turn",
@@ -66,7 +66,7 @@ async fn the_anthropic_provider_honours_the_contract() {
 
 #[tokio::test]
 async fn the_openai_shaped_provider_honours_the_contract() {
-    let provider = OpenAiCompatible::at(
+    let provider = openai::at(
         "test-endpoint",
         "https://example.invalid/v1",
         always(serde_json::json!({

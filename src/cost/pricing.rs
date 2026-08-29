@@ -1,7 +1,7 @@
 //! What a call cost, as dated data rather than a constant.
 
+use crate::cost::usage::{Usage, UsageCoverage};
 use crate::model::ModelId;
-use crate::usage::{Usage, UsageCoverage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

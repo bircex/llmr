@@ -1,16 +1,16 @@
-//! The providers that ship with this crate.
+//! The providers that ship with this crate, grouped by how they are reached.
 //!
-//! Each is behind a feature so that a build only compiles what it uses. A program that
-//! reaches a model through a local command line tool has no reason to build an HTTP client
-//! and a TLS stack.
+//! The split is not cosmetic. An API provider and a command line one differ in what they
+//! can carry, what they report, and whose credential pays, and those differences are what
+//! [`crate::Reach`] exists to name. Two directories keep the difference visible in the file
+//! tree rather than only in a doc comment.
+//!
+//! Each is behind a feature, so a program that only reaches a local tool does not build an
+//! HTTP client and a TLS stack.
 
-#[cfg(feature = "anthropic")]
-#[cfg_attr(docsrs, doc(cfg(feature = "anthropic")))]
-pub mod anthropic;
-
-#[cfg(feature = "openai")]
-#[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
-pub mod openai;
+#[cfg(any(feature = "anthropic", feature = "openai"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "anthropic", feature = "openai"))))]
+pub mod api;
 
 #[cfg(feature = "cli")]
 #[cfg_attr(docsrs, doc(cfg(feature = "cli")))]
