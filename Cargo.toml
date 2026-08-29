@@ -10,7 +10,7 @@ documentation = "https://docs.rs/llmr"
 readme        = "README.md"
 keywords      = ["llm", "anthropic", "openai", "ai", "provider"]
 categories    = ["api-bindings", "asynchronous"]
-exclude       = ["/.github"]
+exclude       = ["/.github", "/docs", "/ROADMAP.md"]
 
 [features]
 # Both protocols, and no HTTP client. You supply a transport, which almost every program

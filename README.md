@@ -289,6 +289,13 @@ audio or documents.
 **Model catalogues, mostly.** Only the OpenAI shaped provider implements `catalogue()`. The
 others answer `Error::Unsupported`, which is an answer and not an empty list.
 
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the rules the code is held to and how to add a
+provider. [docs/DESIGN.md](docs/DESIGN.md) says what was decided and why, which is worth
+reading before changing anything: several of the decisions look wrong until you know the
+reason. [ROADMAP.md](ROADMAP.md) is what is left before 0.1.
+
 ## License
 
 MIT. See [LICENSE](https://github.com/recepkizilarslan/llmr/blob/main/LICENSE).

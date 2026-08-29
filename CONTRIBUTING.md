@@ -3,6 +3,14 @@
 Thanks for looking. This is a small crate with a narrow job, and the rules below exist to
 keep it that way.
 
+## Read this first
+
+[docs/DESIGN.md](docs/DESIGN.md) is the reasoning behind the decisions in this crate. A good
+number of them look like something to tidy away until you know what breaks without them, and
+the tidying is the failure mode this crate is most exposed to.
+
+[ROADMAP.md](ROADMAP.md) is what is left before 0.1 and what each phase needs.
+
 ## What belongs here
 
 One question: how do I reach this model, and what did it cost.
@@ -38,9 +46,43 @@ yourself wanting one, that is worth discussing in an issue first.
 **Every public item is documented.** `missing_docs` is denied. Say what it is for, not what
 it is. "Returns the model id" is not documentation.
 
+## Where things live
+
+```
+src/
+  chat/          what a call is made of: message, request, response
+  cost/          what it consumed and what that is worth: usage, pricing
+  providers/
+    api/         over the network. ApiProvider + Protocol, then one file per shape
+    cli/         a local tool as a subprocess. LocalCli + Envelope, then one file per tool
+  model.rs       Reach, ModelId, ModelCapabilities
+  registry.rs    what a provider serves and what it can do
+  provider.rs    the one trait
+  router.rs      which provider a request goes to
+  transport.rs   the HTTP boundary, and a reqwest implementation of it
+  error.rs secret.rs testkit.rs
+```
+
+Grouped by how a model is reached, because that is the difference that matters: what a
+provider can carry, what it reports, and whose credential pays all follow from it.
+
+Everything else stays flat. A directory holding one file is a directory that exists to look
+organised.
+
 ## Writing a provider
 
-Implement `Provider`, then run the contract suite against it:
+You are almost certainly writing a **protocol** or a **preset**, not a client.
+
+For something over the network, implement `providers::api::Protocol`: what URL, what headers,
+what JSON goes out, what comes back. The transport, the credential, the status codes and the
+error mapping are `ApiProvider`'s. There is nowhere to hold state, and that is on purpose.
+
+For a command line tool, write a preset beside `providers::cli`: a program name, its
+arguments, and an `Envelope` saying where in its output the answer and the usage are. The
+spawning, the deadline, the kill on drop and the difference between a missing binary and a
+silent one are `LocalCli`'s.
+
+Then run the contract suite against it:
 
 ```rust,no_run
 # #[cfg(feature = "testkit")]
