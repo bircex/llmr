@@ -77,16 +77,26 @@ pub enum ContentBlock {
 }
 
 impl ContentBlock {
-    /// The text of this block, when it has any.
+    /// The text a caller may read as the answer.
     ///
-    /// A thinking block returns its reasoning, which is usually not what you want to show
-    /// a user. Check the variant when the difference matters.
-    pub fn text(&self) -> Option<&str> {
+    /// `None` for everything else. Reasoning and opaque blocks are not answers however
+    /// much they look like prose, and a single `text()` that returned both is a method
+    /// somebody uses to fill a screen with the model's private working out.
+    pub fn answer_text(&self) -> Option<&str> {
         match self {
             ContentBlock::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The reasoning in this block, when it is a thinking block.
+    ///
+    /// Separate from [`ContentBlock::answer_text`] on purpose. Asking for reasoning is a
+    /// deliberate act, and it should read like one at the call site.
+    pub fn reasoning(&self) -> Option<&str> {
+        match self {
             ContentBlock::Thinking { text, .. } => Some(text),
-            ContentBlock::ToolResult { content, .. } => Some(content),
-            ContentBlock::ToolUse { .. } | ContentBlock::Opaque { .. } => None,
+            _ => None,
         }
     }
 }
@@ -121,10 +131,7 @@ impl Message {
     pub fn text(&self) -> String {
         self.content
             .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
+            .filter_map(ContentBlock::answer_text)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -211,12 +218,47 @@ mod tests {
         let back: ContentBlock =
             serde_json::from_str(&json).unwrap_or(ContentBlock::Text("lost".into()));
         assert_eq!(block, back);
-        assert_eq!(block.text(), None, "an opaque block is not an answer");
+        assert_eq!(
+            block.answer_text(),
+            None,
+            "an opaque block is not an answer"
+        );
     }
 
     #[test]
     fn waiting_for_a_tool_is_complete() {
         assert!(StopReason::ToolUse.is_complete());
+    }
+
+    #[test]
+    fn reasoning_is_not_an_answer() {
+        // The trap this pair exists to remove. One method returning both is one a caller
+        // uses to put the model's private working out on a screen.
+        let thinking = ContentBlock::Thinking {
+            text: "the user probably means".into(),
+            signature: None,
+        };
+        assert_eq!(thinking.answer_text(), None);
+        assert_eq!(thinking.reasoning(), Some("the user probably means"));
+
+        let answer = ContentBlock::Text("Here it is.".into());
+        assert_eq!(answer.answer_text(), Some("Here it is."));
+        assert_eq!(answer.reasoning(), None);
+    }
+
+    #[test]
+    fn joining_text_leaves_out_the_reasoning() {
+        let turn = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    text: "let me work this out".into(),
+                    signature: None,
+                },
+                ContentBlock::Text("Four.".into()),
+            ],
+        };
+        assert_eq!(turn.text(), "Four.");
     }
 
     #[test]

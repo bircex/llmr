@@ -54,6 +54,10 @@ required-features = ["anthropic"]
 name              = "anything_openai_shaped"
 required-features = ["openai"]
 
+[[example]]
+name              = "routing"
+required-features = ["openai"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

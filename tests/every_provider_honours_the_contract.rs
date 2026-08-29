@@ -88,18 +88,34 @@ async fn the_openai_shaped_provider_honours_the_contract() {
 #[tokio::test]
 #[cfg(feature = "cli")]
 async fn the_local_command_line_provider_honours_the_contract() {
-    // `cat` reads the prompt and prints it back. Not a model, and enough to check the
-    // shape: a reply arrives, it says which model served it, and usage comes back absent
-    // rather than as zeros.
-    use llmr::providers::cli::LocalCli;
+    // Through a scripted runner rather than a real command. `cat` would work here and not
+    // on Windows, and a suite that fails on one platform for a reason unrelated to the code
+    // is a suite people learn to ignore.
+    use llmr::providers::cli::{LocalCli, ProcessOutput, ProcessRunner};
     use std::time::Duration;
 
+    struct Answers;
+
+    #[async_trait::async_trait]
+    impl ProcessRunner for Answers {
+        async fn run(
+            &self,
+            _program: &str,
+            _args: &[String],
+            _stdin: &str,
+            _timeout: Duration,
+        ) -> llmr::Result<ProcessOutput> {
+            Ok(ProcessOutput::new(Some(0), b"ok".to_vec()))
+        }
+    }
+
     let provider = LocalCli::new(
-        "cat-as-a-model",
-        "cat",
+        "scripted-cli",
+        "a-tool",
         [] as [&str; 0],
         Duration::from_secs(10),
     )
+    .with_runner(Arc::new(Answers))
     .serving(["any-model"]);
 
     assert_provider_contract(&provider, "any-model").await;

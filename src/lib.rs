@@ -7,6 +7,9 @@
 #![deny(clippy::unimplemented)]
 #![warn(clippy::missing_errors_doc)]
 #![warn(clippy::missing_panics_doc)]
+// The bans above are about the library. A test that cannot panic cannot assert, so they are
+// lifted inside `#[cfg(test)]` and nowhere else.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod error;
@@ -17,6 +20,7 @@ pub mod provider;
 pub mod registry;
 pub mod request;
 pub mod response;
+pub mod router;
 pub mod secret;
 pub mod usage;
 
@@ -39,5 +43,6 @@ pub use provider::Provider;
 pub use registry::Registry;
 pub use request::{ChatRequest, Effort, Generation, Needs, Thinking, ToolSchema};
 pub use response::ChatResponse;
+pub use router::{Requirements, Route, Routed, Router};
 pub use secret::Secret;
 pub use usage::{Usage, UsageCoverage};

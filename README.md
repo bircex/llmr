@@ -90,6 +90,57 @@ assert_eq!(Usage::absent().coverage(), UsageCoverage::Absent);
 A cost built from partial usage says so too, so a total can be honest about what it does not
 know.
 
+## Routing
+
+A bag of providers is not a layer. `Router` is what makes it one: describe what a request
+needs, and it picks something that can serve it, in the order you chose, falling through when
+one is unreachable.
+
+```rust,no_run
+use llmr::{Requirements, Route, Router};
+# use std::sync::Arc;
+# async fn example(local: Arc<dyn llmr::Provider>, hosted: Arc<dyn llmr::Provider>) -> llmr::Result<()> {
+let router = Router::new(vec![
+    Route::new(local, "llama3"),
+    Route::new(hosted, "claude-sonnet-5"),
+]);
+
+let request = llmr::ChatRequest::new("", vec![llmr::Message::user("Summarise this.")]);
+
+// Read what the request needs, then add what only your program knows.
+let routed = router
+    .chat(request.clone(), Requirements::of(&request).on_device())
+    .await?;
+
+println!("{} answered", routed.route);
+# Ok(())
+# }
+```
+
+It routes on three things and no others: what the request needs, where the data may go, and
+the order you gave. There is nothing in here about a task being a security review or a
+summary, because that is a fact about your system rather than about a model. A router that
+knew what a security review was would be one only its author could use.
+
+Two behaviours are worth knowing before you rely on it.
+
+**A privacy floor is a floor, not a preference.** `Requirements::on_device()` means a hosted
+provider is never tried, even when every local one is down. A fallback that ignored it would
+send a customer record to a vendor the first time something was slow, and every log line
+about it would say the call succeeded.
+
+**A refusal stops.** When a model declines, the next one is not asked the same question.
+That is shopping a policy decision around until something agrees, and it is what you get by
+accident if refusals are treated like any other error.
+
+`Routed::fell_through` lists what was tried first and why each one did not answer. It is
+empty on the common path, and a non empty list on a *successful* call is a provider degrading
+while nothing is failing.
+
+`Router::unusable()` reports routes no request can ever select, which is almost always a typo
+in a model name. Worth calling at startup, because otherwise it looks like a fallback that is
+configured and simply never needed.
+
 ## Providers
 
 | Provider | Feature | Reach | Covers |
@@ -172,8 +223,9 @@ so re-pricing the past is a choice rather than an accident.
 
 ## What this crate does not do
 
-It does not choose a model for you. Picking one for a task is policy over your own fleet, and
-that belongs where your roles and your rules are.
+It does not decide what your work needs. `Router` picks a provider that meets a set of
+requirements; deciding that a code review needs reasoning and a commit message does not is
+policy over your own system, and it belongs where your roles and your rules are.
 
 It is not an agent framework. No tool loop, no memory, no orchestration. It answers one
 question: how do I reach this model, and what did it cost.

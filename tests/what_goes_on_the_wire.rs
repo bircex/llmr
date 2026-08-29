@@ -595,7 +595,11 @@ async fn a_block_this_crate_does_not_model_survives_the_round_trip() {
         "the block was dropped: {:?}",
         reply.message.content
     );
-    assert_eq!(kept.and_then(|b| b.text()), None, "it is not an answer");
+    assert_eq!(
+        kept.and_then(|b| b.answer_text()),
+        None,
+        "it is not an answer"
+    );
 
     // And back out again, byte for byte.
     let transport = Recorded::replying(200, anthropic_reply());
