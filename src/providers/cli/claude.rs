@@ -26,6 +26,10 @@ pub fn envelope() -> Envelope {
 /// It knows no models until you name them. A command line tool cannot be asked what it
 /// serves, so a provider that answered for every name would turn a typo into a real model.
 ///
+/// [`llmr::Provider::validate`](crate::Provider::validate) probes with `--version`, which
+/// establishes that the tool is installed and nothing about the login inside it. That is all
+/// this tool answers for free, and a `Ready` from here should be read as no more than that.
+///
 /// ```no_run
 /// use llmr::providers::cli::claude;
 /// use llmr::{ChatRequest, Message, Provider};
@@ -50,4 +54,5 @@ pub fn provider(timeout: Duration) -> LocalCli {
     )
     .reading(envelope())
     .with_model_flag("--model")
+    .with_probe(["--version"])
 }

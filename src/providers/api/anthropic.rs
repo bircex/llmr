@@ -88,6 +88,14 @@ impl Protocol for Messages {
         format!("{base_url}/v1/messages")
     }
 
+    /// The model list, beside the messages endpoint and under the same version.
+    ///
+    /// Built from the base URL the same way `chat_url` is, so a base URL that already
+    /// carries a path does not produce one with `/v1` in it twice.
+    fn catalogue_url(&self, base_url: &str) -> Option<String> {
+        Some(format!("{base_url}/v1/models"))
+    }
+
     fn headers(&self, key: &Secret) -> Result<Vec<(String, String)>> {
         let key = key
             .expose_str()
@@ -177,6 +185,26 @@ impl Protocol for Messages {
             response = response.with_stop_details(sequence);
         }
         Ok(response)
+    }
+
+    /// `{"data": [{"type": "model", "id": "...", "display_name": "...", ...}], ...}`.
+    ///
+    /// Only the id is read. The display name is for a person and changes on the vendor's
+    /// schedule, and the created date is not what anything here routes on.
+    fn read_catalogue(&self, body: &Value) -> Result<Vec<ModelId>> {
+        // A body with no `data` array is unreadable rather than an empty list. An empty
+        // list is the vendor saying it serves nothing, which is a fact a caller would act
+        // on, and this is the crate failing to read a reply.
+        let mut ids: Vec<ModelId> = body
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Unreadable("the model list had no data array".into()))?
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str))
+            .map(ModelId::from)
+            .collect();
+        ids.sort();
+        Ok(ids)
     }
 }
 

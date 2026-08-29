@@ -27,7 +27,7 @@ use crate::chat::request::ChatRequest;
 use crate::chat::response::ChatResponse;
 use crate::error::{Error, Result};
 use crate::model::{ModelCapabilities, ModelId};
-use crate::provider::Provider;
+use crate::provider::{Access, Provider};
 use std::sync::Arc;
 
 /// One way to reach one model.
@@ -201,6 +201,36 @@ impl Router {
         self.routes
             .iter()
             .map(|route| (route.name(), route.capabilities()))
+    }
+
+    /// Asks every route whether it can be reached, once, at startup.
+    ///
+    /// The other half of [`Router::unusable`]. That one catches a route whose provider does
+    /// not know its model, which is a typo. This catches the route whose credential was
+    /// rejected, whose tool is not installed, or whose account cannot reach the model, which
+    /// are the same question asked of the outside world.
+    ///
+    /// One entry per route, named as [`Route::name`] writes it, in the order the routes were
+    /// given. No route is dropped: a [`Access::Denied`] one stays selectable, exactly as
+    /// [`crate::Registry::stale`] reports a row and does not remove it. Pruning on the
+    /// strength of a check is a decision somebody should make, and an [`Access::Unknown`] is
+    /// not grounds for it at all.
+    ///
+    /// # Where to call it
+    ///
+    /// At startup, beside `unusable`, and nowhere near [`Router::chat`]. Validating per
+    /// request doubles every round trip to learn something that was almost always true, and
+    /// the answer would be stale by the time the request went out anyway.
+    ///
+    /// Routes are asked one after another rather than together. This runs once, against a
+    /// handful of providers, and running them concurrently would mean a join primitive and
+    /// an assumption about the runtime for a saving nobody can measure.
+    pub async fn preflight(&self) -> Vec<(String, Access)> {
+        let mut reached = Vec::with_capacity(self.routes.len());
+        for route in &self.routes {
+            reached.push((route.name(), route.provider.validate(&route.model).await));
+        }
+        reached
     }
 
     /// Sends a request to the first route that can serve it.

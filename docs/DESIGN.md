@@ -53,6 +53,83 @@ for, and paying for it. Nothing in the reply says so.
 
 ---
 
+## Whether you can reach it has three answers, not two
+
+`Provider::validate` asks whether a request would be accepted, before there is a request.
+
+```rust
+Access::Ready              // checked, and nothing was found that would stop a call
+Access::Denied { reason }  // the provider was asked and said no
+Access::Unknown { why }    // it could not be established
+```
+
+`Unknown` is the answer a boolean loses, and it is the one that matters. A tool that is not
+installed is denied. A network that happened to be down while the check ran is not. Both
+become `false`, and the second one takes a working provider out of a router for a reason that
+had cleared before anybody read the log.
+
+It is the same rule as `Usage`. What nobody measured is absent rather than zero, and what
+nobody established is unknown rather than denied.
+
+**If this were a bool**, one flaky minute at startup would strike a healthy provider off the
+list, and every line of the log would say the check ran.
+
+---
+
+## `validate` returns an answer rather than a `Result`
+
+It cannot fail. Every way of failing to find out is `Access::Unknown`.
+
+The alternative has two channels carrying the same meaning: an `Err(Transient)` and an
+`Unknown { why }` both say nobody knows, and a caller then has to handle both, so it will
+handle one. Deciding which failures are "could not check" and which are "no" is this crate's
+job, because it is the crate that knows a 401 is settled and a 503 is not.
+
+The mapping therefore lives in one place. A rejected credential, a missing program and a model
+the vendor does not list are `Denied`. A timeout, a rate limit, a server fault, an
+unreadable body and a provider with nothing free to ask are `Unknown`.
+
+---
+
+## A check that costs a call is a check nobody runs
+
+`validate` may not send a billable request. A provider with a model list asks for the list. A
+command line provider asks the program whether it is there. Nothing generates a token.
+
+A preflight that spends money gets called once, then wrapped in a flag, then skipped.
+
+Nothing caches the answer either. A credential rotates, a subscription lapses, an entitlement
+is granted, and a validated-once flag is a claim about a moment that has passed. Providers
+hold no state anyway, which is what makes this easy rather than tempting.
+
+`Router::preflight` is where it belongs: once at startup, beside `unusable`, and not on the
+path a request takes. Validating per call doubles every round trip to learn something that was
+almost always true.
+
+---
+
+## `Ready` says what was checked, not what will happen
+
+A check that costs nothing cannot prove everything, and how much it proves depends on the
+reach.
+
+An API provider that asked for the model list has established the credential and the
+entitlement, because those are what that endpoint answers with. A command line tool that ran
+and printed its version has established that it is installed, and nothing at all about the
+login inside it, because no vendor tool offers a free way to ask. A `Ready` from a CLI
+provider is therefore a weaker claim than a `Ready` from an API one, and
+`LocalCli::with_probe` exists for a tool that does have a sign in check worth running.
+
+**This is said out loud** because the alternative is a caller reading `Ready` as a guarantee.
+It is the absence of a known blocker, which is all a free check can be, and it is still the
+difference between finding out at startup and finding out in production.
+
+A model the provider does not know is never `Ready`. That is the failure the contract suite
+already caught once, where a provider claiming to know every model name turns a typo into a
+real model.
+
+---
+
 ## Usage that was never reported is absent, not zero
 
 `Usage` fields are all `Option`, and `UsageCoverage` travels with them.
@@ -253,6 +330,13 @@ If you add a struct outside code must build, give it a constructor in the same c
 A suite only outsiders have to pass is a suite nobody inside is held to. It has already earned
 this: applying it caught the command line provider claiming to know every model name, which
 turns a typo into a real model.
+
+`assert_a_bad_credential_is_denied` is a second entry point rather than part of the main
+suite, because the suite cannot break your credential for you: only you can build the
+provider with the wrong key. It is worth the extra call it asks of you. A provider that
+reports a rejected key as `Unknown` reads as "ask again later", so a router keeps that
+provider and a retry loop keeps trying it, and the one failure a person has to fix is the one
+that never surfaces.
 
 ---
 

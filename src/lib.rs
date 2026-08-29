@@ -36,7 +36,7 @@ pub use chat::{
 pub use cost::{Micros, PriceBook, Priced, Rate, Usage, UsageCoverage};
 pub use error::{Error, Result};
 pub use model::{ModelCapabilities, ModelId, Reach};
-pub use provider::Provider;
+pub use provider::{Access, Provider};
 pub use registry::Registry;
 pub use router::{Requirements, Route, Routed, Router};
 pub use secret::Secret;

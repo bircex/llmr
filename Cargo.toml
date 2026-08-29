@@ -64,6 +64,10 @@ required-features = ["openai", "reqwest"]
 name              = "routing"
 required-features = ["openai", "reqwest"]
 
+[[example]]
+name              = "is_it_reachable"
+required-features = ["openai", "reqwest"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

@@ -13,9 +13,9 @@ As of commit `b9add1b`.
 
 | | |
 |---|---:|
-| Source | 4,577 lines across 23 files |
-| Tests | 124 passing |
-| Public items | 180 |
+| Source | 5,555 lines across 23 files |
+| Tests | 174 passing |
+| Public items | 189 |
 | Dependency tree, default features | 52 crates |
 | Published | no |
 | CI on GitHub | has never run, see phase 4 |
@@ -56,6 +56,27 @@ shape of what it prints.
 
 **Adding this crate used to cost 250 crates and now costs 52.** The providers never needed
 `reqwest`; only `from_env` did. Protocols and the bundled client are separate features.
+
+---
+
+## Phase 1b — reachability · **done**
+
+`capabilities` said what a model could do and nothing said whether you could reach it, so the
+only way to find out was to send a request and read the failure. That costs a call and it
+happens in production.
+
+`Provider::validate` answers `Access`: `Ready`, `Denied` or `Unknown`. Three rather than
+two, because a network that was down while the check ran is not a provider that refused, and
+a boolean collapses them. `Router::preflight` asks every route once at startup, reports, and
+prunes nothing.
+
+It cost the Anthropic provider a `catalogue()` implementation, which is what it now asks for
+free, and the command line providers a `with_probe`. The contract suite checks both halves,
+and `assert_a_bad_credential_is_denied` is a second entry point because the suite cannot
+break your credential for you.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the four decisions in it, and
+`cargo run --example is_it_reachable` for what it prints.
 
 ---
 
@@ -211,5 +232,6 @@ Not planned in detail, and roughly in this order.
 
 ## Things known to be missing, said in the README
 
-Streaming, retries, images, embeddings, and model catalogues on everything except the OpenAI
-shape. If you fix one, take it out of the README's list in the same commit.
+Streaming, retries, images, embeddings, and a model catalogue on the command line providers,
+which cannot be asked what they serve. If you fix one, take it out of the README's list in
+the same commit.
