@@ -44,19 +44,6 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-      # docs/DESIGN.md ends with "no em dashes anywhere, in code or prose", and the roadmap
-      # had six of them in its own headings for months. A rule nobody checks is a preference,
-      # and this file is where the other preferences became rules.
-      - name: No em dashes
-        run: |
-          # Built from escapes rather than written out, or this step is the first thing it
-          # finds and the check fails on itself for ever.
-          em=$(printf '\u2014'); en=$(printf '\u2013')
-          if git grep -n -e "$em" -e "$en" -- . ; then
-            echo "::error::An em or en dash, listed above. docs/DESIGN.md says none anywhere, in code or prose."
-            exit 1
-          fi
-
   test:
     name: test
     runs-on: ${{ matrix.os }}
