@@ -38,7 +38,7 @@ because a lint can fire under one feature set and not another.
 
 ---
 
-## Phase 1 — structure and the dependency floor · **done**
+## Phase 1: structure and the dependency floor · **done**
 
 Two things that are cheap before publish and breaking after it.
 
@@ -59,7 +59,7 @@ shape of what it prints.
 
 ---
 
-## Phase 1b — reachability · **done**
+## Phase 1b: reachability · **done**
 
 `capabilities` said what a model could do and nothing said whether you could reach it, so the
 only way to find out was to send a request and read the failure. That costs a call and it
@@ -80,7 +80,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the four decisions in it, and
 
 ---
 
-## Phase 2 — streaming · **next**
+## Phase 2: streaming · **next**
 
 The largest gap, and the reason it is before publish rather than after: it changes the shape
 of `Provider`, so doing it in 0.2 breaks every implementation written against 0.1.
@@ -128,7 +128,7 @@ compiles and still answers.
 
 ---
 
-## Phase 3 — retries and observability
+## Phase 3: retries and observability
 
 ### Retries
 
@@ -166,7 +166,7 @@ and a call with the feature off emits nothing.
 
 ---
 
-## Phase 4 — the pipeline, actually running
+## Phase 4: the pipeline, actually running
 
 `.github/workflows/ci.yml` covers formatting, three clippy passes, docs with warnings denied,
 tests on three operating systems, every feature built alone, and the stated minimum Rust
@@ -196,7 +196,7 @@ open.
 
 ---
 
-## Phase 5 — 0.1.0
+## Phase 5: 0.1.0
 
 ### The public surface
 
