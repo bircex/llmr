@@ -4,13 +4,13 @@
 //! ANTHROPIC_API_KEY=... cargo run --example what_it_cost
 //! ```
 
-use llmr::providers::api::anthropic;
+use llmr::providers::anthropic;
 use llmr::{ChatRequest, Message, Provider, UsageCoverage};
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let claude = anthropic::from_env(Duration::from_secs(60))?;
+    let claude = anthropic::api::from_env(Duration::from_secs(60))?;
 
     let reply = claude
         .chat(
@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("model reported: {}", reply.model);
     println!("usage:          {:?}", reply.usage.coverage());
 
-    let prices = anthropic::shipped_prices();
+    let prices = anthropic::api::shipped_prices();
     match prices.price(&reply.model, &reply.usage) {
         Some(priced) => {
             println!("cost:           {} {}", priced.amount, prices.currency);

@@ -4,7 +4,7 @@
 //! ANTHROPIC_API_KEY=... cargo run --example ask -- "what is a monad"
 //! ```
 
-use llmr::providers::api::anthropic;
+use llmr::providers::anthropic;
 use llmr::{ChatRequest, Message, Provider};
 use std::time::Duration;
 
@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "Say hello in one sentence.".to_string());
 
-    let claude = anthropic::from_env(Duration::from_secs(60))?;
+    let claude = anthropic::api::from_env(Duration::from_secs(60))?;
 
     let reply = claude
         .chat(

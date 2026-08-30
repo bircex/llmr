@@ -9,19 +9,20 @@ reason.
 
 ## Where it stands
 
-As of commit `d30640f`.
+As of streaming landing on top of reachability.
 
 | | |
 |---|---:|
-| Source | 5,555 lines across 23 files |
-| Tests | 174 passing |
+| Source | 7,071 lines across 26 files |
+| Tests | 197 passing |
 | Public items | 189 |
-| Dependency tree, default features | 52 crates |
+| Dependency tree, default features | 30 crates |
 | Published | no |
 | CI on GitHub | runs, and is green as of phase 4 |
 
 Everything below is green: `cargo fmt --check`, clippy under three feature combinations,
-`cargo doc` with warnings denied, every feature built alone, and the full test suite.
+`cargo doc` with warnings denied under two feature sets, every feature built alone, and the
+full test suite.
 
 ```sh
 cargo fmt --all -- --check
@@ -29,15 +30,19 @@ cargo clippy --all-features --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --all-features
 ```
 
-Run all six before any commit, and run them on the toolchain in `rust-toolchain.toml` rather
-than whatever a laptop happens to have. That file is the reason these commands mean the same
-thing here as on a runner; without it they passed on 1.97 and failed on 1.98 for months.
+Run all seven before any commit, and run them on the toolchain in `rust-toolchain.toml`
+rather than whatever a laptop happens to have. That file is the reason these commands mean
+the same thing here as on a runner; without it they passed on 1.97 and failed on 1.98 for
+months.
 
 The third one catches more than it looks like it should, because a lint can fire under one
-feature set and not another.
+feature set and not another. The sixth is there for the same reason: a doc link to a feature
+gated item resolves under `--all-features` and nowhere else, so the all-features pass alone
+cannot see one that is broken.
 
 ---
 
@@ -45,11 +50,18 @@ feature set and not another.
 
 Two things that are cheap before publish and breaking after it.
 
-**The tree follows how a model is reached.** `providers/api/` and `providers/cli/` are
-separate because the difference between them is what `Reach` exists to name: what a provider
-can carry, what it reports, and whose credential pays. `chat/` is what a call is made of,
+**The tree separates what is shared from what is chosen.** `providers/api/` and
+`providers/cli/` hold the machinery, which follows the reach because reach is what decides
+how a model is spoken to. `providers/anthropic/` and `providers/openai/` hold the providers,
+which follow the vendor because that is what a caller picks — and because the same models
+turn up behind more than one reach, so putting the Messages API and Claude Code two
+directories apart hid a choice rather than presenting it. `chat/` is what a call is made of,
 `cost/` is what it consumed and what that is worth. Everything else is flat, deliberately: a
 directory holding one file is a directory that exists to look organised.
+
+This does not make `Reach` a directory. It is a runtime value on `ModelCapabilities`, which
+is the only form a caller can read before sending, and the only form that could ever have
+answered "may this prompt go there".
 
 **A provider writes a protocol, not a client.** `ApiProvider` does the transport, the
 credential, the status codes and the error mapping. A vendor supplies `Protocol`: what URL,
@@ -57,7 +69,7 @@ what headers, what JSON goes out, what comes back. On the command line side `Loc
 the spawning and the deadline, and a vendor preset is a program name, its arguments, and the
 shape of what it prints.
 
-**Adding this crate used to cost 250 crates and now costs 52.** The providers never needed
+**Adding this crate used to cost 105 crates and now costs 30.** The providers never needed
 `reqwest`; only `from_env` did. Protocols and the bundled client are separate features.
 
 ---
@@ -83,7 +95,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the four decisions in it, and
 
 ---
 
-## Phase 2: streaming · **next**
+## Phase 2: streaming · **done**
 
 The largest gap, and the reason it is before publish rather than after: it changes the shape
 of `Provider`, so doing it in 0.2 breaks every implementation written against 0.1.
@@ -93,11 +105,13 @@ of `Provider`, so doing it in 0.2 breaks every implementation written against 0.
 A second method on `Provider`:
 
 ```rust
-async fn stream(&self, request: ChatRequest) -> Result<BoxStream<'_, Result<Event>>>;
+async fn stream(&self, request: ChatRequest) -> Result<EventStream<'_>>;
 ```
 
-with a default implementation that calls `chat` and yields the whole reply as one event, so
-an existing provider still compiles and still works.
+with a default implementation that calls `chat` and yields the whole reply as one burst, so
+an existing provider still compiles and still works. `EventStream` is a boxed
+`futures_core::Stream`; `futures-core` is one crate with no dependencies of its own, and
+`futures` proper would have pulled a combinator stack this crate has no use for.
 
 An `Event` carries a delta rather than a whole message: text appended, a thinking block
 opened, a tool call accumulating, the stop reason, and finally usage.
@@ -131,7 +145,7 @@ compiles and still answers.
 
 ---
 
-## Phase 3: retries and observability
+## Phase 3: retries and observability · **next**
 
 ### Retries
 
@@ -171,9 +185,9 @@ and a call with the feature off emits nothing.
 
 ## Phase 4: the pipeline, actually running
 
-`.github/workflows/ci.yml` covers formatting, three clippy passes, docs with warnings denied,
-tests on three operating systems, every feature built alone, and the stated minimum Rust
-version. Every one of those passes locally.
+`.github/workflows/ci.yml` covers formatting, three clippy passes, docs with warnings denied
+under two feature sets, tests on three operating systems, every feature built alone, and the
+stated minimum Rust version. Every one of those passes locally.
 
 **It runs. The diagnosis that used to be written here was wrong**, and the wrong part is
 worth keeping because it is the interesting bit: this section said every job finished in three
@@ -238,9 +252,9 @@ Not planned in detail, and roughly in this order.
 
 | | Why it is not before 0.1 |
 |---|---|
-| Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl and adds nothing breaking |
+| Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl under its own vendor directory, and adds nothing breaking |
 | Images and other input | `ContentBlock` gains a variant. It is `#[non_exhaustive]`, so this is additive |
-| More CLI presets | Gemini CLI and whatever else appears. A preset is a file |
+| More CLI presets | Gemini CLI and whatever else appears. A preset is a file, and it goes beside its vendor's other reaches |
 | Cost accumulation | `Usage::merge` exists; a ledger over a run does not. Additive |
 | Embeddings | A different question from chat, and arguably a different crate |
 

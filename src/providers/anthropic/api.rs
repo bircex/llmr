@@ -16,13 +16,14 @@
 //! cache, and the cached parts separately. That is exactly what [`crate::Usage`] means, so
 //! nothing is adjusted here. The OpenAI shape does adjust, and says so.
 
-use super::{ApiProvider, Protocol};
+use crate::chat::stream::Event;
 use crate::chat::{
     ChatRequest, ChatResponse, ContentBlock, Effort, Message, Role, StopReason, Thinking,
 };
 use crate::cost::Usage;
 use crate::error::{Error, Result};
 use crate::model::{ModelId, Reach};
+use crate::providers::api::{ApiProvider, Protocol, SseFrame};
 use crate::registry::Registry;
 use crate::secret::Secret;
 use crate::transport::HttpTransport;
@@ -206,6 +207,136 @@ impl Protocol for Messages {
         ids.sort();
         Ok(ids)
     }
+
+    fn stream_body(&self, request: &ChatRequest) -> Result<Option<Value>> {
+        let mut body = self.body(request)?;
+        body["stream"] = json!(true);
+        Ok(Some(body))
+    }
+
+    fn read_event(&self, frame: &SseFrame, _asked_for: &ModelId) -> Result<Vec<Event>> {
+        // The frame type is on the `event:` line here, and repeated inside the JSON. The
+        // line is what the format says is authoritative, so that is what this reads.
+        let Some(body) = frame.json() else {
+            // Anthropic sends no non JSON frames. One that arrives is a frame this code
+            // cannot read, and dropping it silently loses whatever it carried.
+            return Err(Error::Unreadable(format!(
+                "a frame that was not JSON: {}",
+                frame.data.chars().take(120).collect::<String>()
+            )));
+        };
+
+        Ok(match frame.event.as_str() {
+            // Carries the model and the prompt half of the usage. The output half comes in
+            // `message_delta` at the end, and `Transcript` merges the two.
+            "message_start" => {
+                let message = body.get("message");
+                let mut events = Vec::new();
+                if let Some(model) = message.and_then(|m| m.get("model")).and_then(Value::as_str) {
+                    events.push(Event::Started {
+                        model: ModelId::from(model),
+                    });
+                }
+                let usage = read_usage(message.and_then(|m| m.get("usage")));
+                if usage.coverage() != crate::cost::UsageCoverage::Absent {
+                    events.push(Event::Metered(usage));
+                }
+                events
+            }
+
+            "content_block_start" => match body.get("content_block") {
+                Some(block) => match block.get("type").and_then(Value::as_str) {
+                    // Text and thinking open empty and are filled by deltas. Nothing to
+                    // emit: an empty delta would add a block the model has not spoken into.
+                    Some("text") | Some("thinking") => Vec::new(),
+                    Some("tool_use") => vec![Event::ToolUseStarted {
+                        id: block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        name: block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    }],
+                    // Redacted reasoning and anything added after this was written. Kept
+                    // verbatim, exactly as the non streamed reader keeps it: a block
+                    // dropped here is a continuation the provider rejects.
+                    Some(kind) => vec![Event::Opaque {
+                        kind: kind.to_string(),
+                        raw: block.clone(),
+                    }],
+                    None => Vec::new(),
+                },
+                None => Vec::new(),
+            },
+
+            "content_block_delta" => match body.get("delta") {
+                Some(delta) => match delta.get("type").and_then(Value::as_str) {
+                    Some("text_delta") => text_of(delta, "text").map(Event::TextDelta),
+                    Some("thinking_delta") => text_of(delta, "thinking").map(Event::ThinkingDelta),
+                    // The proof for the thinking block that just ended. Losing this is not
+                    // visible now; it is visible one turn later, when the provider rejects
+                    // the history it is missing from.
+                    Some("signature_delta") => {
+                        text_of(delta, "signature").map(Event::ThinkingSignature)
+                    }
+                    Some("input_json_delta") => {
+                        text_of(delta, "partial_json").map(Event::ToolArgumentsDelta)
+                    }
+                    _ => None,
+                }
+                .into_iter()
+                .collect(),
+                None => Vec::new(),
+            },
+
+            // The stop reason, and the output half of the usage.
+            "message_delta" => {
+                let mut events = Vec::new();
+                let delta = body.get("delta");
+                if let Some(reason) = delta.and_then(|d| d.get("stop_reason")) {
+                    // A null stop_reason means "not yet", which is not a stop.
+                    if !reason.is_null() {
+                        events.push(Event::Stopped {
+                            reason: read_stop(reason.as_str()),
+                            details: delta
+                                .and_then(|d| d.get("stop_sequence"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                        });
+                    }
+                }
+                let usage = read_usage(body.get("usage"));
+                if usage.coverage() != crate::cost::UsageCoverage::Absent {
+                    events.push(Event::Metered(usage));
+                }
+                events
+            }
+
+            // An error mid stream. The provider is telling us the rest is not coming, and
+            // saying so is the difference between a truncated answer and a known failure.
+            "error" => {
+                return Err(Error::Transient(format!(
+                    "the stream stopped: {}",
+                    body.get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("no reason given")
+                )))
+            }
+
+            // `content_block_stop`, `message_stop`, `ping`. Nothing a caller needs.
+            _ => Vec::new(),
+        })
+    }
+}
+
+/// One string field of a delta, when it is there and is a string.
+fn text_of(delta: &Value, field: &str) -> Option<String> {
+    delta.get(field).and_then(Value::as_str).map(str::to_string)
 }
 
 /// The API takes a token budget and this crate takes a named level.

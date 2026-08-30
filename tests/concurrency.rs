@@ -16,7 +16,7 @@
 
 #![cfg(feature = "anthropic")]
 
-use llmr::providers::api::anthropic;
+use llmr::providers::anthropic;
 use llmr::transport::{HttpRequest, HttpResponse, HttpTransport};
 use llmr::{ChatRequest, Message, Provider, Reach, Registry, Secret};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -63,8 +63,8 @@ impl HttpTransport for Slow {
     }
 }
 
-fn provider(transport: Arc<Slow>) -> Arc<anthropic::Anthropic> {
-    Arc::new(anthropic::with(
+fn provider(transport: Arc<Slow>) -> Arc<anthropic::api::Anthropic> {
+    Arc::new(anthropic::api::with(
         transport,
         Secret::new("key", "sk-test"),
         Arc::new(Registry::empty("anthropic", Reach::FirstPartyApi)),
@@ -182,7 +182,7 @@ async fn one_call_failing_does_not_take_the_others_with_it() {
         }
     }
 
-    let shared = Arc::new(anthropic::with(
+    let shared = Arc::new(anthropic::api::with(
         Arc::new(SometimesBroken {
             calls: AtomicUsize::new(0),
         }),

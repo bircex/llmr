@@ -35,11 +35,15 @@ testkit = []
 
 [dependencies]
 async-trait = "0.1"
+# The `Stream` trait and nothing else. There is no `Stream` in std yet, and `stream` on
+# `Provider` has to name one. `futures-core` is a single crate with no dependencies of its
+# own; `futures` proper would pull the combinator stack this crate has no use for.
+futures-core = "0.3"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 thiserror   = "2"
 toml        = "1.1"
-reqwest     = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+reqwest     = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio       = { version = "1", optional = true, default-features = false }
 
 [dev-dependencies]

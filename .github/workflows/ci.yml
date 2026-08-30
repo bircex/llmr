@@ -39,8 +39,16 @@ jobs:
 
       # Docs are part of the deliverable. A broken intra doc link ships to docs.rs and
       # stays there until the next release.
-      - name: Documentation
+      - name: Documentation, all features
         run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      # And again with the default set, because a link to a feature gated item resolves
+      # under `--all-features` and nowhere else. That is the only build where it is
+      # invisible, and it is the build this job used to be.
+      - name: Documentation, default features
+        run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 

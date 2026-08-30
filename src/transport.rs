@@ -7,7 +7,16 @@
 
 use crate::{Error, Result};
 use async_trait::async_trait;
+use futures_core::Stream;
+use std::pin::Pin;
 use std::time::Duration;
+
+/// A reply arriving in pieces.
+///
+/// Chunks as the network hands them over, with no promise about where the boundaries fall.
+/// A chunk is not a line and not a frame: reassembling those is the caller's job, which for
+/// this crate means [`crate::providers::api::ApiProvider`].
+pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Vec<u8>>> + Send + 'static>>;
 
 /// Which HTTP verb.
 ///
@@ -151,6 +160,44 @@ pub trait HttpTransport: Send + Sync {
     /// failing status code is still `Ok`, because reading the status is
     /// [`HttpResponse::check`]'s job and a provider may want the body first.
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse>;
+
+    /// Sends one request and hands back the reply as it arrives.
+    ///
+    /// The default sends it the ordinary way and yields the whole body as a single chunk,
+    /// so a transport written before this method existed still compiles and still works.
+    /// What it costs is the streaming: everything arrives at once, at the end.
+    ///
+    /// Unlike [`HttpTransport::send`], the status is checked here, before any bytes are
+    /// handed over. A caller reading a stream has nowhere to put a 429 once the first chunk
+    /// has already been consumed as content.
+    ///
+    /// # Errors
+    ///
+    /// A transport error, or whatever [`HttpResponse::check`] makes of a failing status. A
+    /// failure *after* the first chunk arrives is an `Err` item inside the stream instead.
+    async fn send_streaming(&self, request: HttpRequest) -> Result<ByteStream> {
+        let response = self.send(request).await?;
+        response.check()?;
+        Ok(Box::pin(Whole {
+            chunk: Some(response.body),
+        }))
+    }
+}
+
+/// A body that was never really streamed, as a stream of one chunk.
+struct Whole {
+    chunk: Option<Vec<u8>>,
+}
+
+impl Stream for Whole {
+    type Item = Result<Vec<u8>>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::task::Poll::Ready(self.chunk.take().map(Ok))
+    }
 }
 
 /// An [`HttpTransport`] backed by `reqwest`.
@@ -225,6 +272,96 @@ impl HttpTransport for Reqwest {
             status,
             body,
             retry_after,
+        })
+    }
+
+    async fn send_streaming(&self, request: HttpRequest) -> Result<ByteStream> {
+        let mut builder = match request.method {
+            Method::Get => self.client.get(&request.url),
+            Method::Post => self.client.post(&request.url).body(request.body),
+        };
+        for (name, value) in &request.headers {
+            builder = builder.header(name, value);
+        }
+
+        let response = builder.send().await.map_err(|e| {
+            if e.is_timeout() {
+                Error::Timeout {
+                    elapsed: Duration::ZERO,
+                }
+            } else {
+                Error::Transient(e.to_string())
+            }
+        })?;
+
+        // The status, before a single byte is handed on. Once a caller is reading chunks as
+        // content there is nowhere left to put a 429, and the body of an error reply would
+        // arrive looking like an answer.
+        let status = response.status().as_u16();
+        if !(200..=299).contains(&status) {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .map(Duration::from_secs);
+            let body = response
+                .bytes()
+                .await
+                .map(|b| b.to_vec())
+                .unwrap_or_default();
+            return Err(
+                match (HttpResponse {
+                    status,
+                    body,
+                    retry_after,
+                })
+                .check()
+                {
+                    Err(e) => e,
+                    // Unreachable: `check` returns `Ok` only for a 2xx, and this branch is the
+                    // one where the status was not. Written out rather than unwrapped because
+                    // the crate does not panic, not even where it cannot happen.
+                    Ok(()) => Error::Transient(format!("{status}: not a success and not an error")),
+                },
+            );
+        }
+
+        Ok(Box::pin(Chunks {
+            inner: Box::pin(response.bytes_stream()),
+        }))
+    }
+}
+
+/// `reqwest`'s byte stream, with its error type mapped to this crate's.
+///
+/// Generic over the chunk type so this file never has to name `bytes::Bytes`, which would
+/// mean depending on `bytes` directly to say one word.
+#[cfg(feature = "reqwest")]
+struct Chunks<S> {
+    inner: Pin<Box<S>>,
+}
+
+#[cfg(feature = "reqwest")]
+impl<S, B> Stream for Chunks<S>
+where
+    S: Stream<Item = reqwest::Result<B>>,
+    B: AsRef<[u8]>,
+{
+    type Item = Result<Vec<u8>>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.get_mut().inner.as_mut().poll_next(cx).map(|chunk| {
+            chunk.map(|chunk| {
+                chunk
+                    .map(|bytes| bytes.as_ref().to_vec())
+                    // A stream that breaks halfway is transient rather than unreadable: the
+                    // bytes that arrived were fine, the connection was not.
+                    .map_err(|e| Error::Transient(format!("reading the stream: {e}")))
+            })
         })
     }
 }

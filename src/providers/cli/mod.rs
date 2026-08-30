@@ -1,4 +1,8 @@
-//! Vendor command line tools, used as providers.
+//! The machinery every vendor command line tool shares.
+//!
+//! Nothing vendor specific lives here. The tools themselves are under their vendor —
+//! `providers::anthropic::cli`, `providers::openai::cli` — because that is
+//! what a caller picks. This is what a contributor builds on.
 //!
 //! # One runner, many tools
 //!
@@ -7,7 +11,8 @@
 //! A vendor supplies only what differs, which is the program name, its arguments, and the
 //! shape of what it prints.
 //!
-//! Those live in one module each, beside this one. Adding a tool is a preset, not a client.
+//! That is a preset, not a client, and it is why the vendor files are forty lines. Adding a
+//! tool means writing one and putting it under the vendor it belongs to.
 //!
 //! # Why this is a provider and not a client
 //!
@@ -29,9 +34,6 @@
 //!
 //! Absent is the important one. A subscription tool has no per call price, and writing zero
 //! would turn an unknown cost into a free one in every report that adds it up.
-
-pub mod claude;
-pub mod codex;
 
 use crate::chat::message::{ContentBlock, Message, Role, StopReason};
 use crate::chat::request::ChatRequest;
@@ -241,7 +243,9 @@ pub struct LocalCli {
     serves: std::collections::BTreeSet<String>,
     runner: Arc<dyn ProcessRunner>,
     envelope: Option<Envelope>,
-    probe: Option<Vec<String>>,
+    /// Crate visible so a vendor preset's own tests can assert it shipped with one. Not
+    /// public: an accessor widened for a test is public surface forever.
+    pub(crate) probe: Option<Vec<String>>,
 }
 
 /// How long a probe may take before it is given up on.
@@ -793,6 +797,17 @@ mod tests {
         .unwrap_or_default()
     }
 
+    /// The envelope `an_envelope` writes, spelled out here rather than borrowed from a
+    /// vendor preset.
+    ///
+    /// These tests are about the reader, not about any one tool. Reaching into
+    /// `anthropic::cli` for its envelope would make a failure in the shared machinery look
+    /// like a failure in a vendor's preset, and would point the wrong way besides: presets
+    /// are built on this module, not the other way round.
+    fn an_envelope_reader() -> Envelope {
+        Envelope::at("/result").with_usage("/usage", UsageNames::anthropic())
+    }
+
     #[tokio::test]
     async fn an_envelope_yields_the_answer_rather_than_the_document() {
         // Without this the caller is handed a JSON document where a sentence was expected,
@@ -801,7 +816,7 @@ mod tests {
             Some(0),
             an_envelope("Four."),
         ))))
-        .reading(claude::envelope());
+        .reading(an_envelope_reader());
 
         let reply = cli.chat(request()).await.expect("a reply");
         assert_eq!(reply.text(), "Four.");
@@ -815,7 +830,7 @@ mod tests {
             Some(0),
             an_envelope("Four."),
         ))))
-        .reading(claude::envelope());
+        .reading(an_envelope_reader());
 
         let usage = cli
             .chat(request())
@@ -834,7 +849,7 @@ mod tests {
             Some(0),
             b"just some words".to_vec(),
         ))))
-        .reading(claude::envelope());
+        .reading(an_envelope_reader());
 
         let refused = cli.chat(request()).await;
         assert!(matches!(refused, Err(Error::Unreadable(_))), "{refused:?}");
@@ -847,7 +862,7 @@ mod tests {
         let bare =
             serde_json::to_vec(&serde_json::json!({ "result": "Four." })).unwrap_or_default();
         let cli =
-            cli(Scripted::new(Ok(ProcessOutput::new(Some(0), bare)))).reading(claude::envelope());
+            cli(Scripted::new(Ok(ProcessOutput::new(Some(0), bare)))).reading(an_envelope_reader());
 
         let usage = cli
             .chat(request())
@@ -1069,13 +1084,5 @@ mod tests {
         let seen = runner.0.lock().map(|s| s.clone()).unwrap_or_default();
         let (_, _, deadline) = seen.first().cloned().unwrap_or_default();
         assert_eq!(deadline, Duration::from_secs(2));
-    }
-
-    #[tokio::test]
-    async fn the_shipped_presets_are_probed() {
-        // A preset that shipped without one would answer unknown for every user who never
-        // read this far, which is the same as not having the method.
-        assert!(claude::provider(Duration::from_secs(60)).probe.is_some());
-        assert!(codex::provider(Duration::from_secs(60)).probe.is_some());
     }
 }

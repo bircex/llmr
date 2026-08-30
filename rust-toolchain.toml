@@ -1,11 +1,11 @@
 # The toolchain this crate is developed and checked against, named rather than floating.
 #
-# CI asked for `stable`, which is whatever stable is that morning. ROADMAP.md says to run six
+# CI asked for `stable`, which is whatever stable is that morning. ROADMAP.md says to run seven
 # commands before any commit and they all passed locally on 1.97, while every run on GitHub
 # since 2026-08-20 failed: 1.98 added `clippy::manual_slice_fill` and the crate had not
 # changed at all. Green locally meant nothing, which is worse than no check.
 #
-# Pinning it here means rustup gives everyone the same compiler, so the six commands mean the
+# Pinning it here means rustup gives everyone the same compiler, so the seven commands mean the
 # same thing on a laptop as on a runner. Raising it is a commit somebody makes on purpose,
 # with whatever new lints it brings fixed in the same change. The weekly job in ci.yml is what
 # tells you a bump is waiting.

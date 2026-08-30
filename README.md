@@ -9,12 +9,12 @@ llmr = { version = "0.1", features = ["reqwest"] }
 ```
 
 ```rust,no_run
-use llmr::providers::api::anthropic;
+use llmr::providers::anthropic;
 use llmr::{ChatRequest, Message, Provider};
 use std::time::Duration;
 
 # async fn example() -> llmr::Result<()> {
-let claude = anthropic::from_env(Duration::from_secs(60))?;
+let claude = anthropic::api::from_env(Duration::from_secs(60))?;
 
 let reply = claude
     .chat(ChatRequest::new("claude-sonnet-5", vec![Message::user("Hello")]))
@@ -26,7 +26,7 @@ println!("{}", reply.text());
 ```
 
 The `reqwest` feature is the bundled HTTP client. Without it you get both protocols and
-supply your own transport, which costs 52 crates instead of 250.
+supply your own transport, which costs 30 crates instead of 105.
 
 ## What this is for
 
@@ -192,31 +192,45 @@ that was rejected and the tool that is not installed.
 
 | Module | Feature | Reach | Covers |
 |---|---|---|---|
-| `providers::api::anthropic` | `anthropic` | first party API | Anthropic Messages |
-| `providers::api::openai` | `openai` | you say | Anything speaking OpenAI chat completions |
-| `providers::cli::claude` | `cli` | local CLI | The Claude Code tool |
-| `providers::cli::codex` | `cli` | local CLI | The Codex tool |
+| `providers::anthropic::api` | `anthropic` | first party API | Anthropic Messages |
+| `providers::anthropic::cli` | `cli` | local CLI | The Claude Code tool |
+| `providers::openai::api` | `openai` | you say | Anything speaking OpenAI chat completions |
+| `providers::openai::cli` | `cli` | local CLI | The Codex tool |
 
-They are grouped by how they are reached rather than by vendor, because that is the
-difference that matters: what a provider can carry, what it reports, and whose credential
-pays all follow from it.
+They are grouped by vendor and then by reach, because which vendor is what you know first
+and the same models turn up behind more than one reach. Anthropic's are reachable over the
+API and through Claude Code, and those two differ in what they can carry rather than in what
+they are, so the choice belongs in one place.
+
+Grouping this way does not soften what `Reach` is for. It is still the axis that decides
+where your data goes and whose credential pays, and it still travels on `capabilities()`
+where a caller can read it before sending. A module path could never be read that way:
+`anthropic::api` and `anthropic::cli` are the same vendor and the same models, and they are
+not the same place for a prompt to go.
 
 The OpenAI provider is written against a shape rather than a vendor. OpenAI, Groq, Together,
 Fireworks, vLLM, Ollama, LM Studio, OpenRouter and LiteLLM all answer at
 `/v1/chat/completions` with the same envelope, so the base URL is a constructor argument and
-one provider covers them all.
+one provider covers them all. It sits under `openai` because that is what the ecosystem
+calls the shape, not because reaching Ollama is reaching OpenAI.
 
-The reach is given rather than guessed, because a model on your laptop and a hosted API look
-identical from here and are not the same place for your data to go.
+Which is why it is the one provider whose reach you supply. Everywhere else the module
+settles it; there a model on your laptop and a hosted API look identical from here and are
+not the same place for your data to go.
 
 ## Features
 
 | Feature | Crates | What you get |
 |---|---:|---|
-| `anthropic`, `openai` | 52 | Both protocols. You supply the transport |
-| `+ reqwest` | 250 | And a bundled client, with `from_env` |
-| `cli` alone | 53 | A local tool as a subprocess, no network code |
-| `testkit` | 52 | The contract suite for your own providers |
+| `anthropic`, `openai` | 30 | Both protocols. You supply the transport |
+| `+ reqwest` | 105 | And a bundled client, with `from_env` |
+| `cli` alone | 30 | A local tool as a subprocess, no network code |
+| `testkit` | 30 | The contract suite for your own providers |
+
+Counted as distinct crates compiled — `cargo tree` output with duplicate nodes collapsed.
+These read 52 and 250 until somebody checked: those were `cargo tree | wc -l`, which counts
+a crate once for every dependent that reaches it. The ratio was about right and every figure
+was not.
 
 The first two are on by default. `reqwest` is not, because almost every program already has
 an HTTP client and adding this crate should not add two hundred more.
@@ -230,20 +244,26 @@ llmr = { version = "0.1", default-features = false, features = ["cli"] }
 The transport, the credential, the status codes and the error mapping are shared. A provider
 supplies only the part that differs.
 
+Note where the two live. What is *shared* is under the reach, because reach is what decides
+how a model is spoken to. What is *chosen* is under the vendor, because that is what a caller
+picks. So you build on `providers::api` and `providers::cli`, and what you write lands beside
+`providers::anthropic` and `providers::openai`.
+
 For something over the network, implement `providers::api::Protocol`: what URL, what headers,
 what JSON goes out, what comes back. There is no client in it and nowhere to hold state, so a
 protocol is a set of pure functions and the shared machinery does the rest.
 
 For a command line tool, there is not even that. `providers::cli::LocalCli` does the spawning,
 the deadline, the kill on drop and the difference between a missing binary and a silent one.
-A vendor preset is a program name, its arguments, and the shape of what it prints:
+A vendor preset is a program name, its arguments, and the shape of what it prints, which is
+why the vendor files are forty lines:
 
 ```rust,no_run
-use llmr::providers::cli::{claude, codex};
+use llmr::providers::{anthropic, openai};
 use std::time::Duration;
 
-let tool = claude::provider(Duration::from_secs(300)).serving(["claude-sonnet-5"]);
-let other = codex::provider(Duration::from_secs(300)).serving(["gpt-5.3-codex"]);
+let tool = anthropic::cli::provider(Duration::from_secs(300)).serving(["claude-sonnet-5"]);
+let other = openai::cli::provider(Duration::from_secs(300)).serving(["gpt-5.3-codex"]);
 ```
 
 ## Concurrency
@@ -290,6 +310,45 @@ cargo run --example anything_openai_shaped
 The last one needs no key. It sets up three very different endpoints through one provider
 and asks each what it serves, which is the quickest way to see what `Reach` is for.
 
+## Streaming
+
+`chat` waits for the whole reply. `stream` hands it over as it arrives.
+
+```rust,no_run
+use llmr::chat::stream::Transcript;
+# async fn example(p: &impl llmr::Provider, request: llmr::ChatRequest) -> llmr::Result<()> {
+let mut transcript = Transcript::new(request.model.clone());
+let outcome = transcript.drain(p.stream(request).await?).await;
+
+let reply = transcript.finish();
+if let Err(cut_short) = outcome {
+    // What arrived is still yours, and the reply says it did not finish.
+    eprintln!("stopped early: {cut_short}");
+}
+# Ok(())
+# }
+```
+
+Every provider answers `stream`. One that cannot really stream sends the finished reply as a
+single burst, which is an answer rather than a refusal — the same text, the same usage, just
+all at once. Ask `capabilities()` which pairings do it for real, or set
+`Requirements::streaming()` and let the router pick one.
+
+Three things are easy to get wrong here and are handled rather than left to you.
+
+**Usage arrives last, and absent is still not zero.** A stream reports its token counts in
+the final frame. One cut off before that reports what really arrived and `None` for the rest,
+never a zero standing in for a number nobody sent. The OpenAI shape is asked for usage
+explicitly, because it sends none otherwise.
+
+**Reasoning keeps its signature.** A thinking block assembled from deltas ends up with the
+provider's signature attached. Without it the *next* turn is rejected, which is a long way
+from the mistake.
+
+**A stream that breaks is not a call that failed.** `Transcript::drain` returns the error and
+leaves the transcript intact, so what arrived, that the turn did not finish, and why are three
+separate answers rather than one guess.
+
 ## Model tables and prices
 
 `Registry` holds what a model can do. `PriceBook` holds what it costs. Both carry where the
@@ -315,11 +374,6 @@ question: how do I reach this model, and what did it cost.
 ## What is not here yet
 
 Said plainly, because finding a gap by hitting it is worse than reading about it.
-
-**Streaming.** `chat` sends a request and waits for the whole reply. There is no token by
-token API. If you are building something a person watches, this will feel slow, and no
-workaround here will fix it. It changes the shape of the `Provider` trait, so it is a version
-rather than a patch.
 
 **Retries.** `Error::is_retryable` tells you a failure was not your fault and not permanent.
 Nothing acts on it. That is deliberate for now: a retry is safe or not depending on your

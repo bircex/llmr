@@ -4,7 +4,7 @@
 //! [`crate::Reach::LocalCli`] rather than self hosted: the credential is local and the data
 //! is not.
 
-use super::{Envelope, LocalCli, UsageNames};
+use crate::providers::cli::{Envelope, LocalCli, UsageNames};
 use std::time::Duration;
 
 /// The program this preset runs.
@@ -31,12 +31,12 @@ pub fn envelope() -> Envelope {
 /// this tool answers for free, and a `Ready` from here should be read as no more than that.
 ///
 /// ```no_run
-/// use llmr::providers::cli::claude;
+/// use llmr::providers::anthropic::cli;
 /// use llmr::{ChatRequest, Message, Provider};
 /// use std::time::Duration;
 ///
 /// # async fn example() -> llmr::Result<()> {
-/// let claude = claude::provider(Duration::from_secs(300))
+/// let claude = cli::provider(Duration::from_secs(300))
 ///     .serving(["claude-sonnet-5"]);
 ///
 /// let reply = claude
@@ -55,4 +55,19 @@ pub fn provider(timeout: Duration) -> LocalCli {
     .reading(envelope())
     .with_model_flag("--model")
     .with_probe(["--version"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_preset_is_probed() {
+        // A preset that shipped without one would answer unknown for every user who never
+        // read this far, which is the same as not having the method at all.
+        //
+        // This lives here rather than in `providers::cli` because it is a fact about this
+        // preset, not about the runner. The runner's tests are about the runner.
+        assert!(provider(Duration::from_secs(60)).probe.is_some());
+    }
 }

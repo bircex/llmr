@@ -8,7 +8,7 @@
 //! you are watching is the difference between a settled no and a question that could not be
 //! answered.
 
-use llmr::providers::api::openai;
+use llmr::providers::openai;
 use llmr::{transport::Reqwest, Access, Provider, Reach, Registry, Route, Router, Secret};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // A model on this machine, and a hosted one. Neither is running, so the answers below
     // come from the two ways that can happen.
-    let local = Arc::new(openai::at(
+    let local = Arc::new(openai::api::at(
         "ollama",
         "http://localhost:11434/v1",
         Arc::clone(&transport) as Arc<dyn llmr::transport::HttpTransport>,
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(shelf("llama3", Reach::SelfHosted)),
     ));
 
-    let hosted = Arc::new(openai::at(
+    let hosted = Arc::new(openai::api::at(
         "vendor",
         "https://api.example.invalid/v1",
         transport,

@@ -7,7 +7,7 @@
 //! Needs no key and reaches nothing. Both providers are unreachable on purpose, which is
 //! what makes the last case worth watching.
 
-use llmr::providers::api::openai;
+use llmr::providers::openai;
 use llmr::{
     transport::Reqwest, Message, Provider, Reach, Registry, Requirements, Route, Router, Secret,
 };
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // A model on this machine, and a hosted one. Same protocol, completely different places
     // for your data to go, and only you can say which is which.
-    let local = Arc::new(openai::at(
+    let local = Arc::new(openai::api::at(
         "ollama",
         "http://localhost:11434/v1",
         Arc::clone(&transport) as Arc<dyn llmr::transport::HttpTransport>,
@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(shelf("llama3", Reach::SelfHosted)),
     ));
 
-    let hosted = Arc::new(openai::at(
+    let hosted = Arc::new(openai::api::at(
         "vendor",
         "https://api.example.invalid/v1",
         transport,

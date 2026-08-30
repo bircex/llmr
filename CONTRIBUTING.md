@@ -53,8 +53,10 @@ src/
   chat/          what a call is made of: message, request, response
   cost/          what it consumed and what that is worth: usage, pricing
   providers/
-    api/         over the network. ApiProvider + Protocol, then one file per shape
-    cli/         a local tool as a subprocess. LocalCli + Envelope, then one file per tool
+    api/         the shared machinery for reaching over the network: ApiProvider + Protocol
+    cli/         the shared machinery for a subprocess: LocalCli + Envelope
+    anthropic/   api.rs the Messages protocol, cli.rs the Claude Code preset
+    openai/      api.rs the chat completions shape, cli.rs the Codex preset
   model.rs       Reach, ModelId, ModelCapabilities
   registry.rs    what a provider serves and what it can do
   provider.rs    the one trait
@@ -63,8 +65,13 @@ src/
   error.rs secret.rs testkit.rs
 ```
 
-Grouped by how a model is reached, because that is the difference that matters: what a
-provider can carry, what it reports, and whose credential pays all follow from it.
+Two groupings, doing two jobs. **What is shared follows the reach**, because reach is what
+decides how a model is spoken to: everything an API provider does apart from writing JSON is
+identical, and so is everything a subprocess does apart from its arguments. **What is chosen
+follows the vendor**, because that is what a caller picks, and the same models turn up behind
+more than one reach.
+
+So `anthropic/api.rs` and `anthropic/cli.rs` are short. The engine is not in them.
 
 Everything else stays flat. A directory holding one file is a directory that exists to look
 organised.
@@ -77,10 +84,15 @@ For something over the network, implement `providers::api::Protocol`: what URL, 
 what JSON goes out, what comes back. The transport, the credential, the status codes and the
 error mapping are `ApiProvider`'s. There is nowhere to hold state, and that is on purpose.
 
-For a command line tool, write a preset beside `providers::cli`: a program name, its
+For a command line tool, write a preset on `providers::cli::LocalCli`: a program name, its
 arguments, and an `Envelope` saying where in its output the answer and the usage are. The
 spawning, the deadline, the kill on drop and the difference between a missing binary and a
 silent one are `LocalCli`'s.
+
+Either one goes in a file under the vendor whose model it reaches — `providers::<vendor>::api`
+or `providers::<vendor>::cli` — beside whatever other reaches that vendor already has. A new
+vendor is a new directory with a `mod.rs` saying which reaches it has and what each one can
+carry, since a caller comparing two of them is the reason the directory exists.
 
 Then run the contract suite against it:
 

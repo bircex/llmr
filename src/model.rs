@@ -140,6 +140,11 @@ pub struct ModelCapabilities {
     pub prompt_caching: bool,
     /// Whether the model can be asked to reason before answering.
     pub thinking: bool,
+    /// Whether the reply can be read as it arrives rather than all at once.
+    ///
+    /// A fact about the pairing, not the model. A command line tool that prints one JSON
+    /// document when it finishes cannot stream whatever model is behind it.
+    pub streaming: bool,
     /// Where this pairing runs.
     pub reach: Reach,
 }
@@ -157,6 +162,7 @@ impl ModelCapabilities {
             structured_output: false,
             prompt_caching: false,
             thinking: false,
+            streaming: false,
             reach,
         }
     }
@@ -194,6 +200,13 @@ impl ModelCapabilities {
     #[must_use]
     pub fn with_thinking(mut self) -> Self {
         self.thinking = true;
+        self
+    }
+
+    /// Says the reply can be read as it arrives.
+    #[must_use]
+    pub fn with_streaming(mut self) -> Self {
+        self.streaming = true;
         self
     }
 }
