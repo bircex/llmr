@@ -602,6 +602,16 @@ factor of ten.
 `Micros::exact()` writes six places rather than two. Rounding a per call cost to cents turns
 most calls into zero, and a column of zeros adds up to nothing.
 
+**And an integer is not money until something says which money.** `Micros` adds whether or
+not the two amounts are in the same currency, so `Priced` carries the code from the book that
+produced it, `Ledger::total` answers `None` when a run mixes them, and `Ledger::totals` gives
+one figure per currency instead.
+
+There is no exchange rate in this crate, and adding one would be the same mistake the rest of
+this section avoids: a rate has a date and a source exactly like a price does, and one
+invented so that a method could return a single number would produce a figure nobody could
+audit. A caller who wants one total across currencies has to say which rate, as of when.
+
 ---
 
 ## Public structs are `#[non_exhaustive]`, so they have constructors

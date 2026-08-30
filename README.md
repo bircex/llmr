@@ -434,10 +434,12 @@ let mut ledger = Ledger::new();
 ledger.record(api, Some(book));
 ledger.record(through_a_tool, None);   // a subscription tool has no price row
 
-let total = ledger.total();
 assert_eq!(ledger.calls(), 2);
 assert_eq!(ledger.unpriced(), 1);
-assert!(!total.is_exact());             // so the figure is a floor, and says so
+
+// `None` would mean the run mixes currencies. It does not, so there is a figure.
+let total = ledger.total().expect("one book, so one currency");
+assert!(!total.is_exact());             // but the figure is a floor, and says so
 # }
 ```
 
@@ -446,6 +448,12 @@ than a number and a flag, because a flag is something a caller can forget to rea
 unpriced call is still counted: "forty calls, thirty of them priced" is a different sentence
 from "thirty calls". And pricing happens once, at the moment of recording, so a table updated
 next week cannot rewrite what a call cost last week.
+
+**A sum needs one currency.** `Micros` is an integer and two of them add whether or not they
+are the same money, so `Priced` carries the code its book was written in, `total` answers
+`None` when a run mixes them, and `totals` gives one figure per currency instead. There is no
+exchange rate in here: a rate has a date and a source exactly like a price does, and one
+invented to make a method return a number would produce a figure nobody could audit.
 
 ## What this crate does not do
 

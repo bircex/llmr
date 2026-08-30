@@ -212,6 +212,12 @@ mod rows {
 pub struct Priced {
     /// The amount.
     pub amount: Micros,
+    /// What the amount is denominated in, copied from the book that priced it.
+    ///
+    /// An ISO code such as `USD`. [`Micros`] is a bare integer and two of them add whatever
+    /// they are: without this field a ledger holding one call priced in dollars and one in
+    /// euros would produce a number that is neither.
+    pub currency: String,
     /// Which price book edition produced it.
     pub book: String,
     /// How complete the usage behind it was.
@@ -279,6 +285,7 @@ impl PriceBook {
 
         Some(Priced {
             amount: Micros(amount),
+            currency: self.currency.clone(),
             book: self.id.clone(),
             coverage: usage.coverage(),
         })
@@ -339,6 +346,7 @@ mod tests {
             .price(&"test-model".into(), &usage)
             .unwrap_or(Priced {
                 amount: Micros(0),
+                currency: "none".into(),
                 book: "none".into(),
                 coverage: UsageCoverage::Absent,
             });
@@ -346,6 +354,22 @@ mod tests {
         assert_eq!(priced.exact_for_test(), "18.000000");
         assert_eq!(priced.book, "test-2026-08");
         assert_eq!(priced.coverage, UsageCoverage::Exact);
+    }
+
+    #[test]
+    fn a_priced_call_says_what_the_amount_is_denominated_in() {
+        // Without it, adding two costs from two books produces a number in no currency at
+        // all. The book already knows; this is that fact travelling with the amount.
+        let usage = Usage {
+            output_tokens: Some(1_000_000),
+            ..Usage::absent()
+        };
+        assert_eq!(
+            book()
+                .price(&"test-model".into(), &usage)
+                .map(|p| p.currency),
+            Some("USD".to_string())
+        );
     }
 
     #[test]

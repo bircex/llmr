@@ -9,13 +9,13 @@ reason.
 
 ## Where it stands
 
-As of Bedrock landing, which is the last provider before 0.1.
+As of the currency fix, after Bedrock, which was the last provider before 0.1.
 
 | | |
 |---|---:|
-| Source | 9,044 lines across 33 files |
-| Tests | 254 passing |
-| Public items | 6,128 all in, 1,209 hand written · see below |
+| Source | 9,267 lines across 33 files |
+| Tests | 261 passing |
+| Public items | 6,209 all in, 1,277 hand written · see below |
 | Dependency tree, default features | 31 crates |
 | Published | no |
 | CI on GitHub | runs, and is green as of phase 4 |
@@ -29,13 +29,19 @@ number twice with no method at all — this file said 180 and issue #19 said 189
 could be compared to anything. Both come from:
 
 ```sh
-cargo +nightly public-api --all-features
+cargo +nightly public-api --all-features | wc -l
+cargo +nightly public-api --all-features \
+  --omit blanket-impls,auto-trait-impls,auto-derived-impls | wc -l
 ```
 
-6,128 is every public item, dominated by the trait implementations `derive` writes. 1,209 is
-that with derive-generated trait methods filtered out, which is roughly what a reader of the
-docs meets. Either is fine. Using the same one next time is what matters, and after 0.1.0
-`cargo public-api --diff` answers the better question anyway.
+6,209 is every public item, dominated by the trait implementations `derive` writes. 1,277 is
+that with them omitted, which is roughly what a reader of the docs meets. Either is fine.
+Using the same one next time is what matters, and after 0.1.0 `cargo public-api --diff`
+answers the better question anyway.
+
+The flags are written down here because the previous pair of numbers, 6,128 and 1,209, was
+measured before Bedrock landed and left in a table captioned as though it were not. A stated
+method that nobody re-runs is a stated method for one commit.
 
 ```sh
 cargo fmt --all -- --check
@@ -258,8 +264,11 @@ narrowing after publish is breaking and widening never is. Done once (#19); what
 - The provider helpers were already private. `read_block`, `wire_message`, `budget` and their
   neighbours are translation details and none of them was ever exposed.
 - Four types that a caller reads or builds gained `#[non_exhaustive]`: `Priced`, `ToolSchema`,
-  `Attempted` and `UsageNames`, with constructors for the two that callers build. `Priced` is
-  the pointed one — it has no currency field yet, and it will need one.
+  `Attempted` and `UsageNames`, with constructors for the two that callers build.
+- `Priced` was the pointed one — it had no currency, so `Ledger::total` was adding dollars to
+  euros and returning a number in neither. Now fixed: `Priced::currency`, `Ledger::total`
+  returning `None` for a mixed run, and `Ledger::totals` for one figure per currency. The
+  reading pass is what found it, which is the argument for doing the pass at all.
 - Four crates are part of the public API and a major bump of any is a breaking change here.
   `docs/DESIGN.md` names them and what each costs.
 - The count needed a method more than it needed a number.
@@ -289,7 +298,7 @@ Not planned in detail, and roughly in this order.
 | ~~Bedrock~~ · **done** | `providers::bedrock::api`, under the gateway as #29 decided, and the first use of `CloudPartner`. SigV4 is the transport's, not the protocol's |
 | ~~Images~~ · **done** | `ContentBlock::Image`, refused rather than stripped where a reach cannot carry one |
 | More CLI presets | Gemini CLI and whatever else appears (#24). A preset is a file and it goes beside its vendor's other reaches — but it needs a recorded `--output-format json` sample first, because inventing the usage field names reports a number that looks right and is not |
-| ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor |
+| ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor, and refuses to be one number when the run mixes currencies |
 | Embeddings | Decided (#26): a trait in this crate behind a feature, not a second crate. `docs/DESIGN.md` says what breaks under the other. Still to build |
 
 ## Things known to be missing, said in the README
