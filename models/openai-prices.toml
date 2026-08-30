@@ -1,0 +1,69 @@
+# What OpenAI charges, as dated data.
+#
+# Read off the vendor pricing page on the date below. This is a planning table: where a
+# provider reports cost directly on the response, that wins outright.
+#
+# Two things this file deliberately leaves out.
+#
+# **Models priced in context bands.** `gpt-5.5`, `gpt-5.4`, and the `-pro` rows that go with
+# them are published at one rate under 272K tokens and a higher one above it. A Rate here is
+# a flat number per million and cannot say that, so those models have no row rather than a
+# row that is right for short prompts and quietly wrong for long ones. A model with no row is
+# unpriced, and this crate reports an unpriced call as unpriced.
+#
+# **A cache write charge.** The pricing page publishes three columns, input, cached input and
+# output. There is no charge for writing to the cache, so `cache_write` is absent and reads
+# as zero. That is what the page says, not an assumption about what is free.
+#
+# Written as decimal text rather than numbers. Money is integer arithmetic all the way down,
+# and 0.1 is not a value a binary float holds exactly.
+
+id             = "openai-2026-08"
+provider       = "openai"
+effective_from = "2026-08-01"
+source         = "vendor pricing page"
+verified_at    = "2026-08-31"
+currency       = "USD"
+
+# Per million tokens.
+[[price]]
+model      = "gpt-5.6-sol"
+input      = "4.00"
+output     = "20.00"
+cache_read = "0.40"
+
+[[price]]
+model      = "gpt-5.6-terra"
+input      = "2.00"
+output     = "12.00"
+cache_read = "0.20"
+
+[[price]]
+model      = "gpt-5.6-luna"
+input      = "0.20"
+output     = "1.20"
+cache_read = "0.02"
+
+[[price]]
+model      = "gpt-5.1"
+input      = "1.25"
+output     = "10.00"
+cache_read = "0.125"
+
+[[price]]
+model      = "gpt-5"
+input      = "1.25"
+output     = "10.00"
+cache_read = "0.125"
+
+[[price]]
+model      = "gpt-5-mini"
+input      = "0.25"
+output     = "2.00"
+cache_read = "0.025"
+
+[[price]]
+model      = "gpt-5-nano"
+input      = "0.05"
+output     = "0.40"
+cache_read = "0.005"

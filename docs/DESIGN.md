@@ -644,6 +644,55 @@ recomputed**. Re-pricing the past when a price changes destroys the record.
 serves. Neither prunes: a row that vanished because a vendor retired a model is a decision
 somebody should make.
 
+### Shipped tables, and the staleness that comes with them
+
+Anthropic, OpenAI and Gemini each ship a model table and a price book, read off the vendor's
+own published pages on the date each row carries. A caller who adds this crate to find out
+what something cost gets a number, rather than `None` for every model until they write and
+date a table themselves.
+
+**Nothing is invented.** A row is there because a person read a published page on a stated
+date and wrote it down. Where a page does not say, the row does not claim: `Entry::new`
+starts with every capability off for exactly this reason. Where a fact came from two pages,
+the row's `source` says so, and the file says which two.
+
+**A rate that cannot be expressed is left out.** Several models are published in context
+bands, one price up to a token threshold and a higher one above. A `Rate` is a flat number
+per million and cannot say that. Those models have no row, so they price as unpriced, which
+this crate already reports honestly. The tempting alternative is the low band, which is right
+until somebody sends a long prompt and then understates every call after that without
+anything being able to tell.
+
+**Silent staleness is the failure mode, so a book can be asked.** `PriceBook::age(today)`
+gives days since `verified_at`, and `PriceBook::needs_rechecking(today)` applies the rule:
+`RECHECK_AFTER_DAYS`, which is 90, and is arbitrary in the way any such number is. What makes
+it useful is that it is written down, it is one number, and the crate applies it for you.
+
+`today` is an argument rather than a clock. Every date in a table is already `YYYY-MM-DD`
+text, so the comparison is between two things of the same kind, and a test can ask what a
+book looks like in 2027 without waiting.
+
+`Recheck` is three variants rather than a boolean, for the same reason `Access` is:
+
+* `Expired` when the book named a date its numbers stop being right and it has passed. Some
+  rates are published as introductory with an end date already announced, and a book that
+  knows it becomes wrong should say when.
+* `Aged` when nobody has checked in longer than the rule allows. A judgement call, and
+  reported as one.
+* `Undatable` when a date on the book cannot be read. The quiet one: a `verified_at` of
+  `"recently"` parses as TOML and would make a book permanently fresh, which is the single
+  answer that can never be checked.
+
+Expiry is reported ahead of age when both are true. Ageing says somebody should look; expiry
+says the numbers have already changed.
+
+**Why the tables are not behind a `tables` feature.** They were going to be. A feature that
+only removes a few kilobytes of static text is a feature nobody sets, and the cost of having
+it is worse than that: `from_env` would return a provider with a model table under one
+feature set and without one under another, so the same line of code would route differently
+depending on how the crate was compiled. Features here exist so a build compiles what it
+uses, and this one would have made a build mean something different instead.
+
 ---
 
 ## Money is integers

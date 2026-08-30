@@ -1,0 +1,69 @@
+# The Gemini models this release knows about.
+#
+# A starting point, not a source of truth. Every row was read off a vendor model page on the
+# date it carries. Supply your own Registry when you need one that is current:
+# `Registry::stale` and `Registry::unlisted` compare this table against what the API says it
+# serves.
+#
+# `streaming` is true on every row and comes from the API reference rather than the model
+# pages: `models.streamGenerateContent` is a method on the generate content API, not a
+# per-model feature. The model pages do not list it, which is why this note is here.
+#
+# The token limits are the vendor's own figures and are not round numbers: 1,048,576 in and
+# 65,536 out. Rounding them to a million and 64k would be a smaller context window than the
+# model has, or a larger one, and neither is what was published.
+
+provider = "gemini"
+reach    = "FirstPartyApi"
+
+[[model]]
+id                = "gemini-3.7-flash"
+context_window    = 1048576
+max_output        = 65536
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page; streamGenerateContent in the API reference"
+verified_at       = "2026-08-31"
+
+[[model]]
+id                = "gemini-3.5-flash"
+context_window    = 1048576
+max_output        = 65536
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page; streamGenerateContent in the API reference"
+verified_at       = "2026-08-31"
+
+[[model]]
+id                = "gemini-3.5-flash-lite"
+context_window    = 1048576
+max_output        = 65536
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page; streamGenerateContent in the API reference"
+verified_at       = "2026-08-31"
+
+[[model]]
+id                = "gemini-2.5-flash"
+context_window    = 1048576
+max_output        = 65536
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page; streamGenerateContent in the API reference"
+verified_at       = "2026-08-31"

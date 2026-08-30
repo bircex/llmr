@@ -135,6 +135,17 @@ pub struct PriceBook {
     pub source: String,
     /// When a person last checked them, as `YYYY-MM-DD`.
     pub verified_at: String,
+    /// The date after which these numbers are known to be wrong, as `YYYY-MM-DD`.
+    ///
+    /// Not for a book that might have drifted; that is what [`PriceBook::age`] is for. This
+    /// is for a book that has been told when it stops being right: an introductory rate the
+    /// vendor has already published an end date for, a contract that runs out, a quarter's
+    /// negotiated pricing. `None` when nothing said.
+    ///
+    /// It belongs to the book rather than the row because one row going wrong is enough to
+    /// make the edition wrong, and a caller who has to check per model will not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_on: Option<String>,
     /// The currency, as an ISO code such as `USD`.
     pub currency: String,
     /// Rates by model name.
@@ -227,7 +238,156 @@ pub struct Priced {
     pub coverage: UsageCoverage,
 }
 
+/// Why a price book should be checked again before anything is billed against it.
+///
+/// A reason rather than a boolean, for the same reason [`crate::router::Attempted`] carries
+/// one: "this table is stale" and "this table expired eleven days ago" call for different
+/// things, and a program that cannot tell them apart cannot act on either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Recheck {
+    /// Past the date the book itself said its numbers stop being right.
+    ///
+    /// The one that is not a judgement call. Somebody published an end date and it has
+    /// passed, so every figure this book produces from here is wrong by whatever changed.
+    Expired {
+        /// The date the book named, as `YYYY-MM-DD`.
+        on: String,
+        /// How long ago that was, in days.
+        days_ago: i64,
+    },
+    /// Nobody has checked these numbers in longer than the rule allows.
+    Aged {
+        /// Days since [`PriceBook::verified_at`].
+        days: i64,
+    },
+    /// A date on this book cannot be read, so its age is unknowable.
+    ///
+    /// Reported rather than ignored. A book whose date is `"soon"` is a book that would
+    /// otherwise never age, and never ageing is exactly the failure the dates exist to stop.
+    Undatable {
+        /// Which field could not be read.
+        field: &'static str,
+    },
+}
+
+impl std::fmt::Display for Recheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Recheck::Expired { on, days_ago } => {
+                write!(f, "expired on {on}, {days_ago} days ago")
+            }
+            Recheck::Aged { days } => write!(f, "last checked {days} days ago"),
+            Recheck::Undatable { field } => write!(f, "{field} is not a date this can read"),
+        }
+    }
+}
+
+/// A `YYYY-MM-DD` date as a day number, so two of them can be subtracted.
+///
+/// Days since 1970-01-01, by the civil calendar algorithm, which is exact for every date
+/// this crate will ever be handed and needs no clock and no dependency. `None` for anything
+/// that is not three numbers in that shape.
+fn day_number(text: &str) -> Option<i64> {
+    let mut parts = text.trim().splitn(3, '-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    // March is treated as the first month, which puts the leap day at the end of the year
+    // and removes every special case from the arithmetic below.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let shifted = (month + 9) % 12;
+    let day_of_year = (153 * shifted + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
 impl PriceBook {
+    /// How long this crate lets a price table go unchecked before it says so: 90 days.
+    ///
+    /// A rule rather than a guess dressed as one. Vendors change prices on their own
+    /// schedule and none of them tell this crate, so any number here is arbitrary. What
+    /// makes it useful is that it is written down, it is one number, and
+    /// [`PriceBook::needs_rechecking`] applies it for you.
+    pub const RECHECK_AFTER_DAYS: i64 = 90;
+
+    /// How many days since a person last checked these numbers, as of `today`.
+    ///
+    /// `today` is an argument because this crate does not read a clock. Every date in a
+    /// table is already `YYYY-MM-DD` text, so the comparison is between two things of the
+    /// same kind, and a test can ask what this book looks like in 2027 without waiting.
+    ///
+    /// `None` when [`PriceBook::verified_at`] is not a date this can read. Negative when
+    /// the book is dated in the future, which is a table somebody typed wrong.
+    pub fn age(&self, today: &str) -> Option<i64> {
+        Some(day_number(today)? - day_number(&self.verified_at)?)
+    }
+
+    /// Whether this book should be checked again, and why.
+    ///
+    /// `None` means it is inside its own expiry and inside [`PriceBook::RECHECK_AFTER_DAYS`].
+    /// Anything else is a [`Recheck`] naming the reason.
+    ///
+    /// # What this is for
+    ///
+    /// Silent staleness. A price that is quietly six months old produces a confident bill
+    /// that is wrong by whatever the vendor changed, and nothing downstream can tell,
+    /// because the arithmetic is correct and the number has the right number of decimal
+    /// places. Call this once at startup beside [`crate::Router::unusable`], and again
+    /// wherever a total is presented as a bill.
+    ///
+    /// ```
+    /// # use llmr::cost::pricing::{PriceBook, Recheck};
+    /// # let book = PriceBook::parse(r#"
+    /// # id = "b"
+    /// # provider = "p"
+    /// # effective_from = "2026-01-01"
+    /// # source = "a page"
+    /// # verified_at = "2026-01-01"
+    /// # currency = "USD"
+    /// # "#).unwrap();
+    /// assert_eq!(book.needs_rechecking("2026-02-01"), None);
+    /// assert!(matches!(
+    ///     book.needs_rechecking("2026-09-01"),
+    ///     Some(Recheck::Aged { .. })
+    /// ));
+    /// ```
+    pub fn needs_rechecking(&self, today: &str) -> Option<Recheck> {
+        let Some(now) = day_number(today) else {
+            return Some(Recheck::Undatable { field: "today" });
+        };
+
+        // Expiry first. A book that said when it stops being right has settled the question,
+        // and reporting its age instead would be reporting the weaker of two facts.
+        if let Some(expires) = &self.expires_on {
+            let Some(end) = day_number(expires) else {
+                return Some(Recheck::Undatable {
+                    field: "expires_on",
+                });
+            };
+            if now > end {
+                return Some(Recheck::Expired {
+                    on: expires.clone(),
+                    days_ago: now - end,
+                });
+            }
+        }
+
+        let Some(checked) = day_number(&self.verified_at) else {
+            return Some(Recheck::Undatable {
+                field: "verified_at",
+            });
+        };
+        let days = now - checked;
+        (days >= Self::RECHECK_AFTER_DAYS).then_some(Recheck::Aged { days })
+    }
+
     /// Reads a price book from TOML.
     ///
     /// # Errors
@@ -296,6 +456,113 @@ impl PriceBook {
 mod tests {
     use super::*;
 
+    /// A book with the dates a test wants and no rows.
+    fn dated(verified_at: &str, expires_on: Option<&str>) -> PriceBook {
+        PriceBook {
+            id: "b".into(),
+            provider: "p".into(),
+            effective_from: "2026-01-01".into(),
+            source: "a published page".into(),
+            verified_at: verified_at.into(),
+            expires_on: expires_on.map(Into::into),
+            currency: "USD".into(),
+            rates: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_day_number_counts_from_the_epoch_and_gets_the_leap_years_right() {
+        // Fixed points anybody can check, and the two the arithmetic gets wrong when the
+        // year is not shifted to start in March.
+        assert_eq!(day_number("1970-01-01"), Some(0));
+        assert_eq!(day_number("1970-01-02"), Some(1));
+        assert_eq!(
+            day_number("2000-03-01"),
+            day_number("2000-02-29").map(|d| d + 1)
+        );
+        assert_eq!(
+            day_number("2100-03-01"),
+            day_number("2100-02-28").map(|d| d + 1)
+        );
+        assert_eq!(day_number("1969-12-31"), Some(-1));
+    }
+
+    #[test]
+    fn a_date_that_is_not_one_is_refused_rather_than_read_as_zero() {
+        // The failure that matters: a date read as day zero makes every book fifty years
+        // stale, and a date read as "today" makes every book eternally fresh. Neither is a
+        // number, so neither is returned.
+        assert_eq!(day_number("soon"), None);
+        assert_eq!(day_number("2026-13-01"), None);
+        assert_eq!(day_number("2026-00-10"), None);
+        assert_eq!(day_number("2026-08"), None);
+        assert_eq!(day_number(""), None);
+    }
+
+    #[test]
+    fn a_books_age_is_days_since_a_person_last_checked_it() {
+        let book = dated("2026-08-01", None);
+        assert_eq!(book.age("2026-08-31"), Some(30));
+        assert_eq!(book.age("2026-08-01"), Some(0));
+        assert_eq!(
+            book.age("2026-07-31"),
+            Some(-1),
+            "a table dated in the future is one somebody typed wrong, and saying so beats              clamping it to zero"
+        );
+    }
+
+    #[test]
+    fn a_book_nobody_has_checked_in_a_quarter_asks_to_be_checked() {
+        let book = dated("2026-08-01", None);
+        assert_eq!(book.needs_rechecking("2026-09-01"), None);
+        assert_eq!(
+            book.needs_rechecking("2026-10-30"),
+            Some(Recheck::Aged { days: 90 }),
+            "the rule is >= RECHECK_AFTER_DAYS, and the boundary is part of the rule"
+        );
+    }
+
+    #[test]
+    fn an_expiry_the_book_announced_wins_over_its_age() {
+        // Both are true past the end date. The one worth reporting is the settled one:
+        // ageing says somebody should look, expiry says the numbers have already changed.
+        let book = dated("2026-08-01", Some("2026-12-31"));
+        assert_eq!(
+            book.needs_rechecking("2027-01-02"),
+            Some(Recheck::Expired {
+                on: "2026-12-31".into(),
+                days_ago: 2
+            })
+        );
+        assert_eq!(
+            book.needs_rechecking("2026-12-31"),
+            Some(Recheck::Aged { days: 152 }),
+            "on the last good day it has not expired, though it has certainly aged"
+        );
+    }
+
+    #[test]
+    fn a_book_whose_date_cannot_be_read_reports_that_rather_than_ageing_forever() {
+        // The quiet failure. A `verified_at` of "recently" parses as TOML and would make
+        // this book permanently fresh, which is the one answer that can never be checked.
+        assert_eq!(
+            dated("recently", None).needs_rechecking("2026-08-31"),
+            Some(Recheck::Undatable {
+                field: "verified_at"
+            })
+        );
+        assert_eq!(
+            dated("2026-08-01", Some("when the contract ends")).needs_rechecking("2026-08-02"),
+            Some(Recheck::Undatable {
+                field: "expires_on"
+            })
+        );
+        assert_eq!(
+            dated("2026-08-01", None).needs_rechecking("today"),
+            Some(Recheck::Undatable { field: "today" })
+        );
+    }
+
     fn book() -> PriceBook {
         let mut rates = BTreeMap::new();
         rates.insert(
@@ -313,6 +580,7 @@ mod tests {
             effective_from: "2026-08-01".into(),
             source: "docs".into(),
             verified_at: "2026-08-28".into(),
+            expires_on: None,
             currency: "USD".into(),
             rates,
         }

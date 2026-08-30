@@ -5,7 +5,29 @@ change is a minor bump.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- Shipped model tables and price books for OpenAI and Gemini, beside the Anthropic ones,
+  through `openai::api::shipped_registry` / `shipped_prices` and the same pair on `gemini`.
+  Both `from_env` constructors now hand out a real table instead of `Registry::empty`. Every
+  row was read off a vendor page on the date it carries, and models published in context
+  bands are absent rather than priced for short prompts. (#39)
+- `PriceBook::age`, `PriceBook::needs_rechecking` and `Recheck`, so a table that has aged can
+  be found out about rather than producing a confident bill six months after anybody looked.
+  `PriceBook::RECHECK_AFTER_DAYS` is the rule, and it is 90. (#39)
+- `PriceBook::expires_on`, for a book that already knows when its numbers stop being right:
+  an introductory rate with a published end date, a contract that runs out. The shipped
+  Gemini book carries one. (#39)
+
+### Changed
+
+- **Breaking:** `PriceBook` has a new `expires_on` field. A book built with a struct literal
+  needs it; one parsed from TOML does not, and a file without the key reads as `None`. (#39)
+
+### Documentation
+
+- `docs/DESIGN.md` records what a shipped table claims, why a banded price is left out
+  entirely, and why the tables are not behind a feature. (#39)
 
 ## 0.1.0 — 2026-08-30
 
