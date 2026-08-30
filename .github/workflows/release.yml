@@ -1,0 +1,105 @@
+# Publishing, from a tag rather than from somebody's laptop.
+#
+# A crate published by hand is a crate that can ship from a dirty working tree, built with
+# whatever toolchain that machine had, with a version nobody checked against the changelog.
+# Every one of those has happened to somebody.
+#
+# The tag is the trigger and the tag is also the claim: it must match the version in
+# Cargo.toml, and this refuses if it does not.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: everything CI checks, again, on the tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # The same seven ROADMAP.md lists. Repeated here rather than reused from ci.yml
+      # because a release must not depend on a run that happened against a different commit.
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-features --all-targets -- -D warnings
+      - run: cargo clippy --no-default-features --all-targets -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo test --all-features
+
+  agree:
+    name: the tag, the manifest and the changelog agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag matches the version in Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "tag=$tag manifest=$manifest"
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::tag v$tag does not match Cargo.toml $manifest" >&2
+            exit 1
+          fi
+
+      - name: The changelog has a section for it
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if ! grep -q "## \[\?$tag\]\?" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $tag. A release with nothing" >&2
+            echo "::error::written down is one nobody can find out what changed in." >&2
+            exit 1
+          fi
+
+      - name: Nothing uncommitted
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the tree is dirty at the tag" >&2
+            git status --short
+            exit 1
+          fi
+
+  package:
+    name: what is in the box
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Printed into the log so the file list is reviewable after the fact. `exclude` in
+      # Cargo.toml drops /.github, /docs and the roadmap.
+      - run: cargo package --all-features --list
+      - run: cargo publish --all-features --dry-run
+
+  publish:
+    name: publish
+    needs: [verify, agree, package]
+    runs-on: ubuntu-latest
+    # A published version cannot be unpublished, only yanked. This waits for a person, in an
+    # environment with whatever protection rules the repository sets, rather than firing on
+    # a tag somebody pushed by mistake.
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo publish --all-features
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

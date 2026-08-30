@@ -1,0 +1,66 @@
+# What may enter the dependency tree, checked rather than assumed.
+#
+# This crate's claim on the dependency question is a number — 30 crates on default features
+# rather than 105 with the bundled client — and a number like that is only true while
+# somebody is watching it. That is half of what this file is for. The other half is that a
+# yanked crate or a new advisory should fail a pull request rather than be discovered by
+# whoever next reads a changelog.
+#
+# Run it with `cargo deny check`. CI runs the same command.
+
+[graph]
+# Every feature, because a licence problem behind a feature is still a licence problem for
+# whoever turns it on. The heavy end of the tree is all behind `reqwest`.
+all-features = true
+
+[advisories]
+# Deny outright. An advisory that only warns is one that scrolls past.
+yanked = "deny"
+# No blanket ignores. An entry here needs a dated comment saying who decided and why, which
+# is the same rule `Registry` rows already follow: a claim with no provenance is one nobody
+# can re-check later.
+ignore = []
+
+[licenses]
+# An allowlist, not a denylist. A crate arriving under something unexpected must fail rather
+# than pass because nobody thought to ban it in advance.
+#
+# Everything here is permissive and everything below MIT/Apache is reached only through the
+# `reqwest` feature — the TLS stack and the Unicode tables it pulls.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception", # wasi
+    "BSD-3-Clause",                   # subtle
+    "BSL-1.0",                        # ryu, offered beside Apache-2.0
+    "CDLA-Permissive-2.0",            # webpki-roots, the Mozilla root store
+    "ISC",                            # rustls-webpki, untrusted, part of ring
+    "Unicode-3.0",                    # the ICU crates reqwest's URL handling pulls
+    "Unlicense",                      # memchr, offered beside MIT
+    "Zlib",                           # tinyvec, offered beside MIT
+]
+# A crate whose licence is only in a file, with no SPDX expression, needs a person to read
+# it. Failing is the honest outcome; an exception goes in `[[licenses.clarify]]` with the
+# hash of the file that was read.
+unused-allowed-license = "allow"
+confidence-threshold = 0.9
+
+[bans]
+# Two versions of one crate in the tree is how 30 becomes 45 without anybody choosing it,
+# and it is exactly what the old `cargo tree | wc -l` counting method hid. A warning rather
+# than a denial, because the fix is usually somebody else's upgrade.
+#
+# As of 2026-08-30 it warns about two, both transitive and neither ours to fix: `syn` 1 and 2
+# (proc macro crates that have not all moved), and two `windows-sys` versions under the
+# reqwest stack. Denying these would mean pinning somebody else's dependency or ignoring the
+# check, and both are worse than reading two lines.
+multiple-versions = "warn"
+wildcards = "deny"
+# Nothing is banned by name yet. When something is, it needs a reason on the line.
+deny = []
+
+[sources]
+# Only crates.io. A git dependency in a published crate is one nobody downstream can build
+# reproducibly, and `cargo publish` refuses it anyway — this fails earlier and says why.
+unknown-registry = "deny"
+unknown-git = "deny"

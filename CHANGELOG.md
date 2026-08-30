@@ -65,6 +65,19 @@ First release. Nothing published yet.
   gains no dependency and does no work.
 - `UsageCoverage::as_str` and `Display`, one spelling for records and spans.
 
+### Added, phase 4
+
+- `deny.toml` and a CI job: licences against an allowlist rather than a denylist, advisories
+  denied with no blanket ignores, sources limited to crates.io, duplicates warned.
+- A release workflow on `v*` tags. It re-runs every check against that commit, refuses if the
+  tag disagrees with `Cargo.toml` or the changelog has no section for it, and holds the
+  publish behind an environment so a person approves it.
+- A packaging job on pull requests, so what would ship is checked before release day.
+- `cargo-semver-checks`, which has nothing to compare against until 0.1.0 and is in place for
+  the release after it.
+- Issue templates, a pull request template carrying the seven commands, and a code of
+  conduct.
+
 ### Changed
 
 - Providers are grouped by vendor and then by reach: `providers::anthropic::{api, cli}` and

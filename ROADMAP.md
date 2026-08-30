@@ -183,7 +183,7 @@ and a call with the feature off emits nothing.
 
 ---
 
-## Phase 4: the pipeline, actually running · **next**
+## Phase 4: the pipeline, actually running · **done**
 
 `.github/workflows/ci.yml` covers formatting, three clippy passes, docs with warnings denied
 under two feature sets, tests on three operating systems, every feature built alone, and the
@@ -205,16 +205,23 @@ places, and raising it is a deliberate commit. A weekly `ahead-of-stable` job ru
 whatever stable is now, so a bump waiting to be done is news on a Monday rather than a red
 tick on somebody's unrelated pull request.
 
-### Still to add
+### Added since
 
-- **A supply chain job.** `deny.toml` with license, advisory and duplicate checks. This is not
-  ceremony: the same check on a sibling project caught a yanked crate this week.
-- **A release workflow.** A tag verifies and publishes. Publishing by hand from a laptop is
-  how a crate ships from a dirty working tree.
-- **`cargo-semver-checks` on pull requests.** After 0.1 there is a public API to break by
-  accident.
-- **Issue and pull request templates, and a code of conduct.** Small, and they are what a
-  first contributor reads.
+- **A supply chain job.** `deny.toml` with an allowlist of licences, advisories denied and no
+  blanket ignores, and duplicates warned. `cargo deny check` passes; it warns about `syn` 1
+  and 2 and two `windows-sys` versions, both transitive and neither ours to fix.
+- **A release workflow.** `.github/workflows/release.yml` fires on a `v*` tag, re-runs all
+  seven checks against that commit, refuses if the tag disagrees with `Cargo.toml` or the
+  changelog has no section for it, and holds the publish behind a `crates-io` environment so
+  a person approves it. A published version cannot be unpublished, only yanked.
+- **A packaging job on pull requests.** `cargo package --list` and `cargo publish --dry-run`,
+  so a packaging problem is found on a pull request rather than at the moment of release.
+- **`cargo-semver-checks` on pull requests.** Nothing to compare against until 0.1.0 is
+  published, and it is here now so the first release after it is checked by a job somebody
+  already trusts rather than one added in a hurry.
+- **Issue and pull request templates, and a code of conduct.** The provider template asks
+  which vendor *and* which reach, because those decide different things: the vendor decides
+  the directory, the reach decides what it can carry.
 
 ### Done when
 
@@ -224,7 +231,7 @@ a red tick was read as the thing that was already known to be broken.
 
 ---
 
-## Phase 5: 0.1.0
+## Phase 5: 0.1.0 · **next**
 
 ### The public surface
 

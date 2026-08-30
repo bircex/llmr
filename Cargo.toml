@@ -11,8 +11,9 @@ readme        = "README.md"
 keywords      = ["llm", "anthropic", "openai", "ai", "provider"]
 categories    = ["api-bindings", "asynchronous"]
 # `rust-toolchain.toml` is how this repository is built, not how the crate must be. Shipping
-# it would be a library telling a consumer which compiler to use.
-exclude       = ["/.github", "/docs", "/ROADMAP.md", "/rust-toolchain.toml"]
+# it would be a library telling a consumer which compiler to use. `deny.toml` is the same
+# kind of thing: it is how this repository is audited, not something a consumer builds with.
+exclude       = ["/.github", "/docs", "/ROADMAP.md", "/rust-toolchain.toml", "/deny.toml"]
 
 [features]
 # Both protocols, and no HTTP client. You supply a transport, which almost every program

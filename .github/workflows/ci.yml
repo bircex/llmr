@@ -116,3 +116,59 @@ jobs:
         run: |
           rustup run stable cargo clippy --all-features --all-targets -- -D warnings
           rustup run stable cargo clippy --no-default-features --all-targets -- -D warnings
+
+  supply-chain:
+    name: licences, advisories, duplicates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The advisory database moves on its own schedule, so a run that passed yesterday can
+      # fail today with the same tree. That is the job working, not a flake.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          # `bans` is warn-only for duplicates, so a transitive crate somebody else has to
+          # upgrade does not block a pull request here. Licences, advisories and sources do
+          # block: each one is a decision rather than a wait.
+          arguments: --all-features
+
+  packaging:
+    name: what would be published
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # A packaging problem found on a pull request rather than at the moment of release.
+      # `exclude` in Cargo.toml drops /.github, /docs and the roadmap, and a dry run is what
+      # proves that still does what it says.
+      - name: Package
+        run: cargo package --all-features --list
+
+      - name: Publish, without publishing
+        run: cargo publish --all-features --dry-run
+
+  semver:
+    name: nothing broke by accident
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Until 0.1.0 is on crates.io there is no published version to compare against, and
+      # this reports that and passes. It is here now so that the first release after 0.1.0
+      # is checked by a job somebody already trusts rather than one added in a hurry.
+      #
+      # This crate is unusually exposed: everything public is #[non_exhaustive], so fields
+      # can be added without a major version — which is exactly the arrangement where
+      # somebody assumes every change is additive. Adding a required method to `Provider` is
+      # breaking. Narrowing a return type is breaking. Neither looks like it in a diff.
+      - name: cargo-semver-checks
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          feature-group: all-features
+
