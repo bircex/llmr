@@ -4,7 +4,7 @@
 //! is the easy half. The hard half is that a run almost always contains a call nobody
 //! measured, and a number that quietly leaves it out is worse than no number at all.
 //!
-//! # Three rules, and none of them is about adding
+//! # Four rules, and only one of them is about adding
 //!
 //! **A total containing an unpriced call is a lower bound.** [`Total`] says which it is, so
 //! a report can print "at least" rather than a figure somebody will read as the bill.
@@ -17,6 +17,11 @@
 //! **A cost is priced once.** [`Ledger::record`] prices at the moment of recording and keeps
 //! the [`Priced`], which carries the edition that produced it. Re-pricing later against a
 //! newer table would destroy the record the ledger exists to keep: what it cost *then*.
+//!
+//! **A sum needs one currency.** [`Micros`] is an integer, and two of them add whether or not
+//! they are the same money. So [`Ledger::total`] answers `None` when the run was priced in
+//! more than one, and [`Ledger::totals`] gives one figure per currency instead. A number that
+//! is part dollars and part euros is worse than no number, because it looks like a number.
 //!
 //! ```
 //! use llmr::cost::ledger::Ledger;
@@ -31,13 +36,18 @@
 //!
 //! assert_eq!(ledger.calls(), 1);
 //! assert_eq!(ledger.unpriced(), 1);
-//! assert!(!ledger.total().is_exact(), "one unpriced call makes it a floor");
+//!
+//! // Nothing was priced, so nothing disagrees about the currency and there is a total.
+//! let total = ledger.total().unwrap_or_else(|| unreachable!("one currency at most"));
+//! assert!(!total.is_exact(), "one unpriced call makes it a floor");
+//! assert_eq!(ledger.currency(), None);
 //! ```
 
 use crate::chat::response::ChatResponse;
 use crate::cost::pricing::{Micros, PriceBook, Priced};
 use crate::cost::usage::{Usage, UsageCoverage};
 use crate::model::ModelId;
+use std::collections::BTreeMap;
 
 /// What a run cost, and whether that is the whole of it.
 ///
@@ -179,13 +189,48 @@ impl Ledger {
         seen
     }
 
+    /// Which currencies the costs in here are in. In code order, without repeats.
+    ///
+    /// Empty when nothing was priced.
+    pub fn currencies(&self) -> Vec<&str> {
+        let mut seen: Vec<&str> = self
+            .lines
+            .iter()
+            .filter_map(|line| line.cost.as_ref().map(|c| c.currency.as_str()))
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen
+    }
+
+    /// The one currency this run was priced in, if there is one.
+    ///
+    /// `None` for two reasons that a caller has to tell apart, and [`Ledger::currencies`] is
+    /// how: nothing was priced at all, or the run mixes currencies and no single figure
+    /// exists.
+    pub fn currency(&self) -> Option<&str> {
+        match self.currencies().as_slice() {
+            [only] => Some(only),
+            _ => None,
+        }
+    }
+
     /// What the run cost.
     ///
     /// [`Total::Exact`] only when every call was priced and every price came from usage the
     /// provider reported in full. Anything else is [`Total::AtLeast`]: one unmeasured call
     /// makes the whole figure a floor, and saying otherwise is how an unknown cost becomes a
     /// free one.
-    pub fn total(&self) -> Total {
+    ///
+    /// `None` when the priced calls are in more than one currency. There is no exchange rate
+    /// in this crate and there should not be one — a rate has a date and a source, exactly
+    /// like a price, and inventing one to make this method return a number would produce a
+    /// figure nobody could audit. Ask [`Ledger::totals`] instead.
+    pub fn total(&self) -> Option<Total> {
+        if self.currencies().len() > 1 {
+            return None;
+        }
+
         let mut amount = Micros(0);
         let mut whole = true;
 
@@ -201,11 +246,48 @@ impl Ledger {
             }
         }
 
-        if whole {
+        Some(if whole {
             Total::Exact(amount)
         } else {
             Total::AtLeast(amount)
+        })
+    }
+
+    /// What the run cost, one figure per currency, in code order.
+    ///
+    /// The answer when [`Ledger::total`] says `None`, and the same figure it would have given
+    /// when it says anything else.
+    ///
+    /// An unpriced call makes *every* line here a floor, not just one: nothing says which
+    /// currency it would have been in. And a run of nothing but unpriced calls comes back
+    /// empty, which is why [`Ledger::calls`] and [`Ledger::unpriced`] belong beside it in any
+    /// report — an empty list is not a run that cost nothing.
+    pub fn totals(&self) -> Vec<(String, Total)> {
+        let any_unpriced = self.unpriced() > 0;
+        let mut sums: BTreeMap<&str, (Micros, bool)> = BTreeMap::new();
+
+        for priced in self.lines.iter().filter_map(|line| line.cost.as_ref()) {
+            let entry = sums
+                .entry(priced.currency.as_str())
+                .or_insert((Micros(0), !any_unpriced));
+            entry.0 = entry.0 + priced.amount;
+            if priced.coverage != UsageCoverage::Exact {
+                entry.1 = false;
+            }
         }
+
+        sums.into_iter()
+            .map(|(currency, (amount, whole))| {
+                (
+                    currency.to_string(),
+                    if whole {
+                        Total::Exact(amount)
+                    } else {
+                        Total::AtLeast(amount)
+                    },
+                )
+            })
+            .collect()
     }
 }
 
@@ -245,6 +327,34 @@ output = "30.00"
         )
     }
 
+    /// The same rates, billed in a different currency.
+    fn in_euros() -> PriceBook {
+        PriceBook::parse(
+            r#"
+id             = "test-eur-2026-08"
+provider       = "test"
+effective_from = "2026-08-01"
+source         = "a fixture"
+verified_at    = "2026-08-30"
+currency       = "EUR"
+
+[[price]]
+model  = "m"
+input  = "10.00"
+output = "30.00"
+"#,
+        )
+        .unwrap_or_else(|e| panic!("the euro book: {e}"))
+    }
+
+    /// The total of a run that is in one currency, which is what most of these tests are.
+    fn sum(ledger: &Ledger) -> Total {
+        match ledger.total() {
+            Some(total) => total,
+            None => panic!("this run is priced in one currency"),
+        }
+    }
+
     /// Everything reported, so a price built from it is exact.
     fn measured() -> Usage {
         Usage::absent()
@@ -260,7 +370,7 @@ output = "30.00"
         ledger.record(&reply("m", measured()), Some(&book()));
         ledger.record(&reply("m", measured()), Some(&book()));
 
-        let total = ledger.total();
+        let total = sum(&ledger);
         assert!(total.is_exact(), "{total}");
         assert_eq!(ledger.calls(), 2);
         assert_eq!(ledger.unpriced(), 0);
@@ -276,7 +386,7 @@ output = "30.00"
         ledger.record(&reply("m", measured()), Some(&book()));
         ledger.record_unpriced("claude-sonnet-5", Usage::absent());
 
-        let total = ledger.total();
+        let total = sum(&ledger);
         assert!(!total.is_exact(), "{total}");
         assert_eq!(
             total.amount(),
@@ -296,9 +406,9 @@ output = "30.00"
 
         assert_eq!(ledger.calls(), 2);
         assert_eq!(ledger.unpriced(), 2);
-        assert_eq!(ledger.total().amount(), Micros(0));
+        assert_eq!(sum(&ledger).amount(), Micros(0));
         assert!(
-            !ledger.total().is_exact(),
+            !sum(&ledger).is_exact(),
             "nought known is not the same as nought spent"
         );
     }
@@ -314,7 +424,7 @@ output = "30.00"
         );
 
         assert_eq!(ledger.unpriced(), 0, "it was priced");
-        assert!(!ledger.total().is_exact(), "from half the numbers");
+        assert!(!sum(&ledger).is_exact(), "from half the numbers");
     }
 
     #[test]
@@ -324,7 +434,7 @@ output = "30.00"
 
         assert_eq!(ledger.calls(), 1);
         assert_eq!(ledger.unpriced(), 1);
-        assert!(!ledger.total().is_exact());
+        assert!(!sum(&ledger).is_exact());
     }
 
     #[test]
@@ -348,7 +458,7 @@ output = "30.00"
         // ledger that re-priced its contents would destroy the record it exists to keep.
         let mut ledger = Ledger::new();
         ledger.record(&reply("m", measured()), Some(&book()));
-        let then = ledger.total().amount();
+        let then = sum(&ledger).amount();
 
         let dearer = PriceBook::parse(
             r#"
@@ -378,6 +488,95 @@ output = "60.00"
     }
 
     #[test]
+    fn a_run_in_one_currency_says_which_one() {
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", measured()), Some(&book()));
+
+        assert_eq!(ledger.currency(), Some("USD"));
+        assert_eq!(
+            ledger.totals(),
+            vec![("USD".to_string(), Total::Exact(Micros(40_000_000)))]
+        );
+    }
+
+    #[test]
+    fn a_run_priced_in_two_currencies_has_no_single_total() {
+        // The hole this all exists to close. `Micros` is an integer: forty dollars and forty
+        // euros add to eighty of nothing, and the answer looks exactly like a real one.
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", measured()), Some(&book()));
+        ledger.record(&reply("m", measured()), Some(&in_euros()));
+
+        assert_eq!(ledger.total(), None, "there is no such number");
+        assert_eq!(ledger.currency(), None);
+        assert_eq!(ledger.currencies(), vec!["EUR", "USD"]);
+        assert_eq!(ledger.calls(), 2, "both calls still happened");
+    }
+
+    #[test]
+    fn a_mixed_run_is_totalled_one_currency_at_a_time() {
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", measured()), Some(&book()));
+        ledger.record(&reply("m", measured()), Some(&in_euros()));
+        ledger.record(&reply("m", measured()), Some(&in_euros()));
+
+        assert_eq!(
+            ledger.totals(),
+            vec![
+                ("EUR".to_string(), Total::Exact(Micros(80_000_000))),
+                ("USD".to_string(), Total::Exact(Micros(40_000_000))),
+            ]
+        );
+    }
+
+    #[test]
+    fn one_unpriced_call_makes_every_currency_a_floor() {
+        // Not just one of them. Nothing records which currency the unpriced call would have
+        // been billed in, so it is missing from all of them.
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", measured()), Some(&book()));
+        ledger.record(&reply("m", measured()), Some(&in_euros()));
+        ledger.record_unpriced("claude-sonnet-5", Usage::absent());
+
+        assert_eq!(
+            ledger.totals(),
+            vec![
+                ("EUR".to_string(), Total::AtLeast(Micros(40_000_000))),
+                ("USD".to_string(), Total::AtLeast(Micros(40_000_000))),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_run_nobody_priced_totals_to_a_floor_rather_than_to_nothing() {
+        // No currency disagrees with any other, because none was named. That is a total, and
+        // an empty `totals()` beside a call count of two is the shape a report has to print.
+        let mut ledger = Ledger::new();
+        ledger.record_unpriced("claude-sonnet-5", Usage::absent());
+        ledger.record_unpriced("claude-sonnet-5", Usage::absent());
+
+        assert_eq!(ledger.total(), Some(Total::AtLeast(Micros(0))));
+        assert_eq!(ledger.currency(), None);
+        assert!(ledger.totals().is_empty());
+        assert_eq!(ledger.calls(), 2);
+    }
+
+    #[test]
+    fn absorbing_a_ledger_in_another_currency_is_noticed() {
+        // Two tasks, two books, joined at the end. This is the realistic way a mixed run
+        // happens, and the join must not produce a number.
+        let mut one = Ledger::new();
+        one.record(&reply("m", measured()), Some(&book()));
+        assert!(one.total().is_some());
+
+        let mut other = Ledger::new();
+        other.record(&reply("m", measured()), Some(&in_euros()));
+
+        one.absorb(other);
+        assert_eq!(one.total(), None);
+    }
+
+    #[test]
     fn two_ledgers_join_without_losing_what_either_knew() {
         let mut one = Ledger::new();
         one.record(&reply("m", measured()), Some(&book()));
@@ -388,6 +587,6 @@ output = "60.00"
         one.absorb(other);
         assert_eq!(one.calls(), 2);
         assert_eq!(one.unpriced(), 1);
-        assert!(!one.total().is_exact());
+        assert!(!sum(&one).is_exact());
     }
 }

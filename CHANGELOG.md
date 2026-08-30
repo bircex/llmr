@@ -103,8 +103,8 @@ First release. Nothing published yet.
 ### Narrowed
 
 - `Priced`, `ToolSchema`, `Attempted` and `UsageNames` are `#[non_exhaustive]`, with
-  constructors for the two callers build. `Priced` is the pointed one: it has no currency
-  field yet and will need one.
+  constructors for the two callers build. `Priced` was the pointed one — it had no currency
+  field, which is fixed below, and `#[non_exhaustive]` is why adding it cost nothing.
 - The public API's four external crates are written down in `docs/DESIGN.md` — `serde_json`,
   `serde`, `futures-core` and `reqwest` all appear in signatures callers write, so a major
   bump of any is a breaking change here and nothing in the manifest says so.
@@ -121,6 +121,21 @@ First release. Nothing published yet.
   `Protocol` may hold. This crate ships the translation and you wrap your transport.
 - No streaming through Bedrock's binary event framing, so `stream` falls back to one burst —
   an answer rather than a refusal, with `capabilities` saying which it is.
+
+### Fixed, money
+
+- `Priced::currency`, copied from the book that priced the call. `Micros` is an integer and
+  two of them add whether or not they are the same money: before this, a ledger holding one
+  call priced in dollars and one in euros produced a number that was neither, and looked
+  exactly like a number that was.
+- `Ledger::total` returns `Option<Total>` and answers `None` for such a run. `Ledger::totals`
+  gives one figure per currency, `Ledger::currency` names the single one when there is one,
+  and `Ledger::currencies` tells "nothing was priced" apart from "more than one currency".
+  An unpriced call makes every currency's figure a floor, not one of them: nothing records
+  which currency it would have been billed in.
+- No exchange rate, deliberately. A rate has a date and a source exactly like a price does,
+  and one invented so that a method could return a single number would produce a figure
+  nobody could audit.
 
 ### Decided
 
