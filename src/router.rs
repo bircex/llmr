@@ -13,6 +13,8 @@
 //! * **Reach.** A caller can say the data must not leave this machine. Nothing below that
 //!   floor is considered, whatever else it can do.
 //! * **Order.** The routes are tried in the order you gave them. First that fits, wins.
+//!   With [`Router::breaking`], a route that has been failing is skipped for a while and
+//!   said to have been, rather than tried and waited on again in every request.
 //!
 //! # What it deliberately does not route on
 //!
@@ -35,6 +37,7 @@
 //! through normally, and a failure after that arrives as an `Err` item inside the stream and
 //! stays there.
 
+use crate::breaker::{Breaker, Health};
 use crate::chat::request::ChatRequest;
 use crate::chat::response::ChatResponse;
 use crate::chat::stream::EventStream;
@@ -44,6 +47,7 @@ use crate::observe;
 use crate::provider::{Access, Provider};
 use crate::retry::Retry;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// One way to reach one model.
 ///
@@ -253,17 +257,80 @@ impl Routed<()> {
 pub struct Router {
     routes: Vec<Route>,
     retry: Option<Retry>,
+    breaker: Option<Breaker>,
+    /// One per route, in the same order. Atomics, so this stays shareable.
+    health: Vec<Health>,
+    /// What "now" is measured from.
+    ///
+    /// A monotonic instant rather than the wall clock, so a machine whose clock steps
+    /// backwards cannot leave a circuit closed for a day. Held here rather than read per
+    /// call because a circuit needs two times compared, and comparing two elapsed durations
+    /// from one origin is the version that cannot go backwards.
+    since: Instant,
 }
 
 impl Router {
     /// A router over these routes, tried in this order.
     ///
-    /// Nothing is retried. Say so with [`Router::retrying`] if you want it.
+    /// Nothing is retried and nothing is remembered. Say so with [`Router::retrying`] and
+    /// [`Router::breaking`] if you want either.
     pub fn new(routes: Vec<Route>) -> Self {
+        let health = routes.iter().map(|_| Health::default()).collect();
         Self {
             routes,
             retry: None,
+            breaker: None,
+            health,
+            since: Instant::now(),
         }
+    }
+
+    /// Stop trying a route that has been failing, on the terms this policy sets.
+    ///
+    /// Without it, [`Router::chat`] starts at route 0 on every call, so a provider that has
+    /// been answering 503 for ten minutes is tried first, waited on and fallen through for
+    /// every single request. A router that does not learn is an ordered `try` list.
+    ///
+    /// With it, a route that fails is skipped for a while, and starts being tried again on
+    /// its own: nothing has to reopen a circuit, because time does. What opens one and what
+    /// does not is [`Breaker`]'s table, and the short version is that a failure about the
+    /// provider opens it and a failure about the request does not.
+    ///
+    /// ```
+    /// # use llmr::{Breaker, Router};
+    /// # fn example(routes: Vec<llmr::Route>) {
+    /// let router = Router::new(routes).breaking(Breaker::default());
+    /// # }
+    /// ```
+    ///
+    /// **A skipped route is never skipped silently.** It goes into
+    /// [`Routed::fell_through`] with how much longer it is being left alone and how many
+    /// requests in a row it has failed. A router that will not say why it avoided something
+    /// cannot be debugged at three in the morning.
+    ///
+    /// Handed in rather than assumed, for the reason [`Router::retrying`] is: not trying a
+    /// provider is a decision with consequences a library cannot weigh for you.
+    #[must_use]
+    pub fn breaking(mut self, policy: Breaker) -> Self {
+        self.breaker = Some(policy);
+        self
+    }
+
+    /// The routes currently being skipped, and how much longer for.
+    ///
+    /// Empty when every route is being tried, which is the answer without
+    /// [`Router::breaking`]. Worth putting on a dashboard: a route that is on this list for
+    /// hours is a provider nobody has noticed is gone.
+    pub fn resting(&self) -> Vec<(String, Duration)> {
+        self.routes
+            .iter()
+            .zip(&self.health)
+            .filter_map(|(route, health)| {
+                health
+                    .closed_for(self.since)
+                    .map(|left| (route.name(), left))
+            })
+            .collect()
     }
 
     /// Repeat a failed call, on the terms this policy sets.
@@ -466,8 +533,9 @@ impl Router {
         let mut fell_through = Vec::new();
         let mut last: Option<Error> = None;
         let mut attempts = 0;
+        let mut resting = 0;
 
-        for route in &self.routes {
+        for (route, health) in self.routes.iter().zip(&self.health) {
             let Some(capabilities) = route.capabilities() else {
                 fell_through.push(Attempted {
                     route: route.name(),
@@ -485,8 +553,29 @@ impl Router {
                 continue;
             }
 
+            // Asked after the capability checks and before anything is sent. A route that
+            // cannot serve this request at all is a fact about the pairing, and reporting
+            // it as resting would hide a typo behind a timer.
+            if let Some(left) = health.closed_for(self.since) {
+                resting += 1;
+                fell_through.push(Attempted {
+                    route: route.name(),
+                    why: format!(
+                        "circuit open for another {}ms after {} failures",
+                        left.as_millis(),
+                        health.failures()
+                    ),
+                });
+                continue;
+            }
+
             let mut sending = request.clone();
             sending.model = route.model.clone();
+
+            // What this route did with the request, so the circuit is told once per
+            // request rather than once per attempt. Three tries against a provider that is
+            // down is one piece of evidence, not three.
+            let mut failed: Option<Error> = None;
 
             // One pass per attempt this route is allowed. Without a policy that is one.
             let allowed = self.retry.as_ref().map_or(1, Retry::attempts);
@@ -498,6 +587,7 @@ impl Router {
                     // this is the last moment anything could have been served by somebody
                     // else.
                     Ok(response) => {
+                        health.served();
                         return Ok((
                             response,
                             Routed {
@@ -515,6 +605,11 @@ impl Router {
                         // stops here — and a retry would be the same thing against one
                         // model rather than several.
                         if matches!(error, Error::Refused { .. }) {
+                            // Counted, and it opens nothing. A model that answered about
+                            // the work is not a provider that has gone bad, and closing a
+                            // circuit here would take a working route out of the router for
+                            // saying no to one question.
+                            self.record(health, &error);
                             return Err(error);
                         }
 
@@ -536,32 +631,60 @@ impl Router {
                                 None => error.to_string(),
                             },
                         });
-                        last = Some(error);
-
                         match waiting {
                             Some(wait) => {
+                                last = Some(error);
                                 if let Some(policy) = &self.retry {
                                     policy.sleep(wait).await;
                                 }
                             }
                             // Settled, or out of attempts. On to the next route.
-                            None => break,
+                            None => {
+                                failed = Some(error);
+                                break;
+                            }
                         }
                     }
                 }
+            }
+
+            // Told once, after this route has finished with the request, rather than once
+            // per attempt inside it.
+            if let Some(error) = failed {
+                self.record(health, &error);
+                last = Some(error);
             }
         }
 
         match last {
             Some(error) => Err(error),
+            // Every route that could have served this is resting. Transient rather than
+            // unsupported: nothing is wrong with the request, and the difference decides
+            // whether a caller fixes their configuration or waits.
+            None if resting > 0 => Err(Error::Transient(format!(
+                "every route that could serve this is circuit open. Tried: {}",
+                Self::listing(&fell_through)
+            ))),
             None => Err(Error::Unsupported(format!(
                 "no route can serve this request. Tried: {}",
-                fell_through
-                    .iter()
-                    .map(|a| format!("{} ({})", a.route, a.why))
-                    .collect::<Vec<_>>()
-                    .join("; ")
+                Self::listing(&fell_through)
             ))),
         }
+    }
+
+    /// Tells this route's health what happened, when there is a policy to tell it about.
+    fn record(&self, health: &Health, error: &Error) {
+        if let Some(breaker) = &self.breaker {
+            health.failed(breaker, error, self.since);
+        }
+    }
+
+    /// Every route that did not serve the request, and why, for one line somebody reads.
+    fn listing(fell_through: &[Attempted]) -> String {
+        fell_through
+            .iter()
+            .map(|a| format!("{} ({})", a.route, a.why))
+            .collect::<Vec<_>>()
+            .join("; ")
     }
 }

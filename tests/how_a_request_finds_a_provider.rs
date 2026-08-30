@@ -65,6 +65,13 @@ impl Provider for Stub {
                 category: category.clone(),
             }),
             Some(Error::Transient(why)) => Err(Error::Transient(why.clone())),
+            // Reproduced rather than flattened, because which variant a provider returns is
+            // exactly what the circuit breaker reads.
+            Some(Error::InvalidRequest(why)) => Err(Error::InvalidRequest(why.clone())),
+            Some(Error::Auth(why)) => Err(Error::Auth(why.clone())),
+            Some(Error::RateLimited { retry_after }) => Err(Error::RateLimited {
+                retry_after: *retry_after,
+            }),
             Some(other) => Err(Error::Transient(other.to_string())),
             None => Ok(ChatResponse::new(
                 Message {
@@ -685,4 +692,259 @@ async fn a_refused_stream_stops_rather_than_being_asked_of_the_next_model() {
 
     assert!(matches!(outcome, Err(Error::Refused { .. })));
     assert_eq!(spare.opened(), 0);
+}
+
+// ---- Memory ----------------------------------------------------------------------------
+//
+// A router that starts at route 0 on every call is an ordered `try` list. These are the
+// claims that make it something else.
+
+use llmr::Breaker;
+use std::time::Duration;
+
+/// A breaker whose waits are short enough for a test to sit through.
+fn quick() -> Breaker {
+    Breaker::new(
+        Duration::from_millis(80),
+        Duration::from_millis(200),
+        Duration::from_millis(300),
+    )
+}
+
+#[tokio::test]
+async fn a_route_that_keeps_failing_stops_being_tried_first() {
+    let dead = Stub::failing(
+        "dead",
+        "m",
+        plain(Reach::FirstPartyApi),
+        Error::Transient("503".into()),
+    );
+    let alive = Stub::serving("alive", "m", plain(Reach::FirstPartyApi));
+    let router = Router::new(vec![
+        Route::new(dead.clone(), "m"),
+        Route::new(alive.clone(), "m"),
+    ])
+    .breaking(quick());
+
+    for _ in 0..4 {
+        let routed = router
+            .chat(request(), Requirements::default())
+            .await
+            .unwrap_or_else(|e| panic!("the live route answers: {e}"));
+        assert_eq!(routed.route, "alive/m");
+    }
+
+    assert_eq!(
+        dead.calls(),
+        1,
+        "tried once, and then left alone rather than waited on four times"
+    );
+    assert_eq!(alive.calls(), 4);
+}
+
+#[tokio::test]
+async fn a_skipped_route_says_why_it_was_skipped() {
+    // A router that will not say why it avoided something cannot be debugged at three in
+    // the morning.
+    let dead = Stub::failing(
+        "dead",
+        "m",
+        plain(Reach::FirstPartyApi),
+        Error::Transient("503".into()),
+    );
+    let alive = Stub::serving("alive", "m", plain(Reach::FirstPartyApi));
+    let router = Router::new(vec![
+        Route::new(dead.clone(), "m"),
+        Route::new(alive.clone(), "m"),
+    ])
+    .breaking(quick());
+
+    let _ = router.chat(request(), Requirements::default()).await;
+    let routed = router
+        .chat(request(), Requirements::default())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    let skipped = &routed.fell_through[0];
+    assert_eq!(skipped.route, "dead/m");
+    assert!(
+        skipped.why.contains("circuit open") && skipped.why.contains("1 failures"),
+        "{}",
+        skipped.why
+    );
+
+    // And the same fact is readable without making a request, for a dashboard.
+    let resting = router.resting();
+    assert_eq!(resting.len(), 1);
+    assert_eq!(resting[0].0, "dead/m");
+}
+
+#[tokio::test]
+async fn a_route_starts_being_tried_again_on_its_own() {
+    // Nothing reopens a circuit. Time does, which is why there is no half open state and
+    // nothing to call.
+    let flaky = Stub::failing(
+        "flaky",
+        "m",
+        plain(Reach::FirstPartyApi),
+        Error::Transient("503".into()),
+    );
+    let alive = Stub::serving("alive", "m", plain(Reach::FirstPartyApi));
+    let router = Router::new(vec![
+        Route::new(flaky.clone(), "m"),
+        Route::new(alive.clone(), "m"),
+    ])
+    .breaking(quick());
+
+    let _ = router.chat(request(), Requirements::default()).await;
+    assert_eq!(flaky.calls(), 1);
+
+    let _ = router.chat(request(), Requirements::default()).await;
+    assert_eq!(flaky.calls(), 1, "still resting");
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    let _ = router.chat(request(), Requirements::default()).await;
+    assert_eq!(flaky.calls(), 2, "tried again without anybody asking");
+}
+
+#[tokio::test]
+async fn a_refusal_never_takes_a_route_out_of_the_router() {
+    // The model answered, about the work. Closing a circuit here would remove a working
+    // provider for having said no to one question.
+    let refuser = Stub::failing(
+        "refuser",
+        "m",
+        plain(Reach::FirstPartyApi),
+        Error::Refused {
+            category: Some("policy".into()),
+        },
+    );
+    let router = Router::new(vec![Route::new(refuser.clone(), "m")]).breaking(quick());
+
+    for _ in 0..3 {
+        assert!(matches!(
+            router.chat(request(), Requirements::default()).await,
+            Err(Error::Refused { .. })
+        ));
+    }
+
+    assert_eq!(refuser.calls(), 3, "asked every time");
+    assert!(router.resting().is_empty());
+}
+
+#[tokio::test]
+async fn a_malformed_request_never_takes_a_route_out_of_the_router() {
+    // It will be malformed on the next route too, and on the next request. Nothing about
+    // the provider is wrong.
+    let picky = Stub::failing(
+        "picky",
+        "m",
+        plain(Reach::FirstPartyApi),
+        Error::InvalidRequest("no such parameter".into()),
+    );
+    let router = Router::new(vec![Route::new(picky.clone(), "m")]).breaking(quick());
+
+    for _ in 0..3 {
+        let _ = router.chat(request(), Requirements::default()).await;
+    }
+    assert_eq!(picky.calls(), 3);
+    assert!(router.resting().is_empty());
+}
+
+#[tokio::test]
+async fn a_router_with_every_route_resting_says_that_rather_than_unsupported() {
+    // The difference decides whether somebody fixes their configuration or waits. An
+    // `Unsupported` here would send a person looking for a capability that is not missing.
+    let dead = Stub::failing(
+        "dead",
+        "m",
+        plain(Reach::FirstPartyApi),
+        Error::Transient("503".into()),
+    );
+    let router = Router::new(vec![Route::new(dead.clone(), "m")]).breaking(quick());
+
+    let _ = router.chat(request(), Requirements::default()).await;
+    let again = router.chat(request(), Requirements::default()).await;
+
+    match again {
+        Err(Error::Transient(why)) => assert!(why.contains("circuit open"), "{why}"),
+        other => panic!("expected a transient failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_route_that_answers_forgets_that_it_ever_failed() {
+    // Otherwise the next failure backs off as though the run of successes in between had
+    // not happened.
+    let sometimes = Arc::new(Flaky {
+        fail_first: AtomicUsize::new(1),
+        calls: AtomicUsize::new(0),
+    });
+    let router = Router::new(vec![Route::new(sometimes.clone(), "m")]).breaking(quick());
+
+    let _ = router.chat(request(), Requirements::default()).await;
+    assert_eq!(router.resting().len(), 1);
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let ok = router.chat(request(), Requirements::default()).await;
+    assert!(ok.is_ok(), "it answers now");
+    assert!(router.resting().is_empty(), "and the record is cleared");
+}
+
+/// Fails the first `fail_first` calls, then answers.
+struct Flaky {
+    fail_first: AtomicUsize,
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Provider for Flaky {
+    fn id(&self) -> &str {
+        "flaky"
+    }
+
+    fn capabilities(&self, model: &ModelId) -> Option<ModelCapabilities> {
+        (model.as_str() == "m").then_some(plain(Reach::FirstPartyApi))
+    }
+
+    async fn chat(&self, request: ChatRequest) -> llmr::Result<ChatResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_first.load(Ordering::SeqCst) > 0 {
+            self.fail_first.fetch_sub(1, Ordering::SeqCst);
+            return Err(Error::Transient("not yet".into()));
+        }
+        Ok(ChatResponse::new(
+            Message {
+                role: Role::Assistant,
+                content: vec![llmr::ContentBlock::Text("ok".into())],
+            },
+            StopReason::EndTurn,
+            Usage::absent().with_output(1),
+            request.model,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn without_a_policy_nothing_is_remembered() {
+    // The behaviour every existing caller has. Not trying a provider is a decision with
+    // consequences a library cannot weigh, so it is handed in like a retry policy is.
+    let dead = Stub::failing(
+        "dead",
+        "m",
+        plain(Reach::FirstPartyApi),
+        Error::Transient("503".into()),
+    );
+    let alive = Stub::serving("alive", "m", plain(Reach::FirstPartyApi));
+    let router = Router::new(vec![
+        Route::new(dead.clone(), "m"),
+        Route::new(alive.clone(), "m"),
+    ]);
+
+    for _ in 0..3 {
+        let _ = router.chat(request(), Requirements::default()).await;
+    }
+    assert_eq!(dead.calls(), 3, "tried every time, as before");
+    assert!(router.resting().is_empty());
 }
