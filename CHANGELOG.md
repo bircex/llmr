@@ -5,7 +5,11 @@ change is a minor bump.
 
 ## Unreleased
 
-First release. Nothing published yet.
+Nothing yet.
+
+## 0.1.0 — 2026-08-30
+
+First release.
 
 ### Added
 
