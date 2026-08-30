@@ -26,6 +26,7 @@ default = ["anthropic", "openai"]
 # bugs would corrupt an image rather than fail.
 anthropic = ["dep:base64"]
 openai    = ["dep:base64"]
+gemini    = ["dep:base64"]
 
 # A command line tool as a subprocess. No network code at all.
 cli = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/time"]

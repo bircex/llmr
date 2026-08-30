@@ -196,6 +196,7 @@ that was rejected and the tool that is not installed.
 | `providers::anthropic::cli` | `cli` | local CLI | The Claude Code tool |
 | `providers::openai::api` | `openai` | you say | Anything speaking OpenAI chat completions |
 | `providers::openai::cli` | `cli` | local CLI | The Codex tool |
+| `providers::gemini::api` | `gemini` | first party API | Gemini `generateContent` |
 
 They are grouped by vendor and then by reach, because which vendor is what you know first
 and the same models turn up behind more than one reach. Anthropic's are reachable over the
@@ -458,9 +459,9 @@ Nothing else yet.
 
 **Anything that is not chat.** No embeddings, no reranking, no completion endpoints.
 
-**Model catalogues, on the command line providers.** The Anthropic and OpenAI shaped
-providers implement `catalogue()`. A command line tool cannot be asked what it serves, so it
-answers `Error::Unsupported`, which is an answer and not an empty list.
+**Model catalogues, on the command line providers.** All three API providers implement
+`catalogue()`. A command line tool cannot be asked what it serves, so it answers
+`Error::Unsupported`, which is an answer and not an empty list.
 
 **A free way to check a command line login.** `validate` on a CLI provider probes the program
 and establishes that it is installed. No vendor tool answers "is this login still good"

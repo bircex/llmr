@@ -78,6 +78,7 @@ jobs:
       - run: cargo build --no-default-features --features cli
       - run: cargo build --no-default-features --features anthropic
       - run: cargo build --no-default-features --features openai
+      - run: cargo build --no-default-features --features gemini
       - run: cargo build --no-default-features --features testkit
       - run: cargo build --no-default-features --features retry
       - run: cargo build --no-default-features --features tracing

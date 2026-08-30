@@ -348,3 +348,60 @@ async fn a_reach_that_cannot_stream_says_so_rather_than_failing_at_the_call() {
          rather than failing at the call"
     );
 }
+
+// ---- Gemini ----------------------------------------------------------------------------
+
+#[cfg(feature = "gemini")]
+const GEMINI_STREAM: &str = "\
+data: {\"modelVersion\":\"gemini-3-pro-001\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"thinking it over\",\"thought\":true}]}}]}
+
+data: {\"modelVersion\":\"gemini-3-pro-001\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Fo\"}]}}]}
+
+data: {\"modelVersion\":\"gemini-3-pro-001\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ur.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":912,\"cachedContentTokenCount\":900,\"candidatesTokenCount\":4,\"thoughtsTokenCount\":11}}
+
+";
+
+#[cfg(feature = "gemini")]
+#[tokio::test]
+async fn gemini_streams_to_its_own_endpoint_and_keeps_reasoning_out_of_the_answer() {
+    // Two things at once, because they fail together. The URL has to be the streaming one
+    // or the frames never arrive as frames; and a `thought` part read as text would put the
+    // model's working out into the answer, streamed or not.
+    let transport = Streamed::chopped(GEMINI_STREAM, 23);
+    let provider = llmr::providers::gemini::api::with(
+        transport as Arc<dyn HttpTransport>,
+        Secret::new("key", "AIza-test"),
+        Arc::new(Registry::empty("gemini", Reach::FirstPartyApi)),
+    );
+
+    let mut transcript = Transcript::new("gemini-3-pro");
+    let outcome = match provider
+        .stream(ChatRequest::new("gemini-3-pro", vec![Message::user("hi")]))
+        .await
+    {
+        Ok(stream) => transcript.drain(stream).await,
+        Err(e) => Err(e),
+    };
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let reply = transcript.finish();
+
+    assert_eq!(reply.text(), "Four.", "reasoning must not reach the answer");
+    assert_eq!(
+        reply.message.content[0],
+        ContentBlock::Thinking {
+            text: "thinking it over".into(),
+            signature: None
+        }
+    );
+    assert_eq!(reply.stop_reason, StopReason::EndTurn);
+    assert_eq!(
+        reply.usage.input_tokens,
+        Some(12),
+        "912 total less 900 cached"
+    );
+    assert_eq!(
+        reply.usage.output_tokens,
+        Some(15),
+        "4 shown plus 11 thought"
+    );
+}

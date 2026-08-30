@@ -10,6 +10,7 @@
 //! providers::anthropic::cli   the Claude Code tool
 //! providers::openai::api      anything speaking /v1/chat/completions
 //! providers::openai::cli      the Codex tool
+//! providers::gemini::api      Gemini's generateContent
 //! ```
 //!
 //! Which vendor is what a caller knows first, and the same models turn up behind more than
@@ -56,6 +57,10 @@ pub mod cli;
 #[cfg(any(feature = "anthropic", feature = "cli"))]
 #[cfg_attr(docsrs, doc(cfg(any(feature = "anthropic", feature = "cli"))))]
 pub mod anthropic;
+
+#[cfg(feature = "gemini")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gemini")))]
+pub mod gemini;
 
 #[cfg(any(feature = "openai", feature = "cli"))]
 #[cfg_attr(docsrs, doc(cfg(any(feature = "openai", feature = "cli"))))]

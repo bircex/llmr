@@ -86,7 +86,7 @@ impl Protocol for Messages {
         "anthropic"
     }
 
-    fn chat_url(&self, base_url: &str) -> String {
+    fn chat_url(&self, base_url: &str, _model: &ModelId) -> String {
         format!("{base_url}/v1/messages")
     }
 
