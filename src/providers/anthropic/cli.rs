@@ -62,6 +62,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_preset_does_not_claim_to_know_how_the_account_is_billed() {
+        // The same program signed in one way is a flat fee and signed in another is metered
+        // against an API key. A preset that guessed would write a metered call down as
+        // costing nothing, which is the zero `Usage::absent` exists to prevent.
+        use crate::Provider as _;
+        assert_eq!(provider(Duration::from_secs(60)).subscription(), None);
+        assert_eq!(
+            provider(Duration::from_secs(60))
+                .billed_by("claude-max")
+                .subscription(),
+            Some("claude-max")
+        );
+    }
+
+    #[test]
     fn the_preset_is_probed() {
         // A preset that shipped without one would answer unknown for every user who never
         // read this far, which is the same as not having the method at all.

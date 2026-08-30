@@ -34,6 +34,26 @@
 //!
 //! Absent is the important one. A subscription tool has no per call price, and writing zero
 //! would turn an unknown cost into a free one in every report that adds it up.
+//!
+//! # What a run of these costs
+//!
+//! Absent usage is honest and, on its own, useless: a bot making a hundred of these calls is
+//! told its run cost "at least 0.00". Three things help, and they are not exclusive.
+//!
+//! **Read what the tool does report.** Some print token counts in their JSON envelope, and
+//! [`Envelope::with_usage`] reads them. Both presets here do. Get [`UsageNames`] right,
+//! though: whether a tool's prompt count is the whole prompt or the uncached remainder is
+//! the difference between a number that is right and one that looks right.
+//!
+//! **Say what covers the calls.** A tool signed in against a subscription costs nothing more
+//! per call, and [`LocalCli::billed_by`] says so, which moves the calls out of the unknown
+//! column of a [`crate::Ledger`] and into a named one. Nothing sets it for you: the same
+//! program signed in against an API key is metered, and no preset can tell which.
+//!
+//! **Count the tokens yourself, and mark them.** [`crate::Usage::estimating`] takes a count
+//! you produced and keeps it apart from one a vendor reported, so a total can say how much
+//! of itself was guessed. This crate does not do the counting: a tokeniser has to match the
+//! vendor's, per model, and one that is close produces numbers that look right and are not.
 
 use crate::chat::message::{ContentBlock, Message, Role, StopReason};
 use crate::chat::request::ChatRequest;
@@ -267,6 +287,7 @@ pub struct LocalCli {
     serves: std::collections::BTreeSet<String>,
     runner: Arc<dyn ProcessRunner>,
     envelope: Option<Envelope>,
+    subscription: Option<String>,
     /// Crate visible so a vendor preset's own tests can assert it shipped with one. Not
     /// public: an accessor widened for a test is public surface forever.
     pub(crate) probe: Option<Vec<String>>,
@@ -299,8 +320,42 @@ impl LocalCli {
             serves: std::collections::BTreeSet::new(),
             runner: Arc::new(Spawning),
             envelope: None,
+            subscription: None,
             probe: None,
         }
+    }
+
+    /// Says this tool's calls are covered by a flat fee rather than billed per token.
+    ///
+    /// The name goes into every ledger line the tool produces, and
+    /// [`crate::Ledger::record_from`] reads it, so a run of a hundred command line calls
+    /// reports as "100 covered by claude-max" instead of "at least 0.00".
+    ///
+    /// ```
+    /// use llmr::providers::anthropic::cli;
+    /// use llmr::Provider;
+    /// # use std::time::Duration;
+    /// let claude = cli::provider(Duration::from_secs(300)).billed_by("claude-max");
+    /// assert_eq!(claude.subscription(), Some("claude-max"));
+    /// ```
+    ///
+    /// # Nothing sets this for you, and that is the point
+    ///
+    /// The same program signed in one way is a subscription and signed in another is metered
+    /// against an API key, and no preset can tell which. Saying it here is a person stating
+    /// a fact about their own account.
+    ///
+    /// Say it wrongly and a metered call is written down as costing nothing, which is the
+    /// exact failure [`crate::Usage::absent`] exists to prevent. The protection is that it
+    /// cannot happen by accident: it takes typing a plan name.
+    ///
+    /// It does not change what the tool reports. If the tool prints usage, that usage is
+    /// still read and still on the line. What changes is that the *cost* of the call is
+    /// recorded as covered rather than unknown.
+    #[must_use]
+    pub fn billed_by(mut self, plan: impl Into<String>) -> Self {
+        self.subscription = Some(plan.into());
+        self
     }
 
     /// Reads the tool's output as a JSON envelope rather than as the answer itself.
@@ -402,6 +457,10 @@ impl LocalCli {
 impl Provider for LocalCli {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn subscription(&self) -> Option<&str> {
+        self.subscription.as_deref()
     }
 
     fn capabilities(&self, model: &ModelId) -> Option<ModelCapabilities> {

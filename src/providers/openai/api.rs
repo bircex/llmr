@@ -494,5 +494,7 @@ fn read_usage(value: Option<&Value>) -> Usage {
         // was zero, and a zero here would price a cache write as free.
         cache_write_tokens: None,
         output_tokens: field("completion_tokens"),
+        // Reported by the vendor, not counted here.
+        estimated: false,
     }
 }

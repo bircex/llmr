@@ -7,15 +7,30 @@ change is a minor bump.
 
 ### Added
 
-- `Ledger::record_cancelled`, for a call that went out and whose reply was never read. The
-  case is hedging: two providers asked the same question, the loser's future dropped. That
-  request was billed, no `ChatResponse` came back, so nothing called `Ledger::record` and the
-  ledger reported one measured call and an `Exact` total. (#48)
+- `UsageCoverage::Estimated` and `Usage::estimating`, so tokens counted locally can be added
+  up without being folded into `Exact`. An estimate is not a floor: it can run high, so
+  `Total::About` is a third answer and outranks `Total::AtLeast` when both apply.
+  `Ledger::estimated` keeps the guessed part of a bill findable after it has been summed.
+  This crate does not count the tokens and will not; bring your own. (#38)
+- `Ledger::record_subscription`, `Ledger::subscribed` and `Ledger::plans`, so a call covered
+  by a flat fee is out of scope rather than unknown. A run of a hundred command line calls
+  reported "at least 0.00" before this, which is true and useless on the crate's main path.
+  The total never contains the fee. (#38)
+- `Provider::subscription`, defaulting to `None`, and `LocalCli::billed_by` to set it.
+  Nothing guesses: the same tool signed in against an API key is metered. (#38)
+- `Ledger::record_from`, which reads `Provider::subscription` and records the call the right
+  way, so a route added later cannot be recorded two different ways in two places. (#38)
+- `Ledger::summary`, the run in one sentence: what was measured, what was estimated, what has
+  no figure at all, and what a plan covers. (#38)
+### Changed
 
+- **Breaking:** `Usage` has a new `estimated` field, `Line` a new `subscription` field, and
+  `Total` a new `About` variant. A `match` on `Total` needs the arm; both structs are
+  `#[non_exhaustive]`, so only a struct literal inside this crate had to change. (#38)
 ### Documentation
 
-- `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
-  have cost, and the ledger debt it leaves. (#48)
+- `docs/DESIGN.md` records why a subscription call is out of scope rather than unknown, why
+  an estimate outranks a floor, and why this crate will not ship a tokeniser. (#38)
 
 ## 0.1.0 — 2026-08-30
 
