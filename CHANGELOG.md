@@ -111,6 +111,17 @@ First release. Nothing published yet.
 - The public item count has a stated method for the first time. It was 180 in the roadmap and
   189 in the issue, and neither said what it counted.
 
+### Added, a cloud partner
+
+- `providers::bedrock::api`, behind a `bedrock` feature: Anthropic's models through Amazon,
+  reaching [`Reach::CloudPartner`] for the first time. It reuses the Messages translation
+  rather than copying it, with a test asserting both routes send the same request.
+- **Signing is the transport's job.** There is no key argument: SigV4 covers the whole HTTP
+  request and needs a clock, a region and rotating credentials, none of which a pure
+  `Protocol` may hold. This crate ships the translation and you wrap your transport.
+- No streaming through Bedrock's binary event framing, so `stream` falls back to one burst —
+  an answer rather than a refusal, with `capabilities` saying which it is.
+
 ### Decided
 
 - **Where a gateway lives** (#29). The top level of `providers::` names who you reach and

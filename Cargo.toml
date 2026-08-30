@@ -28,6 +28,11 @@ anthropic = ["dep:base64"]
 openai    = ["dep:base64"]
 gemini    = ["dep:base64"]
 
+# Anthropic's models through Amazon. Depends on `anthropic` because it reuses that
+# translation rather than copying it: Claude through Bedrock and Claude direct must send the
+# same JSON, and two copies would disagree the first time one was fixed.
+bedrock   = ["anthropic"]
+
 # A command line tool as a subprocess. No network code at all.
 cli = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/time"]
 

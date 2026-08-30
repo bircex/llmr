@@ -465,6 +465,55 @@ After 0.1.0 the same tool answers a better question than "how many": `cargo publ
 
 ---
 
+## Signing is a transport concern, not a protocol one
+
+Bedrock authenticates with SigV4 rather than a bearer token, and #22 asked where that
+belongs. It belongs in [`HttpTransport`], and this crate ships no implementation of it.
+
+**A signature covers what a protocol cannot see.** SigV4 signs the method, the path, the
+query, a set of headers and a hash of the body. A `Protocol` writes JSON and has no idea what
+URL or headers the shared machinery is about to attach — by design, because that is what lets
+one `ApiProvider` serve every protocol.
+
+**It also needs state a protocol is not allowed to have.** A signature covers a timestamp, so
+signing needs a clock; it covers a region; and it needs credentials that rotate. Every
+`Protocol` method is a pure function, which is what makes one instance safe across any number
+of concurrent calls. A signer with a clock and a credential store inside it would end that.
+
+So `providers::bedrock::api` has **no key argument**. The credential belongs to the transport
+you supply, and the protocol's `headers` deliberately attaches none — a bearer token beside a
+signature is at best ignored and at worst a request Bedrock rejects.
+
+**Why no SigV4 here.** Writing one would mean a crypto dependency and an implementation
+nobody could test against the real thing from inside this crate. `aws-sigv4` exists, most
+programs reaching Bedrock already have `aws-config` for credentials, and wrapping a transport
+is ten lines. The crate already makes this bargain for HTTP itself: `reqwest` is a feature,
+not a requirement.
+
+**If signing moved into `Protocol`**, every protocol would gain a method that all but one
+ignores, `ApiProvider` would have to hand it the request it is about to send, and the purity
+that makes protocols shareable would go. The one gain would be that Bedrock needed no wrapper,
+which is the smallest of the three things at stake.
+
+---
+
+## Bedrock reuses the Messages translation rather than copying it
+
+`providers::bedrock::api` calls `Messages.body()` and `Messages.read()`, then makes two
+documented changes: the model moves from the body to the path, and `anthropic_version` takes
+its place.
+
+Claude through Amazon and Claude direct must send the same request. Two copies of that
+translation would disagree the first time one was fixed, and the difference would surface as
+a behaviour change on one route that nobody asked for and no test compared. There is a test
+that sends the same request both ways and asserts the bodies are equal apart from those two
+fields.
+
+The cost is a feature dependency: `bedrock` requires `anthropic`. That is honest — it is the
+Anthropic schema, spoken at a different address.
+
+---
+
 ## Nothing holds a lock across an await
 
 Every provider is immutable once built. `chat` takes `&self`, and anything shared is either
