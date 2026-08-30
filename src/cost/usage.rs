@@ -104,6 +104,30 @@ impl Usage {
         self
     }
 
+    /// What an embedding call consumed, when the provider reported its prompt tokens.
+    ///
+    /// An embedding endpoint reports one number, because one number is all there is: text
+    /// goes in and a vector comes out, and a vector is not tokens. So the other three fields
+    /// are set to zero rather than left absent, and this reads as
+    /// [`UsageCoverage::Exact`].
+    ///
+    /// **That is a claim, and it is the same claim [`Usage::prompt_tokens`] already makes**:
+    /// a provider reporting some fields and not others is saying the others did not happen.
+    /// Here they did not. Left absent instead, every embedding call would read as `Partial`
+    /// and turn every [`crate::Ledger`] total into a floor forever — an honest-looking
+    /// hedge about a call that was measured exactly.
+    ///
+    /// If a vendor does report cached tokens on an embedding call, build the [`Usage`] with
+    /// the builders instead. This constructor is for the common shape, not for every shape.
+    pub fn embedding(input_tokens: u64) -> Self {
+        Usage {
+            input_tokens: Some(input_tokens),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            output_tokens: Some(0),
+        }
+    }
+
     /// How much of this was reported.
     pub fn coverage(&self) -> UsageCoverage {
         let fields = [
@@ -217,5 +241,24 @@ mod tests {
         let merged = full().merge(full());
         assert_eq!(merged.input_tokens, Some(200));
         assert_eq!(merged.output_tokens, Some(40));
+    }
+
+    #[test]
+    fn an_embedding_call_is_measured_exactly_rather_than_partly() {
+        // One number is all an embedding endpoint has to report, and a vector is not
+        // tokens. Left absent, the three fields that did not happen would make every
+        // embedding call `Partial` and every ledger total a floor for good.
+        let usage = Usage::embedding(1_500);
+        assert_eq!(usage.coverage(), UsageCoverage::Exact);
+        assert_eq!(usage.prompt_tokens(), Some(1_500));
+        assert_eq!(usage.output_tokens, Some(0));
+    }
+
+    #[test]
+    fn an_embedding_nobody_measured_is_still_absent() {
+        // The constructor is for a reported number. A provider that got none uses
+        // `absent`, and zero is not a substitute for it here any more than anywhere else.
+        assert_eq!(Usage::absent().coverage(), UsageCoverage::Absent);
+        assert_eq!(Usage::embedding(0).coverage(), UsageCoverage::Exact);
     }
 }

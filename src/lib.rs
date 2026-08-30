@@ -14,6 +14,11 @@
 
 pub mod chat;
 pub mod cost;
+
+#[cfg(feature = "embeddings")]
+#[cfg_attr(docsrs, doc(cfg(feature = "embeddings")))]
+pub mod embed;
+
 pub mod error;
 pub mod model;
 mod observe;
@@ -35,6 +40,8 @@ pub use chat::{
     Message, Needs, Role, StopReason, Thinking, ToolSchema, Transcript,
 };
 pub use cost::{Ledger, Micros, PriceBook, Priced, Rate, Usage, UsageCoverage};
+#[cfg(feature = "embeddings")]
+pub use embed::{EmbedRequest, Embedder, Embedding, EmbeddingCapabilities, Embeddings, Purpose};
 pub use error::{Error, Result};
 pub use model::{ModelCapabilities, ModelId, Reach};
 pub use provider::{Access, Provider};

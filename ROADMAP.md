@@ -9,20 +9,20 @@ reason.
 
 ## Where it stands
 
-As of the currency fix, after Bedrock, which was the last provider before 0.1.
+As of embeddings landing, the last thing #26 left to build.
 
 | | |
 |---|---:|
-| Source | 9,267 lines across 33 files |
-| Tests | 261 passing |
-| Public items | 6,209 all in, 1,277 hand written · see below |
+| Source | 10,663 lines across 35 files |
+| Tests | 292 passing, all features · 200 on the default set |
+| Public items | 6,802 all in, 1,416 hand written · see below |
 | Dependency tree, default features | 31 crates |
 | Published | no |
 | CI on GitHub | runs, and is green as of phase 4 |
 
 Everything below is green: `cargo fmt --check`, clippy under three feature combinations,
 `cargo doc` with warnings denied under two feature sets, every feature built alone, and the
-full test suite.
+full test suite under two.
 
 The public item count is two numbers because it needs a stated method, and used to be one
 number twice with no method at all — this file said 180 and issue #19 said 189, and neither
@@ -34,7 +34,7 @@ cargo +nightly public-api --all-features \
   --omit blanket-impls,auto-trait-impls,auto-derived-impls | wc -l
 ```
 
-6,209 is every public item, dominated by the trait implementations `derive` writes. 1,277 is
+6,802 is every public item, dominated by the trait implementations `derive` writes. 1,416 is
 that with them omitted, which is roughly what a reader of the docs meets. Either is fine.
 Using the same one next time is what matters, and after 0.1.0 `cargo public-api --diff`
 answers the better question anyway.
@@ -51,9 +51,15 @@ cargo clippy --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --all-features
+cargo test
 ```
 
-Run all seven before any commit, and run them on the toolchain in `rust-toolchain.toml`
+The last one is new, and it is there for the same reason the second `cargo doc` line is: a
+doctest naming a feature gated item compiles under `--all-features` and nowhere else. Two
+README examples had been failing on the default feature set for as long as this list ended at
+the line above.
+
+Run all eight before any commit, and run them on the toolchain in `rust-toolchain.toml`
 rather than whatever a laptop happens to have. That file is the reason these commands mean
 the same thing here as on a runner; without it they passed on 1.97 and failed on 1.98 for
 months.
@@ -231,7 +237,7 @@ tick on somebody's unrelated pull request.
   blanket ignores, and duplicates warned. `cargo deny check` passes; it warns about `syn` 1
   and 2 and two `windows-sys` versions, both transitive and neither ours to fix.
 - **A release workflow.** `.github/workflows/release.yml` fires on a `v*` tag, re-runs all
-  seven checks against that commit, refuses if the tag disagrees with `Cargo.toml` or the
+  eight checks against that commit, refuses if the tag disagrees with `Cargo.toml` or the
   changelog has no section for it, and holds the publish behind a `crates-io` environment so
   a person approves it. A published version cannot be unpublished, only yanked.
 - **A packaging job on pull requests.** `cargo package --list` and `cargo publish --dry-run`,
@@ -299,12 +305,13 @@ Not planned in detail, and roughly in this order.
 | ~~Images~~ · **done** | `ContentBlock::Image`, refused rather than stripped where a reach cannot carry one |
 | More CLI presets | Gemini CLI and whatever else appears (#24). A preset is a file and it goes beside its vendor's other reaches — but it needs a recorded `--output-format json` sample first, because inventing the usage field names reports a number that looks right and is not |
 | ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor, and refuses to be one number when the run mixes currencies |
-| Embeddings | Decided (#26): a trait in this crate behind a feature, not a second crate. `docs/DESIGN.md` says what breaks under the other. Still to build |
+| ~~Embeddings~~ · **done** | `embed`, behind a feature, as #26 decided. A vector carries the model that made it and `similarity` refuses across two — the currency rule in a different type |
 
 ## Things known to be missing, said in the README
 
-Embeddings, audio and documents, and a model catalogue on the command line providers, which
-cannot be asked what they serve. Bedrock does not stream, because its event framing is not
-server sent events. If you fix one, take it out of the README's list in the same commit.
+Reranking and completion endpoints, audio and documents, and a model catalogue on the command
+line providers, which cannot be asked what they serve. Bedrock does not stream, because its
+event framing is not server sent events. If you fix one, take it out of the README's list in
+the same commit.
 
-Streaming, retries and images used to be on this line and are not any more.
+Streaming, retries, images and embeddings used to be on this line and are not any more.

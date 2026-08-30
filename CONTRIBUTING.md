@@ -30,11 +30,14 @@ cargo clippy --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --all-features
+cargo test
 ```
 
-All seven must be clean, and warnings count. Two of them look redundant and are not: a
-clippy lint can fire under one feature set and not another, and a doc link to a feature
-gated item resolves under `--all-features` and nowhere else.
+All eight must be clean, and warnings count. Three of them look redundant and are not: a
+clippy lint can fire under one feature set and not another, a doc link to a feature gated
+item resolves under `--all-features` and nowhere else, and so does a *doctest* naming one.
+The last line is there because two README examples had been failing on the default feature
+set for as long as this list ended one line earlier.
 
 Run them on the toolchain in `rust-toolchain.toml` rather than whatever your machine has.
 That file exists because these commands once passed on a laptop running 1.97 and failed on
@@ -88,7 +91,7 @@ organised.
 
 ## What CI will run
 
-The seven above, plus three you would not usually run by hand:
+The eight above, plus three you would not usually run by hand:
 
 - **`cargo deny check`** — licences against an allowlist, advisories denied, sources limited
   to crates.io, duplicate versions warned. `deny.toml` says why each allowed licence is

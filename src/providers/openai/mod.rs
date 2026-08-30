@@ -4,6 +4,7 @@
 //! |---|---|---|
 //! | `api` | you say | Anything speaking `/v1/chat/completions` |
 //! | `cli` | [`crate::Reach::LocalCli`] | The Codex tool on this machine |
+//! | `embed` | you say | Anything speaking `/v1/embeddings` |
 //!
 //! # `api` is a shape, not a vendor
 //!
@@ -27,3 +28,11 @@ pub mod api;
 #[cfg(feature = "cli")]
 #[cfg_attr(docsrs, doc(cfg(feature = "cli")))]
 pub mod cli;
+
+// Both features, because this is the embeddings trait spoken in the OpenAI shape and needs
+// each half. It is a sibling of `api` rather than something inside it: embeddings are a
+// different request, a different reply and a different trait, and the only thing the two
+// share is a base URL and a key.
+#[cfg(all(feature = "openai", feature = "embeddings"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "openai", feature = "embeddings"))))]
+pub mod embed;

@@ -75,8 +75,8 @@ First release. Nothing published yet.
 - A packaging job on pull requests, so what would ship is checked before release day.
 - `cargo-semver-checks`, skipped with a note until 0.1.0 is published and in place for the
   release after it.
-- Issue templates, a pull request template carrying the seven commands, and a code of
-  conduct.
+- Issue templates, a pull request template carrying the commands every change is held to,
+  and a code of conduct.
 
 ### Added, images
 
@@ -137,6 +137,37 @@ First release. Nothing published yet.
   and one invented so that a method could return a single number would produce a figure
   nobody could audit.
 
+### Added, embeddings
+
+- `embed`, behind an `embeddings` feature: `Embedder`, `EmbedRequest`, `Embedding`,
+  `Embeddings`, `EmbeddingCapabilities` and `Purpose`. A trait of its own rather than a method
+  on `Provider`, and in this crate rather than a second one — #26 decided both, and
+  `docs/DESIGN.md` says what a separate crate would have cost.
+- **A vector carries the model that made it**, and `Embedding::similarity` answers `None`
+  across two of them. The currency rule in a different type: two vectors from two models
+  occupy unrelated spaces, and comparing them returns a confident number that means nothing.
+- **The reply is index for index with the request.** Vendors send an `index` because their
+  arrays carry no order, and a provider that trusts arrival order files every document under
+  another document's meaning while nothing fails.
+- `testkit::assert_embedder_contract`, which checks that by embedding each input alone and
+  asking where it lands. `tests/an_embedder_honours_the_contract.rs` runs it against an
+  endpoint double that reverses every reply, and holds a deliberately broken embedder against
+  the suite to prove the suite has teeth.
+- `providers::openai::embed`, the first implementation: anything speaking `/v1/embeddings`,
+  with the reach given rather than guessed. It refuses a batch that comes back short, a row
+  with no index, and a dimension count that was asked for and not honoured.
+- `Usage::embedding`, so a call that reported everything there was reads as `Exact` rather
+  than `Partial`. Without it one embedding anywhere in a run would make every `Ledger` total a
+  floor for good.
+- No new dependency.
+
+### Fixed, checks that could not see
+
+- Two README doctests named feature gated items and so compiled under `--all-features` and
+  nowhere else. `cargo test` on the default feature set had been failing for as long as CI
+  ran only the all-features line, which it now does not: there is a default-features test
+  pass beside it, the same fix the `cargo doc` job needed for the same reason.
+
 ### Decided
 
 - **Where a gateway lives** (#29). The top level of `providers::` names who you reach and
@@ -163,4 +194,5 @@ First release. Nothing published yet.
 
 ### Not in this release
 
-Images, embeddings. See the README for what each one costs you.
+Reranking, completion endpoints, audio and documents. See the README for what each one costs
+you.
