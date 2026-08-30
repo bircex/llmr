@@ -12,9 +12,11 @@
 //!   that does not is paying for a reply that ignored half of what you sent.
 //! * **Reach.** A caller can say the data must not leave this machine. Nothing below that
 //!   floor is considered, whatever else it can do.
-//! * **Order.** The routes are tried in the order you gave them. First that fits, wins.
-//!   With [`Router::breaking`], a route that has been failing is skipped for a while and
-//!   said to have been, rather than tried and waited on again in every request.
+//! * **Order.** The routes are tried in the order you gave them, or in whichever
+//!   [`Order`] you asked for: cheapest published rate, or fewest recent failures. First
+//!   that fits, wins. With [`Router::breaking`], a route that has been failing is skipped
+//!   for a while and said to have been, rather than tried and waited on again in every
+//!   request.
 //!
 //! # What it deliberately does not route on
 //!
@@ -41,6 +43,7 @@ use crate::breaker::{Breaker, Health};
 use crate::chat::request::ChatRequest;
 use crate::chat::response::ChatResponse;
 use crate::chat::stream::EventStream;
+use crate::cost::pricing::{Micros, PriceBook, Rate};
 use crate::error::{Error, Result};
 use crate::model::{ModelCapabilities, ModelId};
 use crate::observe;
@@ -56,6 +59,7 @@ use std::time::{Duration, Instant};
 pub struct Route {
     provider: Arc<dyn Provider>,
     model: ModelId,
+    prices: Option<Arc<PriceBook>>,
 }
 
 impl Route {
@@ -64,7 +68,35 @@ impl Route {
         Self {
             provider: provider.clone(),
             model: model.into(),
+            prices: None,
         }
+    }
+
+    /// What this pairing charges, so an ordering can compare it against another.
+    ///
+    /// Only [`Order::Cheapest`] reads it. A route without one is not free, it is unpriced,
+    /// and the ordering treats those two very differently.
+    ///
+    /// ```
+    /// # use llmr::{PriceBook, Route};
+    /// # use std::sync::Arc;
+    /// # fn example(provider: Arc<dyn llmr::Provider>) {
+    /// let route = Route::new(provider, "claude-sonnet-5")
+    ///     .priced_by(Arc::new(llmr::providers::anthropic::api::shipped_prices()));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn priced_by(mut self, prices: Arc<PriceBook>) -> Self {
+        self.prices = Some(prices);
+        self
+    }
+
+    /// The published rate for this pairing, if there is a book with a row for it.
+    ///
+    /// `None` for a route with no book **and** for a route whose book does not list the
+    /// model. Both are the same thing to an ordering: nobody knows what this costs.
+    pub fn rate(&self) -> Option<Rate> {
+        self.prices.as_ref()?.rate(&self.model).copied()
     }
 
     /// What this pairing can do, as the provider describes it.
@@ -250,6 +282,55 @@ impl Routed<()> {
     }
 }
 
+/// Which route a router reaches for first.
+///
+/// The only policy for a long time was the order you wrote, while the crate had
+/// [`PriceBook`], [`Rate`], [`Micros`] and [`crate::Ledger`] and never
+/// consulted any of them when choosing one.
+///
+/// Set it with [`Router::ordering`]. Whatever the order, the requirement check comes first:
+/// a route that cannot serve the request is never chosen however cheap or healthy it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Order {
+    /// The order you wrote. The behaviour this crate has always had, and the default.
+    #[default]
+    AsListed,
+    /// Lowest published rate first, and a route with no price is tried **last**.
+    ///
+    /// # What this is claiming, and what it is not
+    ///
+    /// It compares published rates: the sum of a route's input and output price per million
+    /// tokens, as [`Route::rate`] reports it. That is a fact about the price list.
+    ///
+    /// **It is not a prediction of what this request will cost.** Cheapest per token is not
+    /// cheapest per request. A model with a low rate that thinks before answering can spend
+    /// more output tokens than a dearer one that does not, and a model with a large minimum
+    /// can cost more for a short prompt. If what you need is a bound on the spend, that is
+    /// a cap rather than an ordering.
+    ///
+    /// # An unpriced route is not a free one
+    ///
+    /// [`PriceBook::price`] answers `None` for a model it does not list, and the obvious
+    /// implementation reads `None` as zero and puts every unpriced route first, which is
+    /// precisely backwards and confidently so. A route with no price sorts **after** every
+    /// route that has one, keeping the order it was written in among its peers.
+    ///
+    /// Tried last, never refused. Refusing is a different decision and belongs to whatever
+    /// sets a spending limit, because that is the thing that cannot be satisfied by a call
+    /// nobody can price.
+    Cheapest,
+    /// Fewest consecutive failures first.
+    ///
+    /// The count [`Router::breaking`] keeps, and it is kept whether or not there is a
+    /// breaker, so this works on its own. What a breaker adds is skipping a bad route
+    /// entirely for a while rather than merely putting it further down the list.
+    ///
+    /// Ties keep the order they were written in, so a router where nothing has failed
+    /// behaves exactly like [`Order::AsListed`].
+    Healthiest,
+}
+
 /// Several providers, tried in order.
 ///
 /// Immutable once built, like a provider. No lock, nothing to contend on, safe to share
@@ -258,6 +339,7 @@ pub struct Router {
     routes: Vec<Route>,
     retry: Option<Retry>,
     breaker: Option<Breaker>,
+    order: Order,
     /// One per route, in the same order. Atomics, so this stays shareable.
     health: Vec<Health>,
     /// What "now" is measured from.
@@ -280,6 +362,7 @@ impl Router {
             routes,
             retry: None,
             breaker: None,
+            order: Order::AsListed,
             health,
             since: Instant::now(),
         }
@@ -314,6 +397,51 @@ impl Router {
     pub fn breaking(mut self, policy: Breaker) -> Self {
         self.breaker = Some(policy);
         self
+    }
+
+    /// Reach for routes in this order rather than the order they were written in.
+    ///
+    /// The requirement check still comes first, whatever this says: a route that cannot
+    /// serve the request is never chosen however cheap or healthy it is. What this changes
+    /// is which of the routes that *can* serve it is asked first.
+    ///
+    /// ```
+    /// # use llmr::{Order, Router};
+    /// # fn example(routes: Vec<llmr::Route>) {
+    /// let router = Router::new(routes).ordering(Order::Cheapest);
+    /// # }
+    /// ```
+    ///
+    /// The sort is stable, so routes this ordering cannot tell apart keep the order you
+    /// gave them, and [`Order::AsListed`] is exactly what the router did before this
+    /// existed.
+    #[must_use]
+    pub fn ordering(mut self, order: Order) -> Self {
+        self.order = order;
+        self
+    }
+
+    /// The routes in the order this router would reach for them, by index.
+    ///
+    /// Worked out per request rather than once, because [`Order::Healthiest`] depends on
+    /// what has been happening and the answer changes between calls.
+    fn reaching_order(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.routes.len()).collect();
+        match self.order {
+            Order::AsListed => {}
+            Order::Cheapest => order.sort_by_key(|&i| {
+                let rate = self.routes[i].rate();
+                // `is_none()` first in the key, and `false` sorts before `true`, so every
+                // priced route comes before every unpriced one. Reading a missing price as
+                // zero would do the exact opposite and look deliberate.
+                (
+                    rate.is_none(),
+                    rate.map_or(Micros(0), |rate| rate.input + rate.output),
+                )
+            }),
+            Order::Healthiest => order.sort_by_key(|&i| self.health[i].failures()),
+        }
+        order
     }
 
     /// The routes currently being skipped, and how much longer for.
@@ -566,7 +694,8 @@ impl Router {
         let mut attempts = 0;
         let mut resting = 0;
 
-        for (route, health) in self.routes.iter().zip(&self.health) {
+        for index in self.reaching_order() {
+            let (route, health) = (&self.routes[index], &self.health[index]);
             let Some(capabilities) = route.capabilities() else {
                 fell_through.push(Attempted {
                     route: route.name(),
@@ -701,8 +830,11 @@ impl Router {
 
     /// Tells this route's health what happened, when there is a policy to tell it about.
     fn record(&self, health: &Health, error: &Error) {
+        // Counted either way. The count is what `Order::Healthiest` reads, and a router
+        // ordered by health with no breaker should still know which route has been failing.
+        let failures = health.failed();
         if let Some(breaker) = &self.breaker {
-            health.failed(breaker, error, self.since);
+            health.rest(breaker, failures, error, self.since);
         }
     }
 
