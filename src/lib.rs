@@ -34,7 +34,7 @@ pub use chat::{
     ChatRequest, ChatResponse, ContentBlock, Effort, Event, EventStream, Generation, ImageSource,
     Message, Needs, Role, StopReason, Thinking, ToolSchema, Transcript,
 };
-pub use cost::{Micros, PriceBook, Priced, Rate, Usage, UsageCoverage};
+pub use cost::{Ledger, Micros, PriceBook, Priced, Rate, Usage, UsageCoverage};
 pub use error::{Error, Result};
 pub use model::{ModelCapabilities, ModelId, Reach};
 pub use provider::{Access, Provider};

@@ -417,6 +417,29 @@ the table down.
 Historical costs should never be recomputed. `Priced` records which book edition produced it,
 so re-pricing the past is a choice rather than an accident.
 
+`Ledger` adds up a run. The arithmetic is the easy half:
+
+```rust
+use llmr::cost::ledger::Ledger;
+# use llmr::{ChatResponse, PriceBook};
+# fn example(api: &ChatResponse, through_a_tool: &ChatResponse, book: &PriceBook) {
+let mut ledger = Ledger::new();
+ledger.record(api, Some(book));
+ledger.record(through_a_tool, None);   // a subscription tool has no price row
+
+let total = ledger.total();
+assert_eq!(ledger.calls(), 2);
+assert_eq!(ledger.unpriced(), 1);
+assert!(!total.is_exact());             // so the figure is a floor, and says so
+# }
+```
+
+**One unpriced call makes the whole total a lower bound**, and `Total` is two variants rather
+than a number and a flag, because a flag is something a caller can forget to read. The
+unpriced call is still counted: "forty calls, thirty of them priced" is a different sentence
+from "thirty calls". And pricing happens once, at the moment of recording, so a table updated
+next week cannot rewrite what a call cost last week.
+
 ## What this crate does not do
 
 It does not decide what your work needs. `Router` picks a provider that meets a set of

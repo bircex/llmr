@@ -93,6 +93,13 @@ First release. Nothing published yet.
 - One crate: `base64`, behind the protocol features, because putting image bytes on a wire
   is the one thing a pure translation cannot do with nothing.
 
+### Added, the ledger
+
+- `cost::ledger::Ledger` and `Total`, adding up a run and saying whether the figure is the
+  whole of it. One unpriced call makes the total a lower bound; the call is still counted,
+  because "forty calls, thirty priced" is not "thirty calls"; and pricing happens once at
+  record time, so a newer table cannot rewrite what an older call cost.
+
 ### Changed
 
 - Providers are grouped by vendor and then by reach: `providers::anthropic::{api, cli}` and

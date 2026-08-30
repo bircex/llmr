@@ -9,12 +9,12 @@ reason.
 
 ## Where it stands
 
-As of phase 3 landing.
+As of images and the ledger landing.
 
 | | |
 |---|---:|
-| Source | 7,668 lines across 28 files |
-| Tests | 216 passing |
+| Source | 8,293 lines across 29 files |
+| Tests | 231 passing |
 | Public items | 189 |
 | Dependency tree, default features | 31 crates |
 | Published | no |
@@ -263,9 +263,9 @@ Not planned in detail, and roughly in this order.
 | | Why it is not before 0.1 |
 |---|---|
 | Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl under its own vendor directory, and adds nothing breaking |
-| Images and other input | `ContentBlock` gains a variant. It is `#[non_exhaustive]`, so this is additive |
+| ~~Images~~ · **done** | `ContentBlock::Image`, refused rather than stripped where a reach cannot carry one |
 | More CLI presets | Gemini CLI and whatever else appears. A preset is a file, and it goes beside its vendor's other reaches |
-| Cost accumulation | `Usage::merge` exists; a ledger over a run does not. Additive |
+| ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor |
 | Embeddings | A different question from chat, and arguably a different crate |
 
 ## Things known to be missing, said in the README
