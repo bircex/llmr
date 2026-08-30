@@ -206,6 +206,29 @@ async fn the_gemini_provider_honours_the_contract() {
 }
 
 #[tokio::test]
+#[cfg(feature = "bedrock")]
+async fn the_bedrock_provider_honours_the_contract() {
+    // The same suite as every other provider. Bedrock does not stream through the shared
+    // frame reader, so `stream` falls back to one burst — and the suite checks that is a
+    // real answer with the same usage rather than a refusal.
+    let provider = llmr::providers::bedrock::api::anthropic_family(
+        "eu-west-1",
+        always(
+            serde_json::json!({
+                "model": "claude-sonnet-5",
+                "stop_reason": "end_turn",
+                "content": [{ "type": "text", "text": "ok" }],
+                "usage": { "input_tokens": 5, "output_tokens": 1 },
+            }),
+            "",
+        ),
+        holding("anthropic.claude-sonnet-5-v1:0", Reach::CloudPartner),
+    );
+
+    assert_provider_contract(&provider, "anthropic.claude-sonnet-5-v1:0").await;
+}
+
+#[tokio::test]
 #[cfg(feature = "cli")]
 async fn the_local_command_line_provider_honours_the_contract() {
     // Through a scripted runner rather than a real command. `cat` would work here and not

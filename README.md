@@ -197,8 +197,14 @@ that was rejected and the tool that is not installed.
 | `providers::openai::api` | `openai` | you say | Anything speaking OpenAI chat completions |
 | `providers::openai::cli` | `cli` | local CLI | The Codex tool |
 | `providers::gemini::api` | `gemini` | first party API | Gemini `generateContent` |
+| `providers::bedrock::api` | `bedrock` | cloud partner | Anthropic's models through Amazon |
 
-They are grouped by vendor and then by reach, because which vendor is what you know first
+The top level names **who you reach and whose credential pays** — the vendor for a first
+party API, the gateway for a gateway. `bedrock` is its own node rather than a folder inside
+`anthropic` because Claude through Bedrock is not Anthropic answering: a different endpoint,
+a different credential, a different company holding your prompt.
+
+They are grouped that way and then by reach, because who you are reaching is what you know first
 and the same models turn up behind more than one reach. Anthropic's are reachable over the
 API and through Claude Code, and those two differ in what they can carry rather than in what
 they are, so the choice belongs in one place.

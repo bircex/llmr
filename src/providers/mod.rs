@@ -2,8 +2,9 @@
 //!
 //! # Two ways in, and they are for different people
 //!
-//! **A vendor module is where you start.** `anthropic` and `openai` each hold every way this
-//! crate can reach that vendor, one module per reach:
+//! **A top level module is where you start.** Each one names **who you reach and whose
+//! credential pays** — the vendor for a first party API, the gateway for a gateway — and
+//! holds one module per reach:
 //!
 //! ```text
 //! providers::anthropic::api   the Messages API
@@ -11,12 +12,17 @@
 //! providers::openai::api      anything speaking /v1/chat/completions
 //! providers::openai::cli      the Codex tool
 //! providers::gemini::api      Gemini's generateContent
+//! providers::bedrock::api     Anthropic's models through Amazon
 //! ```
 //!
-//! Which vendor is what a caller knows first, and the same models turn up behind more than
-//! one reach: Anthropic's are reachable over the API and through Claude Code, and the two
-//! differ in what they can carry rather than in what they are. Grouping by vendor puts that
-//! choice in one place instead of two directories apart.
+//! Who you are reaching is what a caller knows first, and the same models turn up behind more
+//! than one of these: Anthropic's answer over the Messages API, through Claude Code, and
+//! through Amazon. Those differ in what they can carry, in whose credential pays and in which
+//! company ends up holding the prompt — so `bedrock` is its own node rather than a folder
+//! inside `anthropic`, because Claude through Bedrock is not Anthropic answering.
+//!
+//! `docs/DESIGN.md` has that argument in full, including the friendlier arrangement that was
+//! rejected and what it would have cost.
 //!
 //! **A reach module is where you extend.** [`api`] and `cli` hold the machinery every
 //! provider of that kind shares:
@@ -57,6 +63,10 @@ pub mod cli;
 #[cfg(any(feature = "anthropic", feature = "cli"))]
 #[cfg_attr(docsrs, doc(cfg(any(feature = "anthropic", feature = "cli"))))]
 pub mod anthropic;
+
+#[cfg(feature = "bedrock")]
+#[cfg_attr(docsrs, doc(cfg(feature = "bedrock")))]
+pub mod bedrock;
 
 #[cfg(feature = "gemini")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gemini")))]

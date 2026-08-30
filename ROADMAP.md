@@ -9,12 +9,12 @@ reason.
 
 ## Where it stands
 
-As of images and the ledger landing.
+As of Bedrock landing, which is the last provider before 0.1.
 
 | | |
 |---|---:|
-| Source | 8,859 lines across 31 files |
-| Tests | 231 passing |
+| Source | 9,044 lines across 33 files |
+| Tests | 254 passing |
 | Public items | 6,128 all in, 1,209 hand written · see below |
 | Dependency tree, default features | 31 crates |
 | Published | no |
@@ -65,10 +65,11 @@ Two things that are cheap before publish and breaking after it.
 
 **The tree separates what is shared from what is chosen.** `providers/api/` and
 `providers/cli/` hold the machinery, which follows the reach because reach is what decides
-how a model is spoken to. `providers/anthropic/` and `providers/openai/` hold the providers,
-which follow the vendor because that is what a caller picks — and because the same models
-turn up behind more than one reach, so putting the Messages API and Claude Code two
-directories apart hid a choice rather than presenting it. `chat/` is what a call is made of,
+how a model is spoken to. `providers/anthropic/`, `providers/openai/`, `providers/gemini/`
+and `providers/bedrock/` hold the providers, which follow **who you reach and whose
+credential pays** — the vendor for a first party API, the gateway for a gateway. That is what
+a caller picks, and the same models turn up behind more than one of them: Anthropic's answer
+over the Messages API, through Claude Code, and through Amazon. `chat/` is what a call is made of,
 `cost/` is what it consumed and what that is worth. Everything else is flat, deliberately: a
 directory holding one file is a directory that exists to look organised.
 
@@ -284,14 +285,17 @@ Not planned in detail, and roughly in this order.
 
 | | Why it is not before 0.1 |
 |---|---|
-| Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl under its own top level node — Gemini under the vendor, Bedrock under the gateway, decided in #29 — and adds nothing breaking |
+| ~~Gemini~~ · **done** | `providers::gemini::api`. Writing it found two holes in `Protocol`: `chat_url` had no model, and nothing could say the streaming URL differs |
+| ~~Bedrock~~ · **done** | `providers::bedrock::api`, under the gateway as #29 decided, and the first use of `CloudPartner`. SigV4 is the transport's, not the protocol's |
 | ~~Images~~ · **done** | `ContentBlock::Image`, refused rather than stripped where a reach cannot carry one |
-| More CLI presets | Gemini CLI and whatever else appears. A preset is a file, and it goes beside its vendor's other reaches |
+| More CLI presets | Gemini CLI and whatever else appears (#24). A preset is a file and it goes beside its vendor's other reaches — but it needs a recorded `--output-format json` sample first, because inventing the usage field names reports a number that looks right and is not |
 | ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor |
 | Embeddings | Decided (#26): a trait in this crate behind a feature, not a second crate. `docs/DESIGN.md` says what breaks under the other. Still to build |
 
 ## Things known to be missing, said in the README
 
-Streaming, retries, images, embeddings, and a model catalogue on the command line providers,
-which cannot be asked what they serve. If you fix one, take it out of the README's list in
-the same commit.
+Embeddings, audio and documents, and a model catalogue on the command line providers, which
+cannot be asked what they serve. Bedrock does not stream, because its event framing is not
+server sent events. If you fix one, take it out of the README's list in the same commit.
+
+Streaming, retries and images used to be on this line and are not any more.
