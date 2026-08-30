@@ -1,0 +1,62 @@
+name: Something is wrong
+description: A call that fails, a number that looks wrong, a reply that lost something.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things make a report here quick to act on: which **reach** you were using, and
+        what you expected instead. The second matters more than it sounds — several of this
+        crate's decisions look like bugs until you know the reason, and `docs/DESIGN.md`
+        says which.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you called, and what came back.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: >
+        If it is about usage or cost, say what number you expected and where from. Absent is
+        not zero here, on purpose.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reach
+    attributes:
+      label: Which reach
+      description: Where the model was running. It decides what a provider can carry.
+      options:
+        - first-party-api
+        - cloud-partner
+        - private-endpoint
+        - local-cli
+        - self-hosted
+        - not sure
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Which provider and model
+      placeholder: providers::anthropic::api, claude-sonnet-5
+
+  - type: input
+    id: features
+    attributes:
+      label: Which features were on
+      placeholder: default, or "anthropic, reqwest, retry"
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: 0.1.0, or a commit

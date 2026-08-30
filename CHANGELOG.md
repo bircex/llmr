@@ -51,6 +51,77 @@ First release. Nothing published yet.
 - One dependency: `futures-core`, for the `Stream` trait. There is none in std yet, and
   `futures` proper would pull a combinator stack this crate has no use for.
 
+### Added, phase 3
+
+- `retry::Retry`, a policy the caller configures and `Router::retrying` applies. Honours a
+  `Retry-After` exactly, jitters what it computes itself, never repeats a rejected
+  credential, a malformed request, a refusal or an unreadable reply, and does not repeat a
+  timeout unless asked — a second attempt can buy two answers to one question.
+- `retry::Delay`, so waiting goes through something you supply. `TokioDelay` behind the
+  `retry` feature is the one this crate ships; the trait is always there for another runtime.
+- `Routed::attempts`, so a reply that cost three calls says so.
+- `tracing` spans behind a feature, carrying provider, model, reach, usage coverage, route
+  and attempts — and never the prompt or the credential. With the feature off the crate
+  gains no dependency and does no work.
+- `UsageCoverage::as_str` and `Display`, one spelling for records and spans.
+
+### Added, phase 4
+
+- `deny.toml` and a CI job: licences against an allowlist rather than a denylist, advisories
+  denied with no blanket ignores, sources limited to crates.io, duplicates warned.
+- A release workflow on `v*` tags. It re-runs every check against that commit, refuses if the
+  tag disagrees with `Cargo.toml` or the changelog has no section for it, and holds the
+  publish behind an environment so a person approves it.
+- A packaging job on pull requests, so what would ship is checked before release day.
+- `cargo-semver-checks`, skipped with a note until 0.1.0 is published and in place for the
+  release after it.
+- Issue templates, a pull request template carrying the seven commands, and a code of
+  conduct.
+
+### Added, images
+
+- `ContentBlock::Image` and `ImageSource`, carrying bytes or a URL with a media type the
+  caller gives. Both protocols write it: Anthropic as base64 with the media type beside it,
+  the OpenAI shape as a data URL inside a parts array — and a turn with no image keeps the
+  plain string content the smaller endpoints speaking that shape require.
+- `ModelCapabilities::images`, `Needs::images` and `Requirements::images`, so a reach that
+  speaks only text refuses rather than dropping the image. A reply that answered about a
+  picture it never received is the failure this prevents.
+- `Entry` is `#[non_exhaustive]` with `Entry::new` and builders. Adding `streaming` and then
+  `images` broke its struct literal twice, which is exactly what the crate's own rule about
+  public structs exists to stop.
+- One crate: `base64`, behind the protocol features, because putting image bytes on a wire
+  is the one thing a pure translation cannot do with nothing.
+
+### Added, the ledger
+
+- `cost::ledger::Ledger` and `Total`, adding up a run and saying whether the figure is the
+  whole of it. One unpriced call makes the total a lower bound; the call is still counted,
+  because "forty calls, thirty priced" is not "thirty calls"; and pricing happens once at
+  record time, so a newer table cannot rewrite what an older call cost.
+
+### Narrowed
+
+- `Priced`, `ToolSchema`, `Attempted` and `UsageNames` are `#[non_exhaustive]`, with
+  constructors for the two callers build. `Priced` is the pointed one: it has no currency
+  field yet and will need one.
+- The public API's four external crates are written down in `docs/DESIGN.md` — `serde_json`,
+  `serde`, `futures-core` and `reqwest` all appear in signatures callers write, so a major
+  bump of any is a breaking change here and nothing in the manifest says so.
+- The public item count has a stated method for the first time. It was 180 in the roadmap and
+  189 in the issue, and neither said what it counted.
+
+### Decided
+
+- **Where a gateway lives** (#29). The top level of `providers::` names who you reach and
+  whose credential pays, which for a first party API is the vendor and for a gateway is the
+  gateway: `providers::bedrock::api`, not `providers::anthropic::bedrock`. Nothing moved; the
+  rule the tree was already following is now stated accurately, and the friendlier option is
+  rejected in `docs/DESIGN.md` with what it would cost.
+- **Embeddings stay in this crate** (#26), as their own trait behind a feature rather than a
+  second crate or a method on `Provider`. What breaks under a separate crate is written down:
+  two crates in lockstep, and a `Usage` from one version that is not a `Usage` from the other.
+
 ### Changed
 
 - Providers are grouped by vendor and then by reach: `providers::anthropic::{api, cli}` and
@@ -66,4 +137,4 @@ First release. Nothing published yet.
 
 ### Not in this release
 
-Retries, images, embeddings. See the README for what each one costs you.
+Images, embeddings. See the README for what each one costs you.

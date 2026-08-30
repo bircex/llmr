@@ -5,7 +5,12 @@ use crate::model::ModelId;
 use serde::{Deserialize, Serialize};
 
 /// A tool the model may call.
+///
+/// Non exhaustive: vendors keep adding per tool switches — strictness, caching, whether the
+/// model may call it in parallel — and each one arrives as a field. Build one with
+/// [`ToolSchema::new`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolSchema {
     /// The name the model uses to call it.
     pub name: String,
@@ -14,6 +19,24 @@ pub struct ToolSchema {
     pub description: String,
     /// JSON Schema for the arguments.
     pub parameters: serde_json::Value,
+}
+
+impl ToolSchema {
+    /// A tool, by name, description and argument schema.
+    ///
+    /// The description is prompt text, not documentation. It is what decides whether the
+    /// model calls the tool correctly, and it is worth as much care as the schema.
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+        }
+    }
 }
 
 /// How hard to think.
@@ -188,6 +211,12 @@ impl ChatRequest {
             structured_output: self.response_schema.is_some(),
             prompt_caching: !self.cache_breakpoints.is_empty(),
             thinking: matches!(self.thinking, Thinking::On(_)),
+            images: self.messages.iter().any(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, crate::chat::message::ContentBlock::Image { .. }))
+            }),
         }
     }
 }
@@ -204,6 +233,8 @@ pub struct Needs {
     pub prompt_caching: bool,
     /// The request asks the model to reason.
     pub thinking: bool,
+    /// The request carries an image.
+    pub images: bool,
 }
 
 impl Needs {
@@ -225,6 +256,9 @@ impl Needs {
         }
         if self.thinking && !have.thinking {
             missing.push("thinking");
+        }
+        if self.images && !have.images {
+            missing.push("images");
         }
         missing
     }

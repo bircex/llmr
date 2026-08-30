@@ -172,7 +172,11 @@ pub struct Envelope {
 ///
 /// Spelled out rather than guessed. A provider that tried several likely names would read
 /// the wrong number the first time two of them appeared together, and would do it silently.
+///
+/// Non exhaustive, because this crate has already had to add a usage field once and will
+/// again. Build one with [`UsageNames::new`] and fill in what the tool actually reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct UsageNames {
     /// Prompt tokens not served from cache.
     pub input: String,
@@ -185,6 +189,26 @@ pub struct UsageNames {
 }
 
 impl UsageNames {
+    /// The four names a tool uses, in this order: uncached prompt, cached read, cached
+    /// write, output.
+    ///
+    /// An empty string means the tool does not report that one, which comes back as absent
+    /// rather than nought. Naming a field the tool does not have is how a report ends up
+    /// with a zero nobody measured.
+    pub fn new(
+        input: impl Into<String>,
+        cache_read: impl Into<String>,
+        cache_write: impl Into<String>,
+        output: impl Into<String>,
+    ) -> Self {
+        Self {
+            input: input.into(),
+            cache_read: cache_read.into(),
+            cache_write: cache_write.into(),
+            output: output.into(),
+        }
+    }
+
     /// The spelling Anthropic uses, in its API and in its command line tool.
     pub fn anthropic() -> Self {
         Self {
@@ -760,16 +784,42 @@ mod tests {
             b"an answer".to_vec(),
         ))));
 
-        let with_tools = request().with_tools(vec![crate::ToolSchema {
-            name: "read_file".into(),
-            description: "read a file".into(),
-            parameters: serde_json::json!({ "type": "object" }),
-        }]);
+        let with_tools = request().with_tools(vec![crate::ToolSchema::new(
+            "read_file",
+            "read a file",
+            serde_json::json!({ "type": "object" }),
+        )]);
 
         let refused = cli.chat(with_tools).await;
         let message = refused.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(message.contains("tools"), "{message}");
         assert!(message.contains("quietly did without"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn an_image_through_a_reach_that_takes_text_is_refused_too() {
+        // A tool prints and reads text. An image through here is a path at best and a wrong
+        // answer at worst: the model would answer about a picture it never received, and
+        // the reply would read as though it had.
+        let cli = cli(Scripted::new(Ok(ProcessOutput::new(
+            Some(0),
+            b"an answer".to_vec(),
+        ))));
+
+        let with_an_image = ChatRequest::new(
+            "m",
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    source: crate::chat::message::ImageSource::Bytes(vec![0x89, 0x50]),
+                }],
+            }],
+        );
+
+        let refused = cli.chat(with_an_image).await;
+        let message = refused.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(message.contains("images"), "{message}");
     }
 
     #[tokio::test]

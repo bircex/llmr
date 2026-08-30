@@ -88,11 +88,11 @@ fn request() -> ChatRequest {
 }
 
 fn with_tools() -> ChatRequest {
-    request().with_tools(vec![ToolSchema {
-        name: "search".into(),
-        description: "look it up".into(),
-        parameters: serde_json::json!({ "type": "object" }),
-    }])
+    request().with_tools(vec![ToolSchema::new(
+        "search",
+        "look it up",
+        serde_json::json!({ "type": "object" }),
+    )])
 }
 
 #[tokio::test]

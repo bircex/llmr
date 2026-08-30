@@ -28,6 +28,7 @@ use crate::chat::stream::{Event, EventStream};
 use crate::chat::{ChatRequest, ChatResponse};
 use crate::error::{Error, Result};
 use crate::model::{ModelCapabilities, ModelId, Reach};
+use crate::observe;
 use crate::provider::{Access, Provider};
 use crate::registry::Registry;
 use crate::secret::Secret;
@@ -80,8 +81,13 @@ pub trait Protocol: Send + Sync {
     /// A short name, recorded beside every call this provider made.
     fn id(&self) -> &str;
 
-    /// Where a chat request goes, given the base URL.
-    fn chat_url(&self, base_url: &str) -> String;
+    /// Where a chat request goes, given the base URL and the model.
+    ///
+    /// The model is passed because some protocols put it in the path rather than the body.
+    /// Anthropic and the OpenAI shape ignore it; Gemini's `generateContent` cannot be
+    /// addressed without it. That was found by writing a third protocol, which is the point
+    /// of having written a third protocol.
+    fn chat_url(&self, base_url: &str, model: &ModelId) -> String;
 
     /// The headers a chat request carries.
     ///
@@ -146,6 +152,17 @@ pub trait Protocol: Send + Sync {
     /// The same as [`Protocol::body`].
     fn stream_body(&self, _request: &ChatRequest) -> Result<Option<Value>> {
         Ok(None)
+    }
+
+    /// Where a streamed chat request goes.
+    ///
+    /// Defaults to [`Protocol::chat_url`], which is right for a protocol that asks for a
+    /// stream in the body. Gemini asks for one by calling a different method on a different
+    /// path, so a body flag alone cannot express it — and a streaming request sent to the
+    /// whole-reply URL comes back as one JSON document that no frame reader can make sense
+    /// of, which is a silent empty answer rather than an error.
+    fn stream_url(&self, base_url: &str, model: &ModelId) -> String {
+        self.chat_url(base_url, model)
     }
 
     /// One frame, translated into zero or more [`Event`]s.
@@ -242,17 +259,23 @@ impl<P: Protocol> Provider for ApiProvider<P> {
     }
 
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
-        let body = serde_json::to_vec(&self.protocol.body(&request)?)
-            .map_err(|e| Error::InvalidRequest(format!("building the request: {e}")))?;
+        let span = observe::calling(self.protocol.id(), &request.model, self.reach);
+        observe::inside(span.clone(), async move {
+            let body = serde_json::to_vec(&self.protocol.body(&request)?)
+                .map_err(|e| Error::InvalidRequest(format!("building the request: {e}")))?;
 
-        let parsed = self
-            .call(HttpRequest::new(
-                self.protocol.chat_url(&self.base_url),
-                body,
-            ))
-            .await?;
+            let parsed = self
+                .call(HttpRequest::new(
+                    self.protocol.chat_url(&self.base_url, &request.model),
+                    body,
+                ))
+                .await?;
 
-        self.protocol.read(&parsed, &request.model)
+            let reply = self.protocol.read(&parsed, &request.model)?;
+            observe::measured(&span, reply.usage.coverage());
+            Ok(reply)
+        })
+        .await
     }
 
     async fn catalogue(&self) -> Result<Vec<ModelId>> {
@@ -279,7 +302,10 @@ impl<P: Protocol> Provider for ApiProvider<P> {
 
         let body = serde_json::to_vec(&body)
             .map_err(|e| Error::InvalidRequest(format!("building the request: {e}")))?;
-        let mut http = HttpRequest::new(self.protocol.chat_url(&self.base_url), body);
+        let mut http = HttpRequest::new(
+            self.protocol.stream_url(&self.base_url, &request.model),
+            body,
+        );
         http.headers = self.protocol.headers(&self.key)?;
 
         Ok(Box::pin(Frames {
@@ -521,7 +547,7 @@ mod tests {
             "test-protocol"
         }
 
-        fn chat_url(&self, base_url: &str) -> String {
+        fn chat_url(&self, base_url: &str, _model: &ModelId) -> String {
             format!("{base_url}/chat")
         }
 

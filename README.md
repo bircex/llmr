@@ -26,7 +26,7 @@ println!("{}", reply.text());
 ```
 
 The `reqwest` feature is the bundled HTTP client. Without it you get both protocols and
-supply your own transport, which costs 30 crates instead of 105.
+supply your own transport, which costs 31 crates instead of 105.
 
 ## What this is for
 
@@ -196,6 +196,7 @@ that was rejected and the tool that is not installed.
 | `providers::anthropic::cli` | `cli` | local CLI | The Claude Code tool |
 | `providers::openai::api` | `openai` | you say | Anything speaking OpenAI chat completions |
 | `providers::openai::cli` | `cli` | local CLI | The Codex tool |
+| `providers::gemini::api` | `gemini` | first party API | Gemini `generateContent` |
 
 They are grouped by vendor and then by reach, because which vendor is what you know first
 and the same models turn up behind more than one reach. Anthropic's are reachable over the
@@ -222,7 +223,7 @@ not the same place for your data to go.
 
 | Feature | Crates | What you get |
 |---|---:|---|
-| `anthropic`, `openai` | 30 | Both protocols. You supply the transport |
+| `anthropic`, `openai` | 31 | Both protocols. You supply the transport |
 | `+ reqwest` | 105 | And a bundled client, with `from_env` |
 | `cli` alone | 30 | A local tool as a subprocess, no network code |
 | `testkit` | 30 | The contract suite for your own providers |
@@ -349,6 +350,61 @@ from the mistake.
 leaves the transcript intact, so what arrived, that the turn did not finish, and why are three
 separate answers rather than one guess.
 
+## Trying again
+
+Nothing retries unless you say so. `Error::is_retryable` says a failure was not your fault
+and not permanent; whether the *request* is safe to repeat is a question about your request,
+and this crate cannot answer it.
+
+```rust,no_run
+use llmr::retry::Retry;
+use std::time::Duration;
+
+# #[cfg(feature = "retry")]
+# fn example(router: llmr::Router) -> llmr::Router {
+router.retrying(Retry::new(3).with_base(Duration::from_millis(200)))
+# }
+```
+
+Four failures are never repeated, because each returns the same answer the second time:
+a rejected credential, a malformed request, a refusal and a reply that could not be read.
+
+**A timeout is not repeated either, unless you ask.** The deadline passed; the work may not
+have. A second attempt can leave you billed for two answers to one question, so
+`repeating_timeouts()` is a decision you make rather than one made for you.
+
+**A wait the provider named is used exactly.** No jitter, no doubling, no ceiling applied to
+it. The provider is telling you when the limit clears, and a local timer that fires sooner
+turns one rate limit into two. Waits this crate computes for itself are jittered, so two
+callers that failed together do not come back together.
+
+`Routed::attempts` says how many calls a reply actually cost, and each retry leaves a line in
+`fell_through`. A call paid for twice should not be invisible.
+
+## Spans
+
+Behind the `tracing` feature, off by default. With it off the crate gains no dependency and
+does no work on the path a request takes; a library that emitted whether you asked or not is
+one people work around.
+
+A span carries which provider, which model, which reach, how complete the usage was, which
+route answered, and how many attempts it took. **Never the prompt and never a credential** —
+that is the shape of the code rather than a promise, and there is a test that says so.
+
+The line worth having is a warning on a *successful* call that did not take the first route.
+Nothing failed, and something is going wrong.
+
+## Images
+
+`ContentBlock::Image` carries bytes or a URL, with the media type you give it — sniffing it
+here would be this crate deciding something you already know, and a provider told the wrong
+type either rejects the request or decodes it wrongly.
+
+A reach that speaks only text cannot carry one at all, and that is the point: it is a
+capability, so `needs().unmet_by()` names it before anything is sent and a provider that
+cannot carry it **refuses rather than dropping it**. A reply that answered confidently about
+a picture it never received is the failure this prevents, and nothing in that reply says so.
+
 ## Model tables and prices
 
 `Registry` holds what a model can do. `PriceBook` holds what it costs. Both carry where the
@@ -361,6 +417,29 @@ the table down.
 
 Historical costs should never be recomputed. `Priced` records which book edition produced it,
 so re-pricing the past is a choice rather than an accident.
+
+`Ledger` adds up a run. The arithmetic is the easy half:
+
+```rust
+use llmr::cost::ledger::Ledger;
+# use llmr::{ChatResponse, PriceBook};
+# fn example(api: &ChatResponse, through_a_tool: &ChatResponse, book: &PriceBook) {
+let mut ledger = Ledger::new();
+ledger.record(api, Some(book));
+ledger.record(through_a_tool, None);   // a subscription tool has no price row
+
+let total = ledger.total();
+assert_eq!(ledger.calls(), 2);
+assert_eq!(ledger.unpriced(), 1);
+assert!(!total.is_exact());             // so the figure is a floor, and says so
+# }
+```
+
+**One unpriced call makes the whole total a lower bound**, and `Total` is two variants rather
+than a number and a flag, because a flag is something a caller can forget to read. The
+unpriced call is still counted: "forty calls, thirty of them priced" is a different sentence
+from "thirty calls". And pricing happens once, at the moment of recording, so a table updated
+next week cannot rewrite what a call cost last week.
 
 ## What this crate does not do
 
@@ -375,18 +454,14 @@ question: how do I reach this model, and what did it cost.
 
 Said plainly, because finding a gap by hitting it is worse than reading about it.
 
-**Retries.** `Error::is_retryable` tells you a failure was not your fault and not permanent.
-Nothing acts on it. That is deliberate for now: a retry is safe or not depending on your
-request, and a library that decided for you would double a bill on a timeout.
-
-**Images and other input.** `ContentBlock` carries text, reasoning and tool calls. No images,
-audio or documents.
+**Audio and documents.** `ContentBlock` carries text, reasoning, tool calls and images.
+Nothing else yet.
 
 **Anything that is not chat.** No embeddings, no reranking, no completion endpoints.
 
-**Model catalogues, on the command line providers.** The Anthropic and OpenAI shaped
-providers implement `catalogue()`. A command line tool cannot be asked what it serves, so it
-answers `Error::Unsupported`, which is an answer and not an empty list.
+**Model catalogues, on the command line providers.** All three API providers implement
+`catalogue()`. A command line tool cannot be asked what it serves, so it answers
+`Error::Unsupported`, which is an answer and not an empty list.
 
 **A free way to check a command line login.** `validate` on a CLI provider probes the program
 and establishes that it is installed. No vendor tool answers "is this login still good"

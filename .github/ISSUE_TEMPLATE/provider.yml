@@ -1,0 +1,65 @@
+name: Add a provider
+description: A vendor, an endpoint or a command line tool this crate cannot reach yet.
+labels: ["provider"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two questions decide almost everything about how a provider is added here, and they
+        are different questions.
+
+        **Which vendor** decides where the files go: `providers::<vendor>::api` or
+        `providers::<vendor>::cli`, beside whatever other reaches that vendor already has.
+
+        **Which reach** decides what it can carry, what it reports and whose credential
+        pays. That is `Reach`, and it travels on `capabilities()` at runtime.
+
+  - type: input
+    id: vendor
+    attributes:
+      label: Which vendor
+      description: Whose model is it. This is the directory it would live in.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reach
+    attributes:
+      label: Which reach
+      options:
+        - first-party-api
+        - cloud-partner
+        - private-endpoint
+        - local-cli
+        - self-hosted
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shape
+    attributes:
+      label: Does it already speak a shape this crate has
+      description: >
+        If it answers at /v1/chat/completions with the OpenAI envelope, it may need no code
+        at all — `providers::openai::api` takes a base URL and a reach.
+      options:
+        - "It speaks the OpenAI chat completions shape"
+        - "It has its own protocol"
+        - "It is a command line tool"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: carries
+    attributes:
+      label: What it can and cannot carry
+      description: >
+        Tools, structured output, prompt caching, reasoning, streaming. And what it reports
+        about usage — a reach that measures nothing is fine, it just has to say so rather
+        than report zero.
+
+  - type: input
+    id: docs
+    attributes:
+      label: Where its protocol is documented

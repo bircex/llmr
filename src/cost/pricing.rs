@@ -208,6 +208,7 @@ mod rows {
 
 /// A cost, and how much of it rests on numbers that were actually reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Priced {
     /// The amount.
     pub amount: Micros,

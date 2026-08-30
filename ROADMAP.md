@@ -9,20 +9,33 @@ reason.
 
 ## Where it stands
 
-As of streaming landing on top of reachability.
+As of images and the ledger landing.
 
 | | |
 |---|---:|
-| Source | 7,071 lines across 26 files |
-| Tests | 197 passing |
-| Public items | 189 |
-| Dependency tree, default features | 30 crates |
+| Source | 8,859 lines across 31 files |
+| Tests | 231 passing |
+| Public items | 6,128 all in, 1,209 hand written · see below |
+| Dependency tree, default features | 31 crates |
 | Published | no |
 | CI on GitHub | runs, and is green as of phase 4 |
 
 Everything below is green: `cargo fmt --check`, clippy under three feature combinations,
 `cargo doc` with warnings denied under two feature sets, every feature built alone, and the
 full test suite.
+
+The public item count is two numbers because it needs a stated method, and used to be one
+number twice with no method at all — this file said 180 and issue #19 said 189, and neither
+could be compared to anything. Both come from:
+
+```sh
+cargo +nightly public-api --all-features
+```
+
+6,128 is every public item, dominated by the trait implementations `derive` writes. 1,209 is
+that with derive-generated trait methods filtered out, which is roughly what a reader of the
+docs meets. Either is fine. Using the same one next time is what matters, and after 0.1.0
+`cargo public-api --diff` answers the better question anyway.
 
 ```sh
 cargo fmt --all -- --check
@@ -69,7 +82,7 @@ what headers, what JSON goes out, what comes back. On the command line side `Loc
 the spawning and the deadline, and a vendor preset is a program name, its arguments, and the
 shape of what it prints.
 
-**Adding this crate used to cost 105 crates and now costs 30.** The providers never needed
+**Adding this crate used to cost 105 crates and now costs 31.** The providers never needed
 `reqwest`; only `from_env` did. Protocols and the bundled client are separate features.
 
 ---
@@ -145,7 +158,7 @@ compiles and still answers.
 
 ---
 
-## Phase 3: retries and observability · **next**
+## Phase 3: retries and observability · **done**
 
 ### Retries
 
@@ -183,7 +196,7 @@ and a call with the feature off emits nothing.
 
 ---
 
-## Phase 4: the pipeline, actually running
+## Phase 4: the pipeline, actually running · **done**
 
 `.github/workflows/ci.yml` covers formatting, three clippy passes, docs with warnings denied
 under two feature sets, tests on three operating systems, every feature built alone, and the
@@ -205,16 +218,26 @@ places, and raising it is a deliberate commit. A weekly `ahead-of-stable` job ru
 whatever stable is now, so a bump waiting to be done is news on a Monday rather than a red
 tick on somebody's unrelated pull request.
 
-### Still to add
+### Added since
 
-- **A supply chain job.** `deny.toml` with license, advisory and duplicate checks. This is not
-  ceremony: the same check on a sibling project caught a yanked crate this week.
-- **A release workflow.** A tag verifies and publishes. Publishing by hand from a laptop is
-  how a crate ships from a dirty working tree.
-- **`cargo-semver-checks` on pull requests.** After 0.1 there is a public API to break by
-  accident.
-- **Issue and pull request templates, and a code of conduct.** Small, and they are what a
-  first contributor reads.
+- **A supply chain job.** `deny.toml` with an allowlist of licences, advisories denied and no
+  blanket ignores, and duplicates warned. `cargo deny check` passes; it warns about `syn` 1
+  and 2 and two `windows-sys` versions, both transitive and neither ours to fix.
+- **A release workflow.** `.github/workflows/release.yml` fires on a `v*` tag, re-runs all
+  seven checks against that commit, refuses if the tag disagrees with `Cargo.toml` or the
+  changelog has no section for it, and holds the publish behind a `crates-io` environment so
+  a person approves it. A published version cannot be unpublished, only yanked.
+- **A packaging job on pull requests.** `cargo package --list` and `cargo publish --dry-run`,
+  so a packaging problem is found on a pull request rather than at the moment of release.
+- **`cargo-semver-checks` on pull requests.** Nothing to compare against until 0.1.0 is
+  published, and it is here now so the first release after it is checked by a job somebody
+  already trusts rather than one added in a hurry. It does **not** skip on its own when the
+  crate is unpublished — it exits 101 with "not found in registry", which is what it did the
+  first time this job ran — so the job asks the sparse index first and says why it is
+  skipping. A probe that cannot tell fails the job rather than guessing.
+- **Issue and pull request templates, and a code of conduct.** The provider template asks
+  which vendor *and* which reach, because those decide different things: the vendor decides
+  the directory, the reach decides what it can carry.
 
 ### Done when
 
@@ -224,12 +247,21 @@ a red tick was read as the thing that was already known to be broken.
 
 ---
 
-## Phase 5: 0.1.0
+## Phase 5: 0.1.0 · **next**
 
 ### The public surface
 
-180 public items is a lot to promise. Read it with fresh eyes and make anything that does not
-need to be public private, because narrowing after publish is breaking and widening never is.
+Read it with fresh eyes and make anything that does not need to be public private, because
+narrowing after publish is breaking and widening never is. Done once (#19); what it found:
+
+- The provider helpers were already private. `read_block`, `wire_message`, `budget` and their
+  neighbours are translation details and none of them was ever exposed.
+- Four types that a caller reads or builds gained `#[non_exhaustive]`: `Priced`, `ToolSchema`,
+  `Attempted` and `UsageNames`, with constructors for the two that callers build. `Priced` is
+  the pointed one — it has no currency field yet, and it will need one.
+- Four crates are part of the public API and a major bump of any is a breaking change here.
+  `docs/DESIGN.md` names them and what each costs.
+- The count needed a method more than it needed a number.
 
 Particular things to look at: `Protocol` and `Tool` are extension points and should stay;
 helper functions inside the providers should not be public unless somebody outside would call
@@ -252,11 +284,11 @@ Not planned in detail, and roughly in this order.
 
 | | Why it is not before 0.1 |
 |---|---|
-| Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl under its own vendor directory, and adds nothing breaking |
-| Images and other input | `ContentBlock` gains a variant. It is `#[non_exhaustive]`, so this is additive |
+| Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl under its own top level node — Gemini under the vendor, Bedrock under the gateway, decided in #29 — and adds nothing breaking |
+| ~~Images~~ · **done** | `ContentBlock::Image`, refused rather than stripped where a reach cannot carry one |
 | More CLI presets | Gemini CLI and whatever else appears. A preset is a file, and it goes beside its vendor's other reaches |
-| Cost accumulation | `Usage::merge` exists; a ledger over a run does not. Additive |
-| Embeddings | A different question from chat, and arguably a different crate |
+| ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor |
+| Embeddings | Decided (#26): a trait in this crate behind a feature, not a second crate. `docs/DESIGN.md` says what breaks under the other. Still to build |
 
 ## Things known to be missing, said in the README
 

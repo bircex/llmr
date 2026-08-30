@@ -27,7 +27,9 @@ use crate::chat::request::ChatRequest;
 use crate::chat::response::ChatResponse;
 use crate::error::{Error, Result};
 use crate::model::{ModelCapabilities, ModelId};
+use crate::observe;
 use crate::provider::{Access, Provider};
+use crate::retry::Retry;
 use std::sync::Arc;
 
 /// One way to reach one model.
@@ -78,6 +80,8 @@ pub struct Requirements {
     pub prompt_caching: bool,
     /// The model must be able to reason.
     pub thinking: bool,
+    /// The model must accept an image.
+    pub images: bool,
     /// The reply must be readable as it arrives.
     ///
     /// Not something a request can express, because it is about how you intend to read the
@@ -104,6 +108,7 @@ impl Requirements {
             structured_output: needs.structured_output,
             prompt_caching: needs.prompt_caching,
             thinking: needs.thinking,
+            images: needs.images,
             // Neither of these is in the request. One is about how you will read the reply,
             // the other about where your data may go, and a request says nothing about
             // either.
@@ -141,6 +146,7 @@ impl Requirements {
             && (!self.prompt_caching || have.prompt_caching)
             && (!self.thinking || have.thinking)
             && (!self.streaming || have.streaming)
+            && (!self.images || have.images)
     }
 
     /// What is missing, by name, for a message somebody reads.
@@ -164,6 +170,9 @@ impl Requirements {
         if self.thinking && !have.thinking {
             missing.push("thinking");
         }
+        if self.images && !have.images {
+            missing.push("images");
+        }
         missing
     }
 }
@@ -174,6 +183,7 @@ impl Requirements {
 /// arrived on the first, and a program that cannot tell them apart cannot see a provider
 /// going bad.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Attempted {
     /// Which route, as [`Route::name`] writes it.
     pub route: String,
@@ -183,6 +193,7 @@ pub struct Attempted {
 
 /// A reply, and what it took to get one.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Routed {
     /// The reply.
     pub response: ChatResponse,
@@ -193,6 +204,13 @@ pub struct Routed {
     /// Empty on the common path. A non empty list on a successful call is the most useful
     /// thing in a log: it is a provider degrading while nothing is failing.
     pub fell_through: Vec<Attempted>,
+    /// How many times a provider was actually called.
+    ///
+    /// One on the common path. More than one means a [`Retry`] policy repeated something,
+    /// and that is worth seeing: a call that succeeded on the third attempt cost three, and
+    /// nothing else in a successful reply says so. Routes skipped for want of a capability
+    /// are not counted here — nothing was sent.
+    pub attempts: u32,
 }
 
 /// Several providers, tried in order.
@@ -201,12 +219,32 @@ pub struct Routed {
 /// across as many tasks as you like.
 pub struct Router {
     routes: Vec<Route>,
+    retry: Option<Retry>,
 }
 
 impl Router {
     /// A router over these routes, tried in this order.
+    ///
+    /// Nothing is retried. Say so with [`Router::retrying`] if you want it.
     pub fn new(routes: Vec<Route>) -> Self {
-        Self { routes }
+        Self {
+            routes,
+            retry: None,
+        }
+    }
+
+    /// Repeat a failed call, on the terms this policy sets.
+    ///
+    /// Applied per route: a route that fails is tried again before the next one is tried at
+    /// all. A rate limit is usually the same account whichever route you take, so falling
+    /// through to the next provider on the first 429 spends a second provider's budget to
+    /// learn what waiting would have told you for free.
+    ///
+    /// A refusal still stops everything, retries included. It is an answer.
+    #[must_use]
+    pub fn retrying(mut self, policy: Retry) -> Self {
+        self.retry = Some(policy);
+        self
     }
 
     /// Routes that no request can ever select.
@@ -273,8 +311,21 @@ impl Router {
     /// summary. It is a real error from a real provider, with its own retry advice, and a
     /// wrapper around it would lose that.
     pub async fn chat(&self, request: ChatRequest, needs: Requirements) -> Result<Routed> {
+        let span = observe::routing(&request.model);
+        observe::inside(span.clone(), self.route(request, needs, span)).await
+    }
+
+    /// The body of [`Router::chat`], so the span can wrap it rather than be entered around
+    /// it. A span guard held across an await attaches to whatever the thread does next.
+    async fn route(
+        &self,
+        request: ChatRequest,
+        needs: Requirements,
+        span: observe::Span,
+    ) -> Result<Routed> {
         let mut fell_through = Vec::new();
         let mut last: Option<Error> = None;
+        let mut attempts = 0;
 
         for route in &self.routes {
             let Some(capabilities) = route.capabilities() else {
@@ -297,26 +348,67 @@ impl Router {
             let mut sending = request.clone();
             sending.model = route.model.clone();
 
-            match route.provider.chat(sending).await {
-                Ok(response) => {
-                    return Ok(Routed {
-                        response,
-                        route: route.name(),
-                        fell_through,
-                    })
-                }
-                Err(error) => {
-                    // A refusal is an answer about the work, not a provider being
-                    // unreachable. Asking the next model the same question is how a policy
-                    // decision gets shopped around until something agrees, so it stops here.
-                    if matches!(error, Error::Refused { .. }) {
-                        return Err(error);
+            // One pass per attempt this route is allowed. Without a policy that is one.
+            let allowed = self.retry.as_ref().map_or(1, Retry::attempts);
+            for attempt in 1..=allowed {
+                attempts += 1;
+                match route.provider.chat(sending.clone()).await {
+                    Ok(response) => {
+                        let name = route.name();
+                        observe::routed(
+                            &span,
+                            &name,
+                            response.usage.coverage(),
+                            attempts,
+                            fell_through.len(),
+                        );
+                        return Ok(Routed {
+                            response,
+                            route: name,
+                            fell_through,
+                            attempts,
+                        });
                     }
-                    fell_through.push(Attempted {
-                        route: route.name(),
-                        why: error.to_string(),
-                    });
-                    last = Some(error);
+                    Err(error) => {
+                        // A refusal is an answer about the work, not a provider being
+                        // unreachable. Asking the next model the same question is how a
+                        // policy decision gets shopped around until something agrees, so it
+                        // stops here — and a retry would be the same thing against one
+                        // model rather than several.
+                        if matches!(error, Error::Refused { .. }) {
+                            return Err(error);
+                        }
+
+                        let waiting = self
+                            .retry
+                            .as_ref()
+                            .and_then(|policy| policy.wait_before(attempt + 1, &error));
+
+                        fell_through.push(Attempted {
+                            route: route.name(),
+                            why: match waiting {
+                                // Recorded before the wait, and said out loud. A retry that
+                                // left no trace is a call somebody paid for twice with one
+                                // line in the log to show for it.
+                                Some(wait) => format!(
+                                    "{error} (attempt {attempt} of {allowed}, waiting {}ms)",
+                                    wait.as_millis()
+                                ),
+                                None => error.to_string(),
+                            },
+                        });
+                        last = Some(error);
+
+                        match waiting {
+                            Some(wait) => {
+                                if let Some(policy) = &self.retry {
+                                    policy.sleep(wait).await;
+                                }
+                            }
+                            // Settled, or out of attempts. On to the next route.
+                            None => break,
+                        }
+                    }
                 }
             }
         }

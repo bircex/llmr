@@ -16,8 +16,10 @@ pub mod chat;
 pub mod cost;
 pub mod error;
 pub mod model;
+mod observe;
 pub mod provider;
 pub mod registry;
+pub mod retry;
 pub mod router;
 pub mod secret;
 pub mod transport;
@@ -29,14 +31,15 @@ pub mod providers;
 pub mod testkit;
 
 pub use chat::{
-    ChatRequest, ChatResponse, ContentBlock, Effort, Event, EventStream, Generation, Message,
-    Needs, Role, StopReason, Thinking, ToolSchema, Transcript,
+    ChatRequest, ChatResponse, ContentBlock, Effort, Event, EventStream, Generation, ImageSource,
+    Message, Needs, Role, StopReason, Thinking, ToolSchema, Transcript,
 };
-pub use cost::{Micros, PriceBook, Priced, Rate, Usage, UsageCoverage};
+pub use cost::{Ledger, Micros, PriceBook, Priced, Rate, Usage, UsageCoverage};
 pub use error::{Error, Result};
 pub use model::{ModelCapabilities, ModelId, Reach};
 pub use provider::{Access, Provider};
 pub use registry::Registry;
+pub use retry::{Delay, Retry};
 pub use router::{Requirements, Route, Routed, Router};
 pub use secret::Secret;
 pub use transport::{HttpRequest, HttpResponse, HttpTransport, Method};

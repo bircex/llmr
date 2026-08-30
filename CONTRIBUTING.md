@@ -23,13 +23,23 @@ about your system, and a library that made them would be one you had to fight.
 ## Before you open a pull request
 
 ```sh
-cargo fmt --all
-cargo clippy --all-features --all-targets
+cargo fmt --all -- --check
+cargo clippy --all-features --all-targets -- -D warnings
+cargo clippy --no-default-features --all-targets -- -D warnings
+cargo clippy --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --all-features
-cargo doc --all-features --no-deps
 ```
 
-All four must be clean. Warnings count.
+All seven must be clean, and warnings count. Two of them look redundant and are not: a
+clippy lint can fire under one feature set and not another, and a doc link to a feature
+gated item resolves under `--all-features` and nowhere else.
+
+Run them on the toolchain in `rust-toolchain.toml` rather than whatever your machine has.
+That file exists because these commands once passed on a laptop running 1.97 and failed on
+a runner running 1.98 for weeks, with the crate unchanged. `rustup` picks it up on its own
+if you are in the repository.
 
 ## The rules the code is held to
 
@@ -76,6 +86,22 @@ So `anthropic/api.rs` and `anthropic/cli.rs` are short. The engine is not in the
 Everything else stays flat. A directory holding one file is a directory that exists to look
 organised.
 
+## What CI will run
+
+The seven above, plus three you would not usually run by hand:
+
+- **`cargo deny check`** — licences against an allowlist, advisories denied, sources limited
+  to crates.io, duplicate versions warned. `deny.toml` says why each allowed licence is
+  there. Install it with `cargo install cargo-deny --locked` if you want to run it locally.
+- **`cargo publish --dry-run`** — what would actually ship. `exclude` in `Cargo.toml` keeps
+  CI configuration, the roadmap, the design notes and `deny.toml` out of the package.
+- **`cargo-semver-checks`** — skipped, with a note saying so, until 0.1.0 is published;
+  there is no released API to compare against. After that it is the job that catches a break
+  nobody meant: everything public here is
+  `#[non_exhaustive]`, which is exactly the arrangement where somebody assumes every change
+  is additive. Adding a required method to `Provider` is breaking. Narrowing a return type
+  is breaking. Neither looks like it in a diff.
+
 ## Writing a provider
 
 You are almost certainly writing a **protocol** or a **preset**, not a client.
@@ -89,10 +115,20 @@ arguments, and an `Envelope` saying where in its output the answer and the usage
 spawning, the deadline, the kill on drop and the difference between a missing binary and a
 silent one are `LocalCli`'s.
 
-Either one goes in a file under the vendor whose model it reaches — `providers::<vendor>::api`
-or `providers::<vendor>::cli` — beside whatever other reaches that vendor already has. A new
-vendor is a new directory with a `mod.rs` saying which reaches it has and what each one can
-carry, since a caller comparing two of them is the reason the directory exists.
+Either one goes in a file under **whoever you reach and whoever the credential pays** —
+`providers::<who>::api` or `providers::<who>::cli` — beside whatever other reaches that node
+already has. For a first party API that is the vendor. For a gateway serving several vendors'
+models over one credential, such as Bedrock, it is the gateway: `providers::bedrock::api`,
+not `providers::anthropic::bedrock`. Claude through Bedrock is not Anthropic answering, and
+the import line should not suggest it is.
+
+A new node is a new directory with a `mod.rs` saying which reaches it has and what each one
+can carry, since a caller comparing two of them is the reason the directory exists. If it is
+a gateway, add a line to each vendor it serves pointing at it — somebody looking for Claude
+on Bedrock will look under `anthropic` first, and that pointer is where they are already
+looking.
+
+`docs/DESIGN.md` has the reasoning, including the option that was rejected and why.
 
 Then run the contract suite against it:
 

@@ -218,7 +218,7 @@ A protocol holds no state. Every method is a pure function over a request or a b
 
 ---
 
-## The module tree groups by vendor; the shared machinery groups by reach
+## The module tree groups by who you reach; the shared machinery groups by reach
 
 `providers::anthropic::{api, cli}` and `providers::openai::{api, cli}` are what a caller
 imports. `providers::api` and `providers::cli` are what a contributor builds on.
@@ -257,6 +257,81 @@ calls it. It is also the one provider whose reach is a constructor argument, for
 in the section above — and the module header says so, because a name that is nearly right is
 worse than one that is obviously approximate.
 
+### The top level is who you reach, not who made the model
+
+This started as "group by vendor", and the first gateway broke it: Bedrock serves Anthropic,
+Meta and Mistral models over one API with one credential, and it is not a model vendor at
+all. Three options were on the table (#29):
+
+1. `providers::bedrock::api` — a top level node per gateway.
+2. `providers::anthropic::bedrock` — under each vendor whose models it serves.
+3. A third top level group, beside the vendors and the machinery, just for gateways.
+
+**Option 1, and the rule is now stated properly**: the top level names **who you reach and
+whose credential pays**, which for a first party API happens to be the vendor and for a
+gateway is the gateway. Nothing moves; the sentence gets more accurate.
+
+That reading was always the real one. It is why `openai::api` takes its reach as a
+constructor argument — point it at Ollama and you are reaching your own machine, so the
+module cannot answer the question and asks instead. And it is why `anthropic::cli` sits
+under Anthropic despite being a subprocess: the credential is Claude Code's login, and the
+prompt still goes to Anthropic.
+
+**Option 2 is the one to argue with, because it is the friendly one.** A caller looking for
+Claude on Bedrock will look under `anthropic` first, and option 2 is where they would find
+it. It is rejected because it makes `anthropic::api` and `anthropic::bedrock` read as two
+routes to the same place, and they are not: different endpoint, different credential,
+different company holding your prompt. This crate exists to keep that distinction legible,
+and burying it one level down in the directory that says "Anthropic" is exactly the
+collapse `Reach` was separated from `Provider` to prevent. It would also mean one `Protocol`
+impl copied into several vendor directories, or re-exported from them, which is the same
+lie told twice.
+
+Option 3 was rejected for costing every reader forever: a tree with two kinds of top level
+node has to be explained before it can be used, and the explanation is longer than the
+problem.
+
+**What this costs**, and it is a real cost: discovery. Somebody wanting Claude on Bedrock
+looks under `anthropic` and does not find it. The mitigation is a line in each vendor's
+`mod.rs` naming the gateways that also serve it — cheap, and it puts the pointer exactly
+where the person is already looking.
+
+**If option 2 were adopted later**, nothing would fail to compile and the first prompt sent
+to AWS by somebody who thought they were talking to Anthropic would not fail either. It
+would simply be wrong, in the direction this crate exists to catch, and no test could see
+it.
+
+---
+
+## Embeddings are a trait here, not a second crate
+
+Embeddings are a different question from chat: different request, different reply, different
+usage shape, no messages, no stop reason, no reasoning, no tools. Almost nothing in `chat/`
+applies (#26).
+
+**They belong in this crate, as their own trait, behind a feature.** Not as a method on
+`Provider`: adding `embed` there would make every chat-only provider implement a refusal,
+which is a worse tax than the one being avoided.
+
+The question was whether they belong here at all or in a crate depending on this one. The
+argument for a separate crate is that everything a *caller* touches is unshared. The
+argument that wins is that everything a caller **relies on** is shared, and it is the half
+that took longest to get right: `Reach`, `Error` and its retry advice, `Usage` with its
+absent-is-not-zero rule, `Registry` and `PriceBook` with their provenance, and the transport
+boundary. An embedding call has a reach, costs money, and can go unmeasured, and every one
+of those answers should be the same answer.
+
+**What breaks under a separate crate**: the two must move in lockstep, because a `Usage`
+from version A is not a `Usage` from version B. A caller doing both chat and embeddings
+would hit "expected `Usage`, found `Usage`" the first time the versions drifted, and the fix
+would be a coordinated release every time either crate changed. That is a permanent tax paid
+by the people using both, to save a feature flag from the people using one.
+
+**If this is reversed**, the moment to do it is before anything is published. Afterwards it
+means yanking a feature, which is a breaking change dressed as a tidy-up.
+
+---
+
 ---
 
 ## A stream is the same reply, and has to prove it
@@ -292,6 +367,101 @@ answer as finished.
 `Transcript::drain` returns the error and leaves the transcript intact, so what arrived, that
 the turn did not finish, and why are three separate answers rather than one inferred from
 another.
+
+---
+
+## A retry policy is handed in, never assumed
+
+`Router` retries nothing until you call `retrying`. The crate knows which failures are worth
+repeating and what the provider asked you to wait; it does not know whether **your** request
+is safe to send twice, and that is the half that decides.
+
+`Error::Timeout` is the case that makes this concrete. It is retryable — the failure was not
+your fault and not permanent — and repeating it can still leave you billed for two answers,
+because the deadline passing does not stop the provider generating. So it is excluded by
+default and `repeating_timeouts()` turns it on.
+
+**A wait the provider named is used exactly**: no jitter, no doubling, no ceiling. Capping it
+would be a local timer firing before the limit clears, which earns a second 429 and a longer
+wait. Waits this crate computes itself are jittered, because two callers that failed together
+coming back together is how a provider recovering from a fault gets knocked over again.
+
+**Jitter without `rand`.** A dependency on `rand` to spread retries apart would cost more
+crates than the whole OpenAI protocol. Nothing here is a secret, so the clock's nanoseconds
+through an xorshift are enough. If this ever needs to be unguessable rather than merely
+uneven, that is a different requirement and it should arrive with its own reason.
+
+**If retrying became the default**, the first timeout in somebody's production run would
+double a bill, and the line that did it would not appear in any diff.
+
+---
+
+## Spans carry facts, and structurally cannot carry content
+
+Behind the `tracing` feature, off by default, because a library that emits whether you asked
+or not is one people work around. With it off there is no dependency and no work.
+
+The rule is that a span never holds a prompt or a credential. That is not enforced by review:
+every function in `observe` takes a `ModelId`, a `Reach`, a `UsageCoverage`, a count or a
+route name, so there is nowhere to pass a message even by accident, and `Secret` has no
+`Display`. `tests/what_a_span_says.rs` puts a known string into both the prompt and the key
+and asserts it appears in no recorded field.
+
+The span is attached to the future rather than entered around it. A span guard held across an
+await attaches the span to whatever else that thread picks up next, which is the same class
+of mistake as holding a lock across one.
+
+**If the fields became a formatted string**, the first person who wanted a bit more context
+would interpolate the request into it, and every program that upgraded would start logging
+its users' text.
+
+---
+
+## Four crates are part of the public API, and a major bump of any is a breaking change
+
+Found by reading the surface rather than the manifest (#19). These types appear in signatures
+callers write, so they are promises even though nothing says so at the call site:
+
+| Crate | Where it shows | What a major bump costs |
+|---|---|---|
+| `serde_json` | `Value` in `ToolSchema::parameters`, `ContentBlock::ToolUse::input` and `Opaque::raw`, and across `Protocol` | A caller's `Value` stops being this crate's `Value` |
+| `serde` | `Serialize`/`Deserialize` on most public types | The same, for anything that round trips a request |
+| `futures-core` | `Stream` inside `EventStream` | Every `stream` implementation |
+| `reqwest` | `Client` in `Reqwest::with_client`, behind the `reqwest` feature | Only callers who build their own client |
+
+Three of the four are unavoidable and worth it: a JSON value has to be a JSON value somebody
+else can build, and a stream has to be a `Stream` other code can consume. Hiding them behind
+newtypes would mean converting at every boundary and would not remove the coupling, only
+disguise it.
+
+**What this means in practice** is that a `serde_json` 2.0 is a minor bump of this crate
+before 1.0 and a major one after, and that is a decision somebody should make deliberately
+rather than discover from a bug report. It is written down here because nothing in the
+manifest distinguishes a dependency that is an implementation detail from one that is part
+of the promise.
+
+---
+
+## How the public surface is counted
+
+The roadmap said 180 in one place and 189 in another, and neither said what it counted. Both
+were wrong in the way that matters: an unmethodical number cannot be compared to a later one,
+so it cannot tell you the surface grew.
+
+The method is now stated, and it is a command:
+
+```sh
+cargo +nightly public-api --all-features
+```
+
+That prints every public item including the trait implementations `derive` writes, which is
+the honest total and is dominated by them. What a reader of the docs meets is smaller, and
+the useful figure is whichever one you pick — as long as the next person picks the same one.
+The roadmap records both and the command that produced them.
+
+After 0.1.0 the same tool answers a better question than "how many": `cargo public-api
+--diff` against the published version says what *changed*, which is what
+`cargo-semver-checks` is in CI to enforce.
 
 ---
 
@@ -421,7 +591,7 @@ that never surfaces.
 
 | Feature | Crates | |
 |---|---:|---|
-| `anthropic`, `openai` | 30 | Both protocols. You supply the transport |
+| `anthropic`, `openai` | 31 | Both protocols. You supply the transport |
 | `+ reqwest` | 105 | And a bundled client, with `from_env` |
 | `cli` alone | 30 | A local tool as a subprocess, no network code |
 

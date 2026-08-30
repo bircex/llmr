@@ -64,6 +64,23 @@ pub enum ContentBlock {
         raw: serde_json::Value,
     },
 
+    /// An image, as part of a turn.
+    ///
+    /// Not every reach can carry one at all. A command line tool takes text on standard
+    /// input, so an image through that reach is a path at best and a wrong answer at worst —
+    /// which is why this is a capability you can ask about before sending, and why a
+    /// provider that cannot carry it refuses rather than dropping it.
+    Image {
+        /// The media type, as the provider will be told: `image/png`, `image/jpeg`.
+        ///
+        /// Given rather than sniffed. A provider told the wrong type rejects the request or,
+        /// worse, decodes it wrongly, and guessing from the first bytes would be this crate
+        /// deciding something the caller already knows.
+        media_type: String,
+        /// Where the image is.
+        source: ImageSource,
+    },
+
     /// Your answer to a [`ContentBlock::ToolUse`].
     ToolResult {
         /// The id from the call this answers.
@@ -99,6 +116,24 @@ impl ContentBlock {
             _ => None,
         }
     }
+}
+
+/// Where an image comes from.
+///
+/// Two, because providers accept two and they are not interchangeable. Bytes go in the
+/// request and cost you upload; a URL is fetched by the provider, which means the provider
+/// reaches your host, and a URL that is not public from where the model runs simply fails.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum ImageSource {
+    /// The bytes themselves. Encoded for the wire by whichever protocol sends them.
+    Bytes(Vec<u8>),
+    /// A URL for the provider to fetch.
+    ///
+    /// Worth a thought before you use it: the provider fetches this, not you. A link that
+    /// resolves on your network and nowhere else fails at the far end, and a link to
+    /// something private hands it to the vendor without the prompt ever containing it.
+    Url(String),
 }
 
 /// One turn in a conversation.

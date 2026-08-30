@@ -11,17 +11,22 @@ readme        = "README.md"
 keywords      = ["llm", "anthropic", "openai", "ai", "provider"]
 categories    = ["api-bindings", "asynchronous"]
 # `rust-toolchain.toml` is how this repository is built, not how the crate must be. Shipping
-# it would be a library telling a consumer which compiler to use.
-exclude       = ["/.github", "/docs", "/ROADMAP.md", "/rust-toolchain.toml"]
+# it would be a library telling a consumer which compiler to use. `deny.toml` is the same
+# kind of thing: it is how this repository is audited, not something a consumer builds with.
+exclude       = ["/.github", "/docs", "/ROADMAP.md", "/rust-toolchain.toml", "/deny.toml"]
 
 [features]
 # Both protocols, and no HTTP client. You supply a transport, which almost every program
 # already has: adding this crate should not add 200 more.
 default = ["anthropic", "openai"]
 
-# Protocol translations. These are pure functions over JSON and pull nothing.
-anthropic = []
-openai    = []
+# Protocol translations. These are pure functions over JSON. The one thing they cannot do
+# with nothing is put image bytes on a wire, so they pull `base64` — one crate, no
+# dependencies of its own, and the alternative is this crate hand rolling an encoder whose
+# bugs would corrupt an image rather than fail.
+anthropic = ["dep:base64"]
+openai    = ["dep:base64"]
+gemini    = ["dep:base64"]
 
 # A command line tool as a subprocess. No network code at all.
 cli = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/time"]
@@ -33,8 +38,19 @@ reqwest = ["dep:reqwest"]
 # The contract suite, for anyone writing a provider of their own.
 testkit = []
 
+# A retry policy the router applies, and a `tokio` timer to wait through. The `Retry` and
+# `Delay` types are always present; this is only what waits, because waiting is the part
+# that needs a runtime and this crate does not pick yours.
+retry = ["dep:tokio", "tokio/time"]
+
+# `tracing` spans on every call. Off by default: a library that emits whether you asked or
+# not is a library people work around, and with this off the crate adds no dependency and
+# does no work.
+tracing = ["dep:tracing"]
+
 [dependencies]
 async-trait = "0.1"
+base64      = { version = "0.22", optional = true, default-features = false, features = ["alloc"] }
 # The `Stream` trait and nothing else. There is no `Stream` in std yet, and `stream` on
 # `Provider` has to name one. `futures-core` is a single crate with no dependencies of its
 # own; `futures` proper would pull the combinator stack this crate has no use for.
@@ -45,6 +61,7 @@ thiserror   = "2"
 toml        = "1.1"
 reqwest     = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio       = { version = "1", optional = true, default-features = false }
+tracing     = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }

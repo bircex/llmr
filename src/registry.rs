@@ -5,7 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// One model's entry.
+///
+/// Non exhaustive, like every other public struct here, so a column can be added without
+/// breaking your table — which has now happened twice, for `streaming` and for `images`.
+/// That also means you build one through [`Entry::new`] rather than a literal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Entry {
     /// The model name, as its provider spells it.
     pub id: String,
@@ -25,6 +30,9 @@ pub struct Entry {
     /// Whether it can be asked to reason.
     #[serde(default)]
     pub thinking: bool,
+    /// Whether a request may carry an image.
+    #[serde(default)]
+    pub images: bool,
     /// Whether the reply can be read as it arrives.
     ///
     /// Defaults to false like the others, so a table written before this column existed
@@ -38,6 +46,77 @@ pub struct Entry {
     pub source: String,
     /// When a person last checked this row, as `YYYY-MM-DD`.
     pub verified_at: String,
+}
+
+impl Entry {
+    /// A row for a model that can do nothing, with its provenance.
+    ///
+    /// The source and the date are arguments rather than setters because a row without them
+    /// is refused at parse time anyway. Making them the only way to start means a table
+    /// written in code cannot be missing what a table written in TOML must have.
+    ///
+    /// Everything a model can do is off. Turn on what you checked, and nothing else: a
+    /// capability nobody verified is the kind of claim this table exists to stop.
+    pub fn new(
+        id: impl Into<String>,
+        source: impl Into<String>,
+        verified_at: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            context_window: 0,
+            max_output: 0,
+            tools: false,
+            structured_output: false,
+            prompt_caching: false,
+            thinking: false,
+            images: false,
+            streaming: false,
+            source: source.into(),
+            verified_at: verified_at.into(),
+        }
+    }
+
+    /// Sets how much fits in one request and how much comes back.
+    #[must_use]
+    pub fn with_window(mut self, context_window: u32, max_output: u32) -> Self {
+        self.context_window = context_window;
+        self.max_output = max_output;
+        self
+    }
+
+    /// Turns on the things this model can do.
+    ///
+    /// One method rather than five, because a row is written from a documentation page in
+    /// one sitting and five chained setters read as five separate decisions.
+    #[must_use]
+    pub fn able_to(
+        mut self,
+        tools: bool,
+        structured_output: bool,
+        prompt_caching: bool,
+        thinking: bool,
+    ) -> Self {
+        self.tools = tools;
+        self.structured_output = structured_output;
+        self.prompt_caching = prompt_caching;
+        self.thinking = thinking;
+        self
+    }
+
+    /// Says a request to this model may carry an image.
+    #[must_use]
+    pub fn with_images(mut self) -> Self {
+        self.images = true;
+        self
+    }
+
+    /// Says a reply from this model can be read as it arrives.
+    #[must_use]
+    pub fn with_streaming(mut self) -> Self {
+        self.streaming = true;
+        self
+    }
 }
 
 /// A table of models for one reach.
@@ -134,6 +213,7 @@ impl Registry {
             structured_output: entry.structured_output,
             prompt_caching: entry.prompt_caching,
             thinking: entry.thinking,
+            images: entry.images,
             streaming: entry.streaming,
             reach: self.reach,
         })

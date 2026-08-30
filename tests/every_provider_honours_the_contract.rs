@@ -28,10 +28,15 @@ struct Always {
 #[async_trait::async_trait]
 impl HttpTransport for Always {
     async fn send(&self, request: HttpRequest) -> llmr::Result<HttpResponse> {
-        let asked_to_stream = serde_json::from_slice::<serde_json::Value>(&request.body)
-            .ok()
-            .and_then(|body| body.get("stream").and_then(serde_json::Value::as_bool))
-            .unwrap_or(false);
+        // Two ways to ask, because the protocols ask differently: Anthropic and the OpenAI
+        // shape set a flag in the body, Gemini calls a different method on a different path.
+        // A fixture that only knew about the flag would hand a whole JSON document to a
+        // frame reader and the suite would blame the provider.
+        let asked_to_stream = request.url.contains("streamGenerateContent")
+            || serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .and_then(|body| body.get("stream").and_then(serde_json::Value::as_bool))
+                .unwrap_or(false);
 
         Ok(HttpResponse::new(
             200,
@@ -173,6 +178,33 @@ async fn the_openai_shaped_provider_denies_a_key_the_endpoint_rejects() {
     assert_a_bad_credential_is_denied(&provider, "gpt-test").await;
 }
 
+/// The Gemini frames that add up to the recorded whole reply.
+#[cfg(feature = "gemini")]
+const GEMINI_EVENTS: &str =
+    "data: {\"modelVersion\":\"gemini-3-pro-001\",\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":1}}\n\n";
+
+#[tokio::test]
+#[cfg(feature = "gemini")]
+async fn the_gemini_provider_honours_the_contract() {
+    let provider = llmr::providers::gemini::api::with(
+        always(
+            serde_json::json!({
+                "modelVersion": "gemini-3-pro-001",
+                "candidates": [{
+                    "finishReason": "STOP",
+                    "content": { "role": "model", "parts": [{ "text": "ok" }] },
+                }],
+                "usageMetadata": { "promptTokenCount": 5, "candidatesTokenCount": 1 },
+            }),
+            GEMINI_EVENTS,
+        ),
+        Secret::new("key", "AIza-test"),
+        holding("gemini-3-pro", Reach::FirstPartyApi),
+    );
+
+    assert_provider_contract(&provider, "gemini-3-pro").await;
+}
+
 #[tokio::test]
 #[cfg(feature = "cli")]
 async fn the_local_command_line_provider_honours_the_contract() {
@@ -251,17 +283,7 @@ async fn the_local_command_line_provider_denies_a_tool_that_is_signed_out() {
 fn a_registry_entry_can_be_built_by_hand() {
     // Someone writing a provider outside this crate needs to be able to build a table
     // without a TOML file. If this stops compiling, the type has been closed to them.
-    let entry = Entry {
-        id: "their-model".into(),
-        context_window: 8_192,
-        max_output: 1_024,
-        tools: false,
-        structured_output: false,
-        prompt_caching: false,
-        thinking: false,
-        streaming: false,
-        source: "their own documentation".into(),
-        verified_at: "2026-08-28".into(),
-    };
+    let entry = Entry::new("their-model", "their own documentation", "2026-08-28")
+        .with_window(8_192, 1_024);
     assert_eq!(entry.id, "their-model");
 }
