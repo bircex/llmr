@@ -572,4 +572,4 @@ reason. [ROADMAP.md](ROADMAP.md) is what is left before 0.1.
 
 ## License
 
-MIT. See [LICENSE](https://github.com/recepkizilarslan/llmr/blob/main/LICENSE).
+MIT. See [LICENSE](https://github.com/bircex/llmr/blob/main/LICENSE).

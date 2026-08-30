@@ -1,7 +1,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Why does it do that?
-    url: https://github.com/recepkizilarslan/llmr/blob/main/docs/DESIGN.md
+    url: https://github.com/bircex/llmr/blob/main/docs/DESIGN.md
     about: >
       Several decisions here look wrong until you know the reason. This says what was
       decided, why, and what would break if it changed.
