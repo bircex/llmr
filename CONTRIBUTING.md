@@ -115,10 +115,20 @@ arguments, and an `Envelope` saying where in its output the answer and the usage
 spawning, the deadline, the kill on drop and the difference between a missing binary and a
 silent one are `LocalCli`'s.
 
-Either one goes in a file under the vendor whose model it reaches — `providers::<vendor>::api`
-or `providers::<vendor>::cli` — beside whatever other reaches that vendor already has. A new
-vendor is a new directory with a `mod.rs` saying which reaches it has and what each one can
-carry, since a caller comparing two of them is the reason the directory exists.
+Either one goes in a file under **whoever you reach and whoever the credential pays** —
+`providers::<who>::api` or `providers::<who>::cli` — beside whatever other reaches that node
+already has. For a first party API that is the vendor. For a gateway serving several vendors'
+models over one credential, such as Bedrock, it is the gateway: `providers::bedrock::api`,
+not `providers::anthropic::bedrock`. Claude through Bedrock is not Anthropic answering, and
+the import line should not suggest it is.
+
+A new node is a new directory with a `mod.rs` saying which reaches it has and what each one
+can carry, since a caller comparing two of them is the reason the directory exists. If it is
+a gateway, add a line to each vendor it serves pointing at it — somebody looking for Claude
+on Bedrock will look under `anthropic` first, and that pointer is where they are already
+looking.
+
+`docs/DESIGN.md` has the reasoning, including the option that was rejected and why.
 
 Then run the contract suite against it:
 

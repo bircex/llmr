@@ -262,11 +262,11 @@ Not planned in detail, and roughly in this order.
 
 | | Why it is not before 0.1 |
 |---|---|
-| Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl under its own vendor directory, and adds nothing breaking |
+| Gemini, Bedrock | Two native protocols the OpenAI shape does not cover. Each is a `Protocol` impl under its own top level node — Gemini under the vendor, Bedrock under the gateway, decided in #29 — and adds nothing breaking |
 | ~~Images~~ · **done** | `ContentBlock::Image`, refused rather than stripped where a reach cannot carry one |
 | More CLI presets | Gemini CLI and whatever else appears. A preset is a file, and it goes beside its vendor's other reaches |
 | ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor |
-| Embeddings | A different question from chat, and arguably a different crate |
+| Embeddings | Decided (#26): a trait in this crate behind a feature, not a second crate. `docs/DESIGN.md` says what breaks under the other. Still to build |
 
 ## Things known to be missing, said in the README
 

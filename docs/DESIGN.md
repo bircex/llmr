@@ -218,7 +218,7 @@ A protocol holds no state. Every method is a pure function over a request or a b
 
 ---
 
-## The module tree groups by vendor; the shared machinery groups by reach
+## The module tree groups by who you reach; the shared machinery groups by reach
 
 `providers::anthropic::{api, cli}` and `providers::openai::{api, cli}` are what a caller
 imports. `providers::api` and `providers::cli` are what a contributor builds on.
@@ -256,6 +256,81 @@ Ollama and the rest. It sits there because the shape is OpenAI's and that is wha
 calls it. It is also the one provider whose reach is a constructor argument, for the reason
 in the section above — and the module header says so, because a name that is nearly right is
 worse than one that is obviously approximate.
+
+### The top level is who you reach, not who made the model
+
+This started as "group by vendor", and the first gateway broke it: Bedrock serves Anthropic,
+Meta and Mistral models over one API with one credential, and it is not a model vendor at
+all. Three options were on the table (#29):
+
+1. `providers::bedrock::api` — a top level node per gateway.
+2. `providers::anthropic::bedrock` — under each vendor whose models it serves.
+3. A third top level group, beside the vendors and the machinery, just for gateways.
+
+**Option 1, and the rule is now stated properly**: the top level names **who you reach and
+whose credential pays**, which for a first party API happens to be the vendor and for a
+gateway is the gateway. Nothing moves; the sentence gets more accurate.
+
+That reading was always the real one. It is why `openai::api` takes its reach as a
+constructor argument — point it at Ollama and you are reaching your own machine, so the
+module cannot answer the question and asks instead. And it is why `anthropic::cli` sits
+under Anthropic despite being a subprocess: the credential is Claude Code's login, and the
+prompt still goes to Anthropic.
+
+**Option 2 is the one to argue with, because it is the friendly one.** A caller looking for
+Claude on Bedrock will look under `anthropic` first, and option 2 is where they would find
+it. It is rejected because it makes `anthropic::api` and `anthropic::bedrock` read as two
+routes to the same place, and they are not: different endpoint, different credential,
+different company holding your prompt. This crate exists to keep that distinction legible,
+and burying it one level down in the directory that says "Anthropic" is exactly the
+collapse `Reach` was separated from `Provider` to prevent. It would also mean one `Protocol`
+impl copied into several vendor directories, or re-exported from them, which is the same
+lie told twice.
+
+Option 3 was rejected for costing every reader forever: a tree with two kinds of top level
+node has to be explained before it can be used, and the explanation is longer than the
+problem.
+
+**What this costs**, and it is a real cost: discovery. Somebody wanting Claude on Bedrock
+looks under `anthropic` and does not find it. The mitigation is a line in each vendor's
+`mod.rs` naming the gateways that also serve it — cheap, and it puts the pointer exactly
+where the person is already looking.
+
+**If option 2 were adopted later**, nothing would fail to compile and the first prompt sent
+to AWS by somebody who thought they were talking to Anthropic would not fail either. It
+would simply be wrong, in the direction this crate exists to catch, and no test could see
+it.
+
+---
+
+## Embeddings are a trait here, not a second crate
+
+Embeddings are a different question from chat: different request, different reply, different
+usage shape, no messages, no stop reason, no reasoning, no tools. Almost nothing in `chat/`
+applies (#26).
+
+**They belong in this crate, as their own trait, behind a feature.** Not as a method on
+`Provider`: adding `embed` there would make every chat-only provider implement a refusal,
+which is a worse tax than the one being avoided.
+
+The question was whether they belong here at all or in a crate depending on this one. The
+argument for a separate crate is that everything a *caller* touches is unshared. The
+argument that wins is that everything a caller **relies on** is shared, and it is the half
+that took longest to get right: `Reach`, `Error` and its retry advice, `Usage` with its
+absent-is-not-zero rule, `Registry` and `PriceBook` with their provenance, and the transport
+boundary. An embedding call has a reach, costs money, and can go unmeasured, and every one
+of those answers should be the same answer.
+
+**What breaks under a separate crate**: the two must move in lockstep, because a `Usage`
+from version A is not a `Usage` from version B. A caller doing both chat and embeddings
+would hit "expected `Usage`, found `Usage`" the first time the versions drifted, and the fix
+would be a coordinated release every time either crate changed. That is a permanent tax paid
+by the people using both, to save a feature flag from the people using one.
+
+**If this is reversed**, the moment to do it is before anything is published. Afterwards it
+means yanking a feature, which is a breaking change dressed as a tidy-up.
+
+---
 
 ---
 

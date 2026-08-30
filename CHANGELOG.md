@@ -100,6 +100,17 @@ First release. Nothing published yet.
   because "forty calls, thirty priced" is not "thirty calls"; and pricing happens once at
   record time, so a newer table cannot rewrite what an older call cost.
 
+### Decided
+
+- **Where a gateway lives** (#29). The top level of `providers::` names who you reach and
+  whose credential pays, which for a first party API is the vendor and for a gateway is the
+  gateway: `providers::bedrock::api`, not `providers::anthropic::bedrock`. Nothing moved; the
+  rule the tree was already following is now stated accurately, and the friendlier option is
+  rejected in `docs/DESIGN.md` with what it would cost.
+- **Embeddings stay in this crate** (#26), as their own trait behind a feature rather than a
+  second crate or a method on `Provider`. What breaks under a separate crate is written down:
+  two crates in lockstep, and a `Usage` from one version that is not a `Usage` from the other.
+
 ### Changed
 
 - Providers are grouped by vendor and then by reach: `providers::anthropic::{api, cli}` and
