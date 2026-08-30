@@ -22,9 +22,22 @@
 //!
 //! That line is what keeps the router useful to more than one program. A router that knew
 //! what a security review was would be one only its author could use.
+//!
+//! # Streaming, and the one place falling through stops working
+//!
+//! [`Router::stream`] routes a streamed call the same way [`Router::chat`] routes a whole
+//! one, with one rule that only applies here: **a route can be replaced right up until the
+//! caller has seen something, and never afterwards.**
+//!
+//! Once a chunk has reached you, moving to another provider means handing half a sentence to
+//! a second model and asking it to continue. What comes out is text nobody wrote, in one
+//! voice, and nothing downstream can tell. So a failure while the stream is opening falls
+//! through normally, and a failure after that arrives as an `Err` item inside the stream and
+//! stays there.
 
 use crate::chat::request::ChatRequest;
 use crate::chat::response::ChatResponse;
+use crate::chat::stream::EventStream;
 use crate::error::{Error, Result};
 use crate::model::{ModelCapabilities, ModelId};
 use crate::observe;
@@ -192,11 +205,16 @@ pub struct Attempted {
 }
 
 /// A reply, and what it took to get one.
+///
+/// Generic in what came back, and [`ChatResponse`] unless you say otherwise, so `Routed`
+/// means what it always did. [`Router::stream`] answers a `Routed<()>` beside the stream
+/// itself: an [`EventStream`] is neither `Debug` nor `Clone` and putting
+/// one in here would take both away from every caller of [`Router::chat`].
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct Routed {
+pub struct Routed<T = ChatResponse> {
     /// The reply.
-    pub response: ChatResponse,
+    pub response: T,
     /// The route that produced it.
     pub route: String,
     /// The routes tried first, in order, and why each one did not answer.
@@ -211,6 +229,21 @@ pub struct Routed {
     /// nothing else in a successful reply says so. Routes skipped for want of a capability
     /// are not counted here — nothing was sent.
     pub attempts: u32,
+}
+
+impl Routed<()> {
+    /// The same journey, carrying something.
+    ///
+    /// One place where a `Routed` is rebuilt around a result, so the two entry points cannot
+    /// come to different conclusions about what they travelled through.
+    fn carrying<T>(self, response: T) -> Routed<T> {
+        Routed {
+            response,
+            route: self.route,
+            fell_through: self.fell_through,
+            attempts: self.attempts,
+        }
+    }
 }
 
 /// Several providers, tried in order.
@@ -312,17 +345,124 @@ impl Router {
     /// wrapper around it would lose that.
     pub async fn chat(&self, request: ChatRequest, needs: Requirements) -> Result<Routed> {
         let span = observe::routing(&request.model);
-        observe::inside(span.clone(), self.route(request, needs, span)).await
+        let journey = self.attempt(request, needs, |provider, request| provider.chat(request));
+        let (response, routed) = observe::inside(span.clone(), journey).await?;
+
+        observe::routed(
+            &span,
+            &routed.route,
+            response.usage.coverage(),
+            routed.attempts,
+            routed.fell_through.len(),
+        );
+        Ok(routed.carrying(response))
     }
 
-    /// The body of [`Router::chat`], so the span can wrap it rather than be entered around
-    /// it. A span guard held across an await attaches to whatever the thread does next.
-    async fn route(
+    /// Starts a stream on the first route that can serve it.
+    ///
+    /// The streaming half of [`Router::chat`], and the same request rewriting applies: the
+    /// route's model replaces the request's, because the router is choosing the model.
+    ///
+    /// # Falling through stops at the first event
+    ///
+    /// **A route is only replaceable before the caller has seen anything.** Once a chunk has
+    /// reached you, moving to another provider would mean handing half a sentence to a
+    /// second model and asking it to continue: text nobody wrote, in one voice, with nothing
+    /// downstream able to detect it.
+    ///
+    /// So a provider that fails while the stream is being opened falls through normally, and
+    /// a provider that fails after that does not. The second kind arrives as an `Err` item
+    /// inside the stream and stays there, which is what [`crate::Transcript::drain`] is for:
+    /// what already arrived is still yours.
+    ///
+    /// The seam is real rather than assumed.
+    /// [`HttpTransport::send_streaming`](crate::HttpTransport::send_streaming) checks the
+    /// status before handing over any bytes, so a 429 or a 503 is an `Err` from this method
+    /// and is fallen through, not an error mid-answer.
+    ///
+    /// # What comes back
+    ///
+    /// The stream, and a `Routed<()>` carrying which route won and what fell through, exactly
+    /// as [`Router::chat`] does. They are two values rather than one because an
+    /// [`EventStream`] is neither `Debug` nor `Clone`.
+    ///
+    /// There is no usage yet when this returns. A streamed call reports its tokens in its
+    /// final frame, so what you want is [`crate::Transcript`], and it is the transcript that
+    /// knows what the call consumed.
+    ///
+    /// ```no_run
+    /// # use llmr::{ChatRequest, Message, Requirements, Router, Transcript};
+    /// # async fn example(router: &Router) -> llmr::Result<()> {
+    /// let request = ChatRequest::new("gpt-5", vec![Message::user("Hello")]);
+    /// let needs = Requirements::of(&request).streaming();
+    ///
+    /// let mut transcript = Transcript::new(request.model.clone());
+    /// let (events, routed) = router.stream(request, needs).await?;
+    /// let outcome = transcript.drain(events).await;
+    ///
+    /// println!("{} answered", routed.route);
+    /// let reply = transcript.finish();
+    /// if let Err(cut_short) = outcome {
+    ///     eprintln!("{} arrived before {cut_short}", reply.text().len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # A provider that does not really stream
+    ///
+    /// [`crate::Provider::stream`] has a default that calls `chat` and replays the finished
+    /// reply as one burst. Routing to one of those is not an error and this method does not
+    /// prevent it, for the reason the trait does not: it is a real answer with the same text
+    /// and the same usage, just all at once.
+    ///
+    /// It does mean the window in which this can fall through covers the whole call rather
+    /// than the first byte, which is more forgiving and not less. Say
+    /// [`Requirements::streaming`] when a person is watching a screen, and a pairing that
+    /// only pretends is skipped before it is asked.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Router::chat`]: [`Error::Unsupported`] when no route meets the
+    /// requirements, and otherwise the last error from the routes that were tried.
+    pub async fn stream(
         &self,
         request: ChatRequest,
         needs: Requirements,
-        span: observe::Span,
-    ) -> Result<Routed> {
+    ) -> Result<(EventStream<'_>, Routed<()>)> {
+        let span = observe::routing(&request.model);
+        let journey = self.attempt(request, needs, |provider, request| provider.stream(request));
+        let (events, routed) = observe::inside(span.clone(), journey).await?;
+
+        observe::routed_stream(
+            &span,
+            &routed.route,
+            routed.attempts,
+            routed.fell_through.len(),
+        );
+        Ok((events, routed))
+    }
+
+    /// Picks a route and calls it, retrying and falling through on the terms this router was
+    /// built with.
+    ///
+    /// One body for [`Router::chat`] and [`Router::stream`], because the interesting part is
+    /// identical and the two things it must get right are the ones that rot when copied: a
+    /// refusal stops everything, and every skipped route is reported. The only difference is
+    /// which method of the provider is called, so that is the argument.
+    ///
+    /// Written as its own function rather than inlined so the span can wrap it rather than be
+    /// entered around it. A span guard held across an await attaches to whatever the thread
+    /// does next.
+    async fn attempt<'a, T, Fut>(
+        &'a self,
+        request: ChatRequest,
+        needs: Requirements,
+        call: impl Fn(&'a dyn Provider, ChatRequest) -> Fut,
+    ) -> Result<(T, Routed<()>)>
+    where
+        Fut: std::future::Future<Output = Result<T>> + 'a,
+    {
         let mut fell_through = Vec::new();
         let mut last: Option<Error> = None;
         let mut attempts = 0;
@@ -352,22 +492,21 @@ impl Router {
             let allowed = self.retry.as_ref().map_or(1, Retry::attempts);
             for attempt in 1..=allowed {
                 attempts += 1;
-                match route.provider.chat(sending.clone()).await {
+                match call(route.provider.as_ref(), sending.clone()).await {
+                    // Answered. For a stream this is the seam the whole method rests on:
+                    // the provider has handed over a stream and not yet a single event, so
+                    // this is the last moment anything could have been served by somebody
+                    // else.
                     Ok(response) => {
-                        let name = route.name();
-                        observe::routed(
-                            &span,
-                            &name,
-                            response.usage.coverage(),
-                            attempts,
-                            fell_through.len(),
-                        );
-                        return Ok(Routed {
+                        return Ok((
                             response,
-                            route: name,
-                            fell_through,
-                            attempts,
-                        });
+                            Routed {
+                                response: (),
+                                route: route.name(),
+                                fell_through,
+                                attempts,
+                            },
+                        ));
                     }
                     Err(error) => {
                         // A refusal is an answer about the work, not a provider being

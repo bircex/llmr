@@ -627,6 +627,28 @@ accident, because a refusal arrives looking like any other error.
 `Routed::fell_through` carries what was tried first and why. A non empty list on a
 *successful* call is a provider degrading while nothing is failing.
 
+### A streamed route is replaceable until the first event, and not after
+
+`Router::stream` follows every rule `Router::chat` follows and adds one that only makes sense
+here. Falling through is invisible to a caller who has not seen anything yet. It stops being
+invisible the moment a chunk has been handed over: continuing on a second model produces a
+sentence neither of them wrote, in one voice, with nothing downstream able to detect it.
+Silent corruption of the answer is worse than a failed call, and a failed call is what the
+caller gets instead.
+
+The seam is real rather than assumed. `HttpTransport::send_streaming` checks the status
+before handing over any bytes, so a 429 or a 503 is an `Err` from `Router::stream` itself and
+is fallen through. Anything after that is an `Err` item inside the stream, and
+`Transcript::drain` already keeps what arrived.
+
+`Router::stream` returns `(EventStream, Routed<()>)` rather than one value because `Routed`
+derives `Debug` and `Clone` and an `EventStream` can do neither. `Routed<T = ChatResponse>`
+is generic so that `Routed` still means what it always did.
+
+The two entry points share one body. The parts that would rot if copied are the ones that
+matter: a refusal stops everything rather than being asked of the next model, and every
+skipped route is reported. Only the method being called differs, so that is the argument.
+
 ---
 
 ## Hedging is the caller's, and the ledger has to survive it

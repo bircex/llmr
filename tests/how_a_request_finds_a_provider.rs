@@ -475,3 +475,214 @@ async fn a_router_with_no_routes_reports_nothing_rather_than_failing() {
     let router = Router::new(Vec::new());
     assert!(router.preflight().await.is_empty());
 }
+
+// ---- Streaming -------------------------------------------------------------------------
+//
+// The one decision `Router::stream` makes that `Router::chat` does not: a route can be
+// replaced right up until the caller has seen something, and never afterwards. Continuing a
+// half written answer on a second model produces text nobody wrote, in one voice, with
+// nothing downstream able to detect it.
+
+/// What a provider's stream does, for the two cases a router has to tell apart.
+enum Streams {
+    /// Refuses to open. Nothing reached the caller, so another route may serve this.
+    NeverOpens,
+    /// Opens, hands over a word, then fails. The caller has seen text.
+    BreaksAfterAWord,
+    /// Opens and finishes.
+    Whole,
+}
+
+struct Streamer {
+    id: String,
+    model: String,
+    caps: ModelCapabilities,
+    behaviour: Streams,
+    opened: AtomicUsize,
+}
+
+impl Streamer {
+    fn new(id: &str, model: &str, behaviour: Streams) -> Arc<Self> {
+        Arc::new(Self {
+            id: id.into(),
+            model: model.into(),
+            caps: plain(Reach::FirstPartyApi).with_streaming(),
+            behaviour,
+            opened: AtomicUsize::new(0),
+        })
+    }
+
+    fn opened(&self) -> usize {
+        self.opened.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Streamer {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn capabilities(&self, model: &ModelId) -> Option<ModelCapabilities> {
+        (model.as_str() == self.model).then_some(self.caps)
+    }
+
+    async fn chat(&self, _request: ChatRequest) -> llmr::Result<ChatResponse> {
+        Err(Error::Transient("this stub only streams".into()))
+    }
+
+    async fn stream(&self, _request: ChatRequest) -> llmr::Result<llmr::EventStream<'_>> {
+        self.opened.fetch_add(1, Ordering::SeqCst);
+        let events: Vec<llmr::Result<llmr::Event>> = match self.behaviour {
+            Streams::NeverOpens => return Err(Error::Transient("nothing is listening".into())),
+            Streams::BreaksAfterAWord => vec![
+                Ok(llmr::Event::TextDelta(format!("from {} ", self.id))),
+                Err(Error::Transient("the connection went away".into())),
+            ],
+            Streams::Whole => vec![
+                Ok(llmr::Event::TextDelta(format!("from {}", self.id))),
+                Ok(llmr::Event::Stopped {
+                    reason: StopReason::EndTurn,
+                    details: None,
+                }),
+            ],
+        };
+        Ok(Box::pin(Canned(events.into_iter())))
+    }
+}
+
+struct Canned(std::vec::IntoIter<llmr::Result<llmr::Event>>);
+
+impl futures_core::Stream for Canned {
+    type Item = llmr::Result<llmr::Event>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::task::Poll::Ready(self.0.next())
+    }
+}
+
+/// Everything the stream produced, and how it ended.
+async fn read(events: llmr::EventStream<'_>) -> (String, llmr::Result<()>) {
+    let mut transcript = llmr::Transcript::new("whatever");
+    let outcome = transcript.drain(events).await;
+    (transcript.finish().text(), outcome)
+}
+
+#[tokio::test]
+async fn a_stream_falls_through_a_dead_provider_before_the_first_event() {
+    // Nothing reached the caller, so nobody can tell this apart from a call that started on
+    // the second route. Falling through is free here and only here.
+    let dead = Streamer::new("dead", "m", Streams::NeverOpens);
+    let alive = Streamer::new("alive", "m", Streams::Whole);
+    let router = Router::new(vec![
+        Route::new(dead.clone(), "m"),
+        Route::new(alive.clone(), "m"),
+    ]);
+
+    let needs = Requirements::default().streaming();
+    let (events, routed) = router
+        .stream(request(), needs)
+        .await
+        .unwrap_or_else(|e| panic!("the live route should have served this: {e}"));
+
+    let (text, outcome) = read(events).await;
+    assert_eq!(text, "from alive");
+    assert!(outcome.is_ok());
+
+    assert_eq!(routed.route, "alive/m");
+    assert_eq!(dead.opened(), 1, "the dead route was tried");
+    assert_eq!(alive.opened(), 1);
+
+    // And it says so, which is the difference between a router and an ordered try list.
+    assert_eq!(routed.fell_through.len(), 1);
+    assert_eq!(routed.fell_through[0].route, "dead/m");
+    assert!(
+        routed.fell_through[0].why.contains("nothing is listening"),
+        "{}",
+        routed.fell_through[0].why
+    );
+}
+
+#[tokio::test]
+async fn a_stream_that_fails_after_the_first_event_does_not_fall_through() {
+    // The rule this method exists for. A second model continuing "from breaks " would
+    // produce a sentence neither of them wrote, and the caller has already shown the first
+    // half to somebody.
+    let breaks = Streamer::new("breaks", "m", Streams::BreaksAfterAWord);
+    let spare = Streamer::new("spare", "m", Streams::Whole);
+    let router = Router::new(vec![
+        Route::new(breaks.clone(), "m"),
+        Route::new(spare.clone(), "m"),
+    ]);
+
+    let needs = Requirements::default().streaming();
+    let (events, routed) = router
+        .stream(request(), needs)
+        .await
+        .unwrap_or_else(|e| panic!("the stream opened, so this is Ok: {e}"));
+
+    assert_eq!(routed.route, "breaks/m");
+    assert!(routed.fell_through.is_empty(), "nothing had failed yet");
+
+    let (text, outcome) = read(events).await;
+    assert_eq!(text, "from breaks ", "what arrived is still yours");
+    assert!(
+        outcome.is_err(),
+        "the failure arrives inside the stream and stays there"
+    );
+    assert_eq!(
+        spare.opened(),
+        0,
+        "the spare route must never be asked to finish somebody else's sentence"
+    );
+}
+
+#[tokio::test]
+async fn a_route_that_only_pretends_to_stream_is_skipped_when_streaming_is_required() {
+    // `Provider::stream` has a default that answers all at once at the end. That is a real
+    // answer, and it is not one to route to when a person is watching a screen.
+    let pretender = Stub::serving("pretender", "m", plain(Reach::FirstPartyApi));
+    let real = Streamer::new("real", "m", Streams::Whole);
+    let router = Router::new(vec![
+        Route::new(pretender.clone(), "m"),
+        Route::new(real.clone(), "m"),
+    ]);
+
+    let (_, routed) = router
+        .stream(request(), Requirements::default().streaming())
+        .await
+        .unwrap_or_else(|e| panic!("the real one should have served this: {e}"));
+
+    assert_eq!(routed.route, "real/m");
+    assert_eq!(pretender.calls(), 0, "it was never asked");
+    assert_eq!(routed.fell_through[0].why, "cannot do streaming");
+}
+
+#[tokio::test]
+async fn a_refused_stream_stops_rather_than_being_asked_of_the_next_model() {
+    // The same rule `chat` follows, and it has to be the same rule: a refusal is an answer
+    // about the work. Shopping it around until something agrees is what you get by accident.
+    let refuser = Stub::failing(
+        "refuser",
+        "m",
+        plain(Reach::FirstPartyApi).with_streaming(),
+        Error::Refused {
+            category: Some("policy".into()),
+        },
+    );
+    let spare = Streamer::new("spare", "m", Streams::Whole);
+    let router = Router::new(vec![
+        Route::new(refuser.clone(), "m"),
+        Route::new(spare.clone(), "m"),
+    ]);
+
+    let outcome = router
+        .stream(request(), Requirements::default().streaming())
+        .await;
+
+    assert!(matches!(outcome, Err(Error::Refused { .. })));
+    assert_eq!(spare.opened(), 0);
+}
