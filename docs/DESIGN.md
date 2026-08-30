@@ -552,6 +552,15 @@ ignores, `ApiProvider` would have to hand it the request it is about to send, an
 that makes protocols shareable would go. The one gain would be that Bedrock needed no wrapper,
 which is the smallest of the three things at stake.
 
+**A principle that leaves a feature unusable needs a worked example beside it**, and for a
+while this one did not have one. Enabling `bedrock` gave you a translation and a wall.
+`docs/BEDROCK.md` is the page: what has to be signed and in what order, why the wrapper is
+the last thing to touch the request, what the colon in a Bedrock model id does to a canonical
+URI, where the region comes from, and why credentials that rotate belong in the transport.
+The wrapper itself is a compiled doctest on `providers::bedrock`, over a `Signer` trait the
+reader implements, so the half that touches this crate's API cannot rot while the half that
+touches AWS's stays prose.
+
 ---
 
 ## Bedrock reuses the Messages translation rather than copying it

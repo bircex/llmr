@@ -5,7 +5,13 @@ change is a minor bump.
 
 ## Unreleased
 
-Nothing yet.
+### Documentation
+
+- `docs/BEDROCK.md`, the worked example the signing decision needed: what SigV4 covers and in
+  what order to attach it, why the transport wrapper is the last thing to touch the request,
+  the colon in a Bedrock model id and what it does to a canonical URI, where the region comes
+  from, and why rotating credentials belong in the transport. The wrapper is also a compiled
+  doctest on `providers::bedrock`, so the half that touches this crate's API cannot rot. (#47)
 
 ## 0.1.0 — 2026-08-30
 
