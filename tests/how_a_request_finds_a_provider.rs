@@ -948,3 +948,102 @@ async fn without_a_policy_nothing_is_remembered() {
     assert_eq!(dead.calls(), 3, "tried every time, as before");
     assert!(router.resting().is_empty());
 }
+
+// ---- Preflight, acting on what it learned ----------------------------------------------
+
+#[tokio::test]
+async fn a_route_denied_at_startup_is_not_tried_first_afterwards() {
+    // Without this, `preflight` answered `Access` per route and nothing read it: a route
+    // that said Denied at startup was still tried first in every request. Half of a feature.
+    let denied = Checked::new("denied", "m", llmr::Access::denied("the key was rejected"));
+    let ready = Checked::new("ready", "m", llmr::Access::Ready);
+    let router = Router::new(vec![
+        Route::new(denied.clone(), "m"),
+        Route::new(ready.clone(), "m"),
+    ])
+    .breaking(quick());
+
+    let reached = router.preflight().await;
+    assert!(reached[0].1.is_denied());
+
+    let routed = router
+        .chat(request(), Requirements::default())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    assert_eq!(routed.route, "ready/m");
+    assert_eq!(
+        denied.chats.load(Ordering::SeqCst),
+        0,
+        "it answered the question at startup and was not asked again"
+    );
+
+    // And it says which kind of skip this was. "Circuit open after 0 failures" would send
+    // somebody looking for a failure that never happened.
+    assert!(
+        routed.fell_through[0].why.contains("denied at preflight"),
+        "{}",
+        routed.fell_through[0].why
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_at_startup_never_takes_a_route_out_of_the_router() {
+    // The whole reason `Access` has three variants rather than two. Treating an Unknown as
+    // denied would remove a working provider for a network blip that had cleared before
+    // anybody read the log.
+    let unknown = Checked::new("unknown", "m", llmr::Access::unknown("no way to ask"));
+    let router = Router::new(vec![Route::new(unknown.clone(), "m")]).breaking(quick());
+
+    let reached = router.preflight().await;
+    assert!(reached[0].1.is_unknown());
+    assert!(
+        router.resting().is_empty(),
+        "ask again later means ask again"
+    );
+
+    let routed = router
+        .chat(request(), Requirements::default())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(routed.route, "unknown/m");
+}
+
+#[tokio::test]
+async fn a_denial_at_startup_ends_by_itself_like_any_other_rest() {
+    // Rested rather than dropped. A key gets fixed while the program is running, and a
+    // router that had removed the route would never find out.
+    let denied = Checked::new("denied", "m", llmr::Access::denied("the key was rejected"));
+    let router = Router::new(vec![Route::new(denied.clone(), "m")]).breaking(Breaker::new(
+        Duration::from_millis(80),
+        Duration::from_millis(200),
+        Duration::from_millis(80),
+    ));
+
+    let _ = router.preflight().await;
+    assert_eq!(router.resting().len(), 1);
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(router.resting().is_empty());
+
+    let routed = router
+        .chat(request(), Requirements::default())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(routed.route, "denied/m");
+}
+
+#[tokio::test]
+async fn preflight_without_a_breaker_still_only_reports() {
+    // The behaviour every existing caller has. Nothing about calling preflight should start
+    // changing which routes are tried unless the router was told it may.
+    let denied = Checked::new("denied", "m", llmr::Access::denied("the key was rejected"));
+    let router = Router::new(vec![Route::new(denied.clone(), "m")]);
+
+    let reached = router.preflight().await;
+    assert!(reached[0].1.is_denied());
+    assert!(router.resting().is_empty());
+
+    let _ = router.chat(request(), Requirements::default()).await;
+    assert_eq!(denied.chats.load(Ordering::SeqCst), 1, "tried, as before");
+}

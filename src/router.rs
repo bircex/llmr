@@ -379,6 +379,28 @@ impl Router {
     /// strength of a check is a decision somebody should make, and an [`Access::Unknown`] is
     /// not grounds for it at all.
     ///
+    /// # What it changes, with a breaker
+    ///
+    /// Without [`Router::breaking`] this answers and nothing acts on the answer, which is
+    /// half of a feature: a route that said [`Access::Denied`] at startup was still tried
+    /// first in every request afterwards.
+    ///
+    /// With one, the answers are fed to the same timer a failed request feeds:
+    ///
+    /// * **[`Access::Denied`]** rests the route for [`Breaker::settled`]. `Denied` means
+    ///   settled: a key, an entitlement, a spelling. Asking again in thirty seconds is
+    ///   asking a question that has been answered.
+    /// * **[`Access::Unknown`]** does nothing at all. `Unknown` means "ask again later", and
+    ///   that is the whole reason the third variant exists. Treating it as denied would take
+    ///   a working provider out of a router for a network blip that had cleared before
+    ///   anybody read the log.
+    /// * **[`Access::Ready`]** does nothing. There is nothing to clear at startup, and a
+    ///   `Ready` is a claim about a moment rather than a promise about the next request.
+    ///
+    /// The route is still not dropped. It is rested, which is a thing that ends by itself,
+    /// and [`Routed::fell_through`] says it was denied at preflight rather than reporting a
+    /// failure count of zero.
+    ///
     /// # Where to call it
     ///
     /// At startup, beside `unusable`, and nowhere near [`Router::chat`]. Validating per
@@ -390,8 +412,17 @@ impl Router {
     /// an assumption about the runtime for a saving nobody can measure.
     pub async fn preflight(&self) -> Vec<(String, Access)> {
         let mut reached = Vec::with_capacity(self.routes.len());
-        for route in &self.routes {
-            reached.push((route.name(), route.provider.validate(&route.model).await));
+        for (route, health) in self.routes.iter().zip(&self.health) {
+            let access = route.provider.validate(&route.model).await;
+
+            // Only `Denied`. `Unknown` is the variant that exists so that "could not be
+            // checked" never reads as "refused", and acting on one here would undo the
+            // whole point of there being three answers instead of two.
+            if let (Access::Denied { .. }, Some(breaker)) = (&access, &self.breaker) {
+                health.denied_by(breaker.settled, self.since);
+            }
+
+            reached.push((route.name(), access));
         }
         reached
     }
@@ -560,11 +591,7 @@ impl Router {
                 resting += 1;
                 fell_through.push(Attempted {
                     route: route.name(),
-                    why: format!(
-                        "circuit open for another {}ms after {} failures",
-                        left.as_millis(),
-                        health.failures()
-                    ),
+                    why: health.why(left),
                 });
                 continue;
             }

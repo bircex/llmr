@@ -13,6 +13,11 @@ change is a minor bump.
   exactly, leaves a rejected credential alone for a long time, and reopens on its own because
   time does it rather than anything having to be called. Off unless you ask, like `Retry`.
   (#42)
+- `Router::preflight` now feeds the breaker when there is one: a route that answered
+  `Access::Denied` at startup rests for `Breaker::settled` instead of being tried first in
+  every request. `Access::Unknown` still does nothing, which is what the third variant is
+  for. The route is rested rather than dropped, so a key fixed while the program runs is
+  found. (#43)
 - `Router::resting`, which routes are currently being skipped and for how long, so the same
   fact is readable without making a request. (#42)
 - `Router::stream`, so the crate routes a streamed call and not only a whole one. It falls
@@ -47,6 +52,8 @@ change is a minor bump.
 
 ### Documentation
 
+- `docs/DESIGN.md` records what `preflight` now changes, and why `Unknown` still changes
+  nothing. (#43)
 - `docs/DESIGN.md` records why the circuit uses atomics and a monotonic clock, which failures
   open it, and why nothing has to reopen one. (#42)
 - `docs/DESIGN.md` records why a streamed route stops being replaceable at the first event.

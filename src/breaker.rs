@@ -35,7 +35,7 @@
 //! it saves, and the call still falls through to the next route either way.
 
 use crate::error::Error;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long a route is left alone after it has been failing.
@@ -168,6 +168,13 @@ pub(crate) struct Health {
     closed_until: AtomicU64,
     /// How many requests in a row this route has failed to serve.
     consecutive_failures: AtomicU32,
+    /// Whether a startup check settled this, rather than a request failing.
+    ///
+    /// A flag rather than the reason, because the reason is a `String` and this struct is
+    /// atomics on purpose: [`crate::Router::chat`] takes `&self` and nothing here may be
+    /// contended on. The reason is in what [`crate::Router::preflight`] returned, where the
+    /// person who called it already has it.
+    denied: AtomicBool,
 }
 
 impl Health {
@@ -207,6 +214,32 @@ impl Health {
             .store(millis(since).saturating_add(capped), Ordering::Relaxed);
     }
 
+    /// Skips this route because a startup check said it cannot be reached at all.
+    ///
+    /// The same timer as a failure, reached without one. [`crate::Access::Denied`] means
+    /// settled: a key, an entitlement, a spelling. Asking again in thirty seconds is asking
+    /// a question that has been answered, and trying it first in every request until then is
+    /// what [`crate::Router::preflight`] existed to prevent and did not.
+    pub(crate) fn denied_by(&self, wait: Duration, since: Instant) {
+        self.denied.store(true, Ordering::Relaxed);
+        self.close_for(wait, since);
+    }
+
+    /// Why this route is being skipped, for the line somebody reads at three in the morning.
+    pub(crate) fn why(&self, left: Duration) -> String {
+        if self.denied.load(Ordering::Relaxed) {
+            return format!(
+                "denied at preflight, not tried again for another {}ms",
+                left.as_millis()
+            );
+        }
+        format!(
+            "circuit open for another {}ms after {} failures",
+            left.as_millis(),
+            self.failures()
+        )
+    }
+
     /// Records a request this route served, which clears everything.
     ///
     /// Both fields, not just the timer. A route that answers has no consecutive failures by
@@ -215,6 +248,9 @@ impl Health {
     pub(crate) fn served(&self) {
         self.consecutive_failures.store(0, Ordering::Relaxed);
         self.closed_until.store(0, Ordering::Relaxed);
+        // Including a denial. A startup check said this could not be reached and it just
+        // was, so what the check learned has been overtaken by something stronger.
+        self.denied.store(false, Ordering::Relaxed);
     }
 }
 
