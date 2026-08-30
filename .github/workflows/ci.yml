@@ -87,6 +87,11 @@ jobs:
       - run: cargo build --no-default-features --features gemini
       - run: cargo build --no-default-features --features bedrock
       - run: cargo build --no-default-features --features embeddings
+      # And the pairs, because an embedder needs its vendor's feature too and neither alone
+      # compiles the module. A build that only ever saw them apart would not have found a
+      # mistake in either `cfg(all(...))`.
+      - run: cargo build --no-default-features --features openai,embeddings
+      - run: cargo build --no-default-features --features gemini,embeddings
       - run: cargo build --no-default-features --features testkit
       - run: cargo build --no-default-features --features retry
       - run: cargo build --no-default-features --features tracing

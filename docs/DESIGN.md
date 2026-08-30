@@ -354,6 +354,27 @@ input alone and checks it lands nearest the batch vector at its own position, an
 every reply. A suite a broken implementation passes is worse than no suite, so there is a
 `#[should_panic]` test holding a deliberately broken embedder against it.
 
+### Two embedders, because one is a description
+
+`providers::openai::embed` and `providers::gemini::embed` both ship, and the second is there
+for what it disagrees with rather than for the vendor. They differ on every one of the three
+things the module makes claims about:
+
+| | OpenAI shape | Gemini shape |
+|---|---|---|
+| `Purpose` | nowhere to put it | `taskType`, so `capabilities.purposes` is true |
+| Order | an `index` per row, sorted by it | no index; array order is the promise |
+| Usage | `prompt_tokens` | none at all, so every call is `absent` |
+
+Both pass `testkit::assert_embedder_contract` unchanged. **A suite one implementation passes
+is a description of that implementation**, and the trait was written before either existed,
+so this is the check that it is a specification instead.
+
+The `Purpose` half also closed a gap the first release opened: an enum shipped in the public
+API that nothing anywhere wrote to a wire. A caller setting it got the same vector either way
+with nothing saying so — which is why `EmbeddingCapabilities::purposes` exists rather than a
+promise that every reach honours it.
+
 ### `Usage::embedding` is a claim, and it is stated
 
 An embeddings endpoint reports prompt tokens and nothing else, because text goes in and a

@@ -161,6 +161,20 @@ First release. Nothing published yet.
   floor for good.
 - No new dependency.
 
+### Added, a second embedder
+
+- `providers::gemini::embed`, behind `gemini` and `embeddings`. It is here for what it
+  disagrees with: `taskType` gives `Purpose` somewhere to go, its reply carries no index so
+  position is the whole promise, and it reports no usage at all.
+- **`Purpose` now reaches a wire.** It shipped in the public API with no implementation
+  writing it anywhere, which meant a caller setting it got the same vector either way and
+  nothing said so. `EmbeddingCapabilities::purposes` is true for this reach and false for the
+  other, which is the question a caller should be asking.
+- Both embedders pass `testkit::assert_embedder_contract` unchanged, which is what makes it a
+  specification rather than a description of the first one.
+- `examples/nearest.rs`: three documents, a question, and a ranking. Both things it prints
+  are about refusing — `similarity` returns an `Option` and the ledger says "at least".
+
 ### Fixed, checks that could not see
 
 - Two README doctests named feature gated items and so compiled under `--all-features` and

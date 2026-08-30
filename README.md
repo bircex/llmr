@@ -201,6 +201,12 @@ that was rejected and the tool that is not installed.
 | `providers::openai::cli` | `cli` | local CLI | The Codex tool |
 | `providers::gemini::api` | `gemini` | first party API | Gemini `generateContent` |
 | `providers::bedrock::api` | `bedrock` | cloud partner | Anthropic's models through Amazon |
+| `providers::openai::embed` | `openai` + `embeddings` | you say | Anything speaking OpenAI embeddings |
+| `providers::gemini::embed` | `gemini` + `embeddings` | first party API | Gemini `batchEmbedContents` |
+
+The last two implement `Embedder` rather than `Provider`. They are siblings of `api` rather
+than something inside it, because an embedding call shares a base URL and a key with chat and
+nothing else.
 
 The top level names **who you reach and whose credential pays** — the vendor for a first
 party API, the gateway for a gateway. `bedrock` is its own node rather than a folder inside
@@ -321,11 +327,16 @@ has stopped being a specification.
 ```sh
 ANTHROPIC_API_KEY=... cargo run --example ask -- "what is a monad"
 ANTHROPIC_API_KEY=... cargo run --example what_it_cost
+OPENAI_API_KEY=... cargo run --example nearest --features openai,embeddings,reqwest
 cargo run --example anything_openai_shaped
 ```
 
-The last one needs no key. It sets up three very different endpoints through one provider
-and asks each what it serves, which is the quickest way to see what `Reach` is for.
+`anything_openai_shaped` needs no key. It sets up three very different endpoints through one
+provider and asks each what it serves, which is the quickest way to see what `Reach` is for.
+
+`nearest` embeds three documents and a question and ranks them, and both things it prints are
+about refusing: `similarity` returns an `Option`, and the ledger says "at least" because it
+ships no price book.
 
 ## Streaming
 
@@ -470,6 +481,15 @@ was put.
 **A dimension count asked for and not honoured is refused.** A caller who asked for 256 has
 sized something for 256, and an endpoint that ignores the parameter answers full length
 vectors with a 200.
+
+Two implementations ship, and the second is there for what it disagrees with. Gemini's shape
+has a `taskType`, so `Purpose` reaches a wire and `capabilities(...).purposes` is true; its
+reply carries no index, so position is the whole promise and a count that does not match is
+unrecoverable rather than merely wrong; and it reports no usage at all, so every call is
+`absent` and a ledger holding one says "at least". Both pass the same contract suite. A suite
+one implementation passes is a description of that implementation.
+
+`examples/nearest.rs` embeds three documents and a question and ranks them.
 
 ## Model tables and prices
 

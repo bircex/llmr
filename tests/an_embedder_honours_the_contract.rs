@@ -8,7 +8,12 @@
 //! row the way the real endpoint does. A fixture that replied in order would let a provider
 //! that ignores the index pass, which is the one failure this contract exists to catch.
 
-#![cfg(all(feature = "testkit", feature = "openai", feature = "embeddings"))]
+#![cfg(all(
+    feature = "testkit",
+    feature = "openai",
+    feature = "gemini",
+    feature = "embeddings"
+))]
 
 use llmr::embed::{EmbedRequest, Embedder, EmbeddingCapabilities};
 use llmr::providers::openai;
@@ -104,6 +109,87 @@ fn embedder() -> impl Embedder {
             .with_max_batch(2_048)
             .resizable(),
     )
+}
+
+/// The same endpoint in Gemini's shape, which is a different shape in every way that matters.
+///
+/// No index on the rows, because that API carries none and its array order *is* the promise.
+/// No usage block at all. And a `taskType` the OpenAI shape has nowhere to put.
+struct GeminiShaped;
+
+#[async_trait::async_trait]
+impl HttpTransport for GeminiShaped {
+    async fn send(&self, request: HttpRequest) -> llmr::Result<HttpResponse> {
+        // `validate` asks for one model by name rather than for a list.
+        if !request.url.contains(":batchEmbedContents") {
+            return Ok(HttpResponse::new(
+                200,
+                json!({ "name": "models/text-embedding-004" })
+                    .to_string()
+                    .into_bytes(),
+            ));
+        }
+
+        let body: Value = serde_json::from_slice(&request.body)
+            .map_err(|e| Error::Unreadable(format!("the double was sent no JSON: {e}")))?;
+        let requests = body
+            .get("requests")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Unreadable("the double was sent no requests".into()))?;
+
+        let rows: Vec<Value> = requests
+            .iter()
+            .map(|one| {
+                let text = one["content"]["parts"][0]["text"].as_str().unwrap_or("");
+                json!({ "values": vector_for(text) })
+            })
+            .collect();
+
+        Ok(HttpResponse::new(
+            200,
+            json!({ "embeddings": rows }).to_string().into_bytes(),
+        ))
+    }
+}
+
+fn gemini_embedder() -> impl Embedder {
+    llmr::providers::gemini::embed::with(
+        Arc::new(GeminiShaped),
+        Secret::new("gemini-api-key", "test-key"),
+    )
+    .knowing(
+        "text-embedding-004",
+        EmbeddingCapabilities::none(Reach::FirstPartyApi)
+            .with_dimensions(8)
+            .with_purposes(),
+    )
+}
+
+#[tokio::test]
+async fn the_gemini_embedder_honours_the_same_contract() {
+    // The point of having two. A suite one implementation passes is a description of that
+    // implementation; these two agree on nothing at the wire — index or no index, usage or
+    // no usage, a place for `Purpose` or none — and answer the same questions the same way.
+    assert_embedder_contract(&gemini_embedder(), "text-embedding-004").await;
+}
+
+#[tokio::test]
+async fn an_embedder_that_trusts_arrival_order_fails_the_contract_in_either_shape() {
+    // Deliberately empty of its own logic: the shared assertion is above. This name exists
+    // so a reader looking for "is the Gemini one held to the ordering rule too" finds a yes.
+    let reply = gemini_embedder()
+        .embed(EmbedRequest::new(
+            "text-embedding-004".into(),
+            vec!["alpha".into(), "beta".into()],
+        ))
+        .await
+        .unwrap_or_else(|e| panic!("the double: {e}"));
+
+    assert_eq!(
+        reply.into_vectors(),
+        vec![vector_for("alpha"), vector_for("beta")],
+        "position is the only thing tying a vector to its text in this shape"
+    );
 }
 
 /// An embedder that trusts arrival order, which is the bug the contract exists to catch.
