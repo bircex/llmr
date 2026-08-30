@@ -674,6 +674,19 @@ person fixes their configuration or waits.
 consequences a library cannot weigh, and a router that quietly stopped trying something is
 one people work around by not using the router.
 
+**`preflight` feeds it.** It used to answer an `Access` per route and nothing read the
+answer, so a route that said `Denied` at startup was tried first in every request anyway.
+Now `Denied` rests the route for `Breaker::settled`, and `Unknown` does nothing at all: that
+variant exists so "could not be checked" never reads as "refused", and acting on one here
+would undo the entire reason there are three answers instead of two. `Ready` does nothing
+either, because there is nothing to clear at startup and a `Ready` is a claim about a moment
+rather than a promise about the next request.
+
+The route is still not dropped. It is rested, which is a thing that ends by itself, so a key
+fixed while the program is running is found rather than never tried again. `fell_through`
+says "denied at preflight" rather than reporting a failure count of zero, because a count of
+zero would send somebody looking for a failure that never happened.
+
 ---
 
 ### A streamed route is replaceable until the first event, and not after
