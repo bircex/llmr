@@ -49,6 +49,6 @@ pub use model::{ModelCapabilities, ModelId, Reach};
 pub use provider::{Access, Provider};
 pub use registry::Registry;
 pub use retry::{Delay, Retry};
-pub use router::{Requirements, Route, Routed, Router};
+pub use router::{Order, Requirements, Route, Routed, Router};
 pub use secret::Secret;
 pub use transport::{HttpRequest, HttpResponse, HttpTransport, Method};

@@ -193,15 +193,22 @@ impl Health {
         self.consecutive_failures.load(Ordering::Relaxed)
     }
 
-    /// Records a request this route failed to serve, and says how long to skip it for.
-    pub(crate) fn failed(&self, breaker: &Breaker, error: &Error, since: Instant) -> Option<u32> {
-        let failures = self
-            .consecutive_failures
+    /// Records a request this route failed to serve, and answers how many in a row that is.
+    ///
+    /// Counted whether or not there is a [`Breaker`], because the count is what
+    /// [`crate::Order::Healthiest`] sorts on and incrementing an integer costs nothing. What
+    /// a policy decides is whether the route is also rested, which is [`Health::rest`].
+    pub(crate) fn failed(&self) -> u32 {
+        self.consecutive_failures
             .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let wait = breaker.opening_for(failures, error)?;
-        self.close_for(wait, since);
-        Some(failures)
+            .saturating_add(1)
+    }
+
+    /// Skips this route for a while, if this policy says a failure like that should.
+    pub(crate) fn rest(&self, breaker: &Breaker, failures: u32, error: &Error, since: Instant) {
+        if let Some(wait) = breaker.opening_for(failures, error) {
+            self.close_for(wait, since);
+        }
     }
 
     /// Skips this route for a while, whatever it has been doing.
@@ -345,8 +352,10 @@ mod tests {
         let health = Health::default();
         let breaker = Breaker::default();
 
-        health.failed(&breaker, &Error::Transient("503".into()), since);
-        health.failed(&breaker, &Error::Transient("503".into()), since);
+        for _ in 0..2 {
+            let failures = health.failed();
+            health.rest(&breaker, failures, &Error::Transient("503".into()), since);
+        }
         assert_eq!(health.failures(), 2);
         assert!(health.closed_for(since).is_some());
 
@@ -361,13 +370,17 @@ mod tests {
         let since = Instant::now();
         let health = Health::default();
 
+        let failures = health.failed();
+        health.rest(
+            &Breaker::default(),
+            failures,
+            &Error::Refused { category: None },
+            since,
+        );
+
         assert_eq!(
-            health.failed(
-                &Breaker::default(),
-                &Error::Refused { category: None },
-                since
-            ),
-            None
+            failures, 1,
+            "it did fail, and the count is what Healthiest reads"
         );
         assert_eq!(health.closed_for(since), None, "still selectable");
     }

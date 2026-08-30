@@ -7,6 +7,13 @@ change is a minor bump.
 
 ### Added
 
+- `Order` and `Router::ordering`, so selection can be something other than the order you
+  wrote: `Cheapest` by published rate, or `Healthiest` by fewest consecutive failures. A
+  route with no price sorts **last**, never first, because reading a missing price as zero
+  would put every unpriced provider at the front and look deliberate. The requirement check
+  still comes first, and every sort is stable. (#44)
+- `Route::priced_by` and `Route::rate`, which is where `Order::Cheapest` gets its numbers.
+  (#44)
 - `Breaker` and `Router::breaking`, so a route that has been failing is skipped for a while
   instead of being tried first, waited on and fallen through in every request. It opens for a
   failure about the provider and never for one about the request, honours a `Retry-After`
@@ -30,6 +37,8 @@ change is a minor bump.
   it always did; `Router::stream` answers a `Routed<()>` beside the stream. (#41)
 ### Documentation
 
+- `docs/DESIGN.md` records what `Order::Cheapest` is claiming, and why an unpriced route
+  sorts last rather than first. (#44)
 - `docs/DESIGN.md` records what `preflight` now changes, and why `Unknown` still changes
   nothing. (#43)
 - `docs/DESIGN.md` records why the circuit uses atomics and a monotonic clock, which failures

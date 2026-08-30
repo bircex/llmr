@@ -627,6 +627,43 @@ accident, because a refusal arrives looking like any other error.
 `Routed::fell_through` carries what was tried first and why. A non empty list on a
 *successful* call is a provider degrading while nothing is failing.
 
+### Selection can be more than list order, and an unpriced route is not a free one
+
+The only policy was the order you wrote, while the crate held `PriceBook`, `Rate`, `Micros`
+and `Ledger` and consulted none of them when choosing a route. `Order` is the axis, and
+`Order::AsListed` is still the default and still what the router always did.
+
+**The requirement check comes first, whatever the ordering says.** Cheapest among the routes
+that can serve the request, not cheapest full stop. Reordering past a capability would pay
+less for a reply that ignored half of what was sent.
+
+**`Order::Cheapest` claims something about the rate and says so.** It compares the sum of a
+route's published input and output price per million tokens. It is not a prediction of what
+a request will cost: cheapest per token is not cheapest per request, because a model with a
+low rate that thinks before answering can spend more output than a dearer one that does not.
+What bounds spend is a cap, not an ordering.
+
+**An unpriced route sorts last, never first.** `PriceBook::price` answers `None` for a model
+it does not list, and the obvious implementation reads `None` as zero and puts every unpriced
+provider at the front, which is precisely backwards and confidently so. The sort key leads
+with `rate.is_none()`, and `false` sorts before `true`. A route that carries a whole book
+with no row for its model is unpriced too, which is the same fact as having no book.
+
+Sorted last rather than refused. Refusing is a different decision and belongs to whatever
+sets a spending limit, because a cap is the thing that cannot be satisfied by a call nobody
+can price.
+
+**`Order::Healthiest` works without a breaker.** The consecutive failure count is kept
+whatever the policy, because incrementing an integer costs nothing and the count is what this
+sorts on. What a `Breaker` adds is skipping a bad route entirely for a while rather than
+merely putting it further down the list.
+
+**Every sort is stable**, so routes an ordering cannot tell apart keep the order they were
+written in, and a router where nothing has failed and nothing is priced behaves exactly like
+the one people already have.
+
+---
+
 ### A router that does not learn is an ordered `try` list
 
 `Router::route` started at route 0 on every call, so a provider that had been answering 503
