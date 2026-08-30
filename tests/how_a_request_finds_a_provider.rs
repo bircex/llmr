@@ -1215,3 +1215,158 @@ async fn an_ordering_that_cannot_tell_two_routes_apart_keeps_the_order_you_wrote
         assert_eq!(routed.route, "first/m", "under {order:?}");
     }
 }
+
+// ---- Deadline --------------------------------------------------------------------------
+//
+// A transport can have a timeout and a retry policy can have delays. Nothing bounded the
+// sum, so a caller waiting on an agent had no way to say "answer or fail within twenty
+// seconds".
+
+use llmr::{Delay, Retry};
+
+/// A wait that refuses to happen, so a test can assert nothing waited.
+struct NeverWaits;
+
+#[async_trait::async_trait]
+impl Delay for NeverWaits {
+    async fn sleep(&self, how_long: Duration) {
+        panic!("the deadline should have stopped this before waiting {how_long:?}");
+    }
+}
+
+/// A provider that takes this long to fail.
+struct Slow {
+    id: String,
+    takes: Duration,
+    calls: AtomicUsize,
+}
+
+impl Slow {
+    fn new(id: &str, takes: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            id: id.into(),
+            takes,
+            calls: AtomicUsize::new(0),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Slow {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn capabilities(&self, model: &ModelId) -> Option<ModelCapabilities> {
+        (model.as_str() == "m").then_some(plain(Reach::FirstPartyApi))
+    }
+
+    async fn chat(&self, _request: ChatRequest) -> llmr::Result<ChatResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(self.takes).await;
+        Err(Error::Transient("no".into()))
+    }
+}
+
+#[tokio::test]
+async fn a_routed_call_stops_when_the_deadline_is_spent_rather_than_trying_the_next_route() {
+    let first = Slow::new("first", Duration::from_millis(120));
+    let second = Slow::new("second", Duration::from_millis(120));
+    let third = Slow::new("third", Duration::from_millis(120));
+
+    let router = Router::new(vec![
+        Route::new(first.clone(), "m"),
+        Route::new(second.clone(), "m"),
+        Route::new(third.clone(), "m"),
+    ])
+    .within_deadline(Duration::from_millis(200));
+
+    let started = std::time::Instant::now();
+    let outcome = router.chat(request(), Requirements::default()).await;
+    let took = started.elapsed();
+
+    match outcome {
+        Err(Error::Timeout { elapsed }) => assert!(elapsed >= Duration::from_millis(200)),
+        other => panic!("expected a timeout, got {other:?}"),
+    }
+
+    assert_eq!(first.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        third.calls.load(Ordering::SeqCst),
+        0,
+        "there was no time left to start it in"
+    );
+    assert!(
+        took < Duration::from_millis(400),
+        "it stopped rather than spending a third timeout: {took:?}"
+    );
+}
+
+#[tokio::test]
+async fn giving_up_on_time_is_told_apart_from_giving_up_on_failures() {
+    // Two different fixes. One is a provider to look at, the other is a deadline to raise,
+    // and a caller that cannot tell them apart goes looking in the wrong place.
+    let routes = || {
+        vec![
+            Route::new(Slow::new("slow", Duration::from_millis(120)), "m"),
+            Route::new(Slow::new("spare", Duration::from_millis(120)), "m"),
+        ]
+    };
+
+    let out_of_time = Router::new(routes())
+        .within_deadline(Duration::from_millis(60))
+        .chat(request(), Requirements::default())
+        .await;
+    assert!(
+        matches!(out_of_time, Err(Error::Timeout { .. })),
+        "{out_of_time:?}"
+    );
+
+    // The same routes failing the same way, with time to spare. The error is the provider's
+    // own, not a deadline, and the two are not the same problem.
+    let everything_failed = Router::new(routes())
+        .within_deadline(Duration::from_secs(30))
+        .chat(request(), Requirements::default())
+        .await;
+    assert!(
+        matches!(everything_failed, Err(Error::Transient(_))),
+        "{everything_failed:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_deadline_beats_the_retry_policy_when_they_disagree() {
+    // A policy that says three attempts is a maximum, not a promise. Waiting into the
+    // deadline spends what is left on a call that has nowhere to arrive.
+    let failing = Stub::failing(
+        "failing",
+        "m",
+        plain(Reach::FirstPartyApi),
+        Error::Transient("503".into()),
+    );
+    let router = Router::new(vec![Route::new(failing.clone(), "m")])
+        .retrying(Retry::with_delay(3, Arc::new(NeverWaits)).with_base(Duration::from_millis(500)))
+        .within_deadline(Duration::from_millis(100));
+
+    // The delay panics if it is ever asked to wait, so reaching the end of this at all is
+    // the assertion: the router refused a 500ms wait it had 100ms of deadline left for.
+    let outcome = router.chat(request(), Requirements::default()).await;
+
+    assert!(matches!(outcome, Err(Error::Timeout { .. })), "{outcome:?}");
+    assert_eq!(failing.calls(), 1, "the second attempt never started");
+}
+
+#[tokio::test]
+async fn a_deadline_that_is_never_reached_changes_nothing() {
+    let alive = Stub::serving("alive", "m", plain(Reach::FirstPartyApi));
+    let router =
+        Router::new(vec![Route::new(alive.clone(), "m")]).within_deadline(Duration::from_secs(30));
+
+    let routed = router
+        .chat(request(), Requirements::default())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(routed.route, "alive/m");
+    assert!(routed.fell_through.is_empty());
+}

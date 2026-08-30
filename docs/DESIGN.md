@@ -627,6 +627,37 @@ accident, because a refusal arrives looking like any other error.
 `Routed::fell_through` carries what was tried first and why. A non empty list on a
 *successful* call is a provider degrading while nothing is failing.
 
+### A deadline bounds the whole attempt, and says so by its type
+
+A transport can have a timeout and a `Retry` policy can have delays, and nothing bounded the
+sum. Three routes and a policy of two attempts each is six timeouts plus the waits between
+them, so a caller waiting on an agent had no way to say "answer or fail within twenty
+seconds". `Router::within_deadline` is that bound.
+
+**Checked before every attempt and before every retry wait**, not only at the start. A
+`Retry` policy that says three attempts is a maximum rather than a promise, so when the two
+disagree the deadline wins: a wait that would run past it is not taken.
+
+**There is no minimum attempt length.** Any time left at all is enough to try again, because
+a minimum would be this crate guessing how long a call takes, and a guess that stopped an
+attempt which would have finished is worse than one attempt that overruns.
+
+**It cannot cut short a call already in flight.** Cancelling one needs a timer, which needs a
+runtime, and this crate does not pick yours. The deadline bounds when a new attempt starts
+and how long the router waits between attempts; the length of a single call is the
+transport's timeout, and both need setting.
+
+**The answer is `Error::Timeout`, not the last error from a route.** A call that gave up has
+to say whether everything failed or time ran out. One of those is a provider to look at and
+the other is a deadline to raise.
+
+`Routed::fell_through` is the obvious place for "the deadline was spent after two attempts"
+and it is the wrong one: a `Routed` only exists when a reply came back, and a spent deadline
+never produces one, so the entry would be written and never read. What was tried goes on the
+span instead, under the `tracing` feature.
+
+---
+
 ### Selection can be more than list order, and an unpriced route is not a free one
 
 The only policy was the order you wrote, while the crate held `PriceBook`, `Rate`, `Micros`

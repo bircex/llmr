@@ -147,6 +147,24 @@ pub(crate) fn routed_stream(span: &Span, route: &str, attempts: u32, fell: usize
 #[cfg(not(feature = "tracing"))]
 pub(crate) fn routed_stream(_span: &Span, _route: &str, _attempts: u32, _fell: usize) {}
 
+/// Says that a routed call ran out of time, and what it had tried.
+///
+/// A warning rather than a span field, because this is the end of the request and there is
+/// nothing left to attach a field to that anybody will read. `tried` is the route names and
+/// the reasons, which are safe to record: no argument here can hold a message.
+#[cfg(feature = "tracing")]
+pub(crate) fn gave_up(elapsed: std::time::Duration, attempts: u32, tried: &str) {
+    tracing::warn!(
+        elapsed_ms = elapsed.as_millis(),
+        attempts,
+        tried,
+        "the deadline was spent before anything answered"
+    );
+}
+
+#[cfg(not(feature = "tracing"))]
+pub(crate) fn gave_up(_elapsed: std::time::Duration, _attempts: u32, _tried: &str) {}
+
 /// Records how complete the usage on one provider call was.
 #[cfg(feature = "tracing")]
 pub(crate) fn measured(span: &Span, coverage: UsageCoverage) {
