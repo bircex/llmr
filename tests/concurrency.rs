@@ -213,3 +213,65 @@ async fn one_call_failing_does_not_take_the_others_with_it() {
         "every call failed after the first one did, which is what a poisoned lock looks like"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reachability_checks_run_at_the_same_time_as_everything_else() {
+    // `validate` takes `&self` like `chat` does, so it has the same two failure modes. It is
+    // also the method most likely to be called in a loop over a router at startup, which is
+    // exactly where a lock around the call turns a one second preflight into a minute.
+    //
+    // Mixed with chats on purpose: a lock shared between the two paths only shows up when
+    // both are in flight.
+    let transport = Slow::new(Duration::from_millis(20));
+    let shared = provider(Arc::clone(&transport));
+
+    let started = std::time::Instant::now();
+    let calls: Vec<_> = (0..40)
+        .map(|n| {
+            let provider = Arc::clone(&shared);
+            tokio::spawn(async move {
+                if n % 2 == 0 {
+                    provider.validate(&"claude-sonnet-5".into()).await;
+                } else {
+                    let _ = provider.chat(a_request()).await;
+                }
+            })
+        })
+        .collect();
+
+    let all = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut finished = 0;
+        for call in calls {
+            if call.await.is_ok() {
+                finished += 1;
+            }
+        }
+        finished
+    })
+    .await;
+
+    assert_eq!(
+        all,
+        Ok(40),
+        "forty mixed calls did not all finish, which is what a lock held across an await \
+         looks like from outside"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "forty calls of twenty milliseconds took {:?}, so something is serialising them",
+        started.elapsed()
+    );
+    assert_eq!(transport.finished.load(Ordering::SeqCst), 40);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reachability_check_answers_rather_than_failing() {
+    // It has no `Result`, so there is no path where a caller gets nothing. Whatever the
+    // transport does, an answer comes back, and here it is `Unknown`: the recorded reply is
+    // a chat body rather than a model list, so nothing was established.
+    let shared = provider(Slow::new(Duration::from_millis(1)));
+    let access = shared.validate(&"claude-sonnet-5".into()).await;
+
+    assert!(access.is_unknown(), "{access}");
+    assert!(!access.is_ready());
+}

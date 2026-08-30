@@ -636,3 +636,135 @@ async fn a_paused_turn_is_reported_as_paused_rather_than_finished() {
         "a paused turn read as a finished answer"
     );
 }
+
+// ---- Model lists, and the reachability check built on them ------------------------------
+
+fn anthropic_model_list() -> Value {
+    // The shape the vendor sends, trimmed to the fields anything here reads.
+    json!({
+        "data": [
+            { "type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5" },
+            { "type": "model", "id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5" }
+        ],
+        "has_more": false,
+        "first_id": "claude-sonnet-5",
+        "last_id": "claude-haiku-4-5"
+    })
+}
+
+#[tokio::test]
+async fn anthropic_asks_for_the_model_list_beside_the_messages_endpoint() {
+    let transport = Recorded::replying(200, anthropic_model_list());
+    let _ = anthropic(Arc::clone(&transport)).catalogue().await;
+
+    assert!(
+        transport.url().ends_with("/v1/models"),
+        "{}",
+        transport.url()
+    );
+    // Built from the same base URL as `chat_url`, so neither one grows a second `/v1`.
+    assert!(!transport.url().contains("/v1/v1"), "{}", transport.url());
+    assert_eq!(transport.header("x-api-key").as_deref(), Some("sk-test"));
+}
+
+#[tokio::test]
+async fn a_model_list_comes_back_sorted_and_by_id_alone() {
+    let transport = Recorded::replying(200, anthropic_model_list());
+    let listed = anthropic(transport).catalogue().await.expect("a list");
+
+    assert_eq!(
+        listed.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
+        vec!["claude-haiku-4-5", "claude-sonnet-5"]
+    );
+}
+
+#[tokio::test]
+async fn a_model_list_with_no_data_array_is_unreadable_rather_than_empty() {
+    // An empty list is the vendor saying it serves nothing, which a caller would act on.
+    // This is the crate failing to read a reply, and the two must not arrive as one answer.
+    let transport = Recorded::replying(200, json!({ "models": [] }));
+    let refused = anthropic(transport).catalogue().await;
+
+    assert!(matches!(refused, Err(Error::Unreadable(_))), "{refused:?}");
+}
+
+#[tokio::test]
+async fn a_model_the_vendor_lists_is_reachable_and_costs_no_call() {
+    let transport = Recorded::replying(200, anthropic_model_list());
+    let access = anthropic(Arc::clone(&transport))
+        .validate(&"claude-sonnet-5".into())
+        .await;
+
+    assert!(access.is_ready(), "{access}");
+    assert!(
+        transport.url().ends_with("/v1/models"),
+        "a preflight that reached the messages endpoint would be one that costs money: {}",
+        transport.url()
+    );
+}
+
+#[tokio::test]
+async fn a_model_the_vendor_does_not_list_is_denied() {
+    let transport = Recorded::replying(200, anthropic_model_list());
+    let access = anthropic(transport)
+        .validate(&"claude-opus-9000".into())
+        .await;
+
+    assert!(access.is_denied(), "{access}");
+}
+
+#[tokio::test]
+async fn a_key_anthropic_rejects_is_denied_rather_than_unknown() {
+    // The variant a caller acts on. Unknown would mean try again later, and this will never
+    // clear on its own.
+    let transport = Recorded::replying(401, json!({ "error": { "message": "invalid x-api-key" } }));
+    let access = anthropic(transport)
+        .validate(&"claude-sonnet-5".into())
+        .await;
+
+    assert!(access.is_denied(), "{access}");
+    assert!(
+        access.detail().unwrap_or_default().contains("credential"),
+        "{access}"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_being_down_is_unknown_rather_than_denied() {
+    // A five minute outage must not read as a configuration problem somebody goes looking
+    // for, and must not take the provider out of a router.
+    let transport = Recorded::replying(503, json!({ "error": { "message": "overloaded" } }));
+    let access = anthropic(transport)
+        .validate(&"claude-sonnet-5".into())
+        .await;
+
+    assert!(access.is_unknown(), "{access}");
+}
+
+#[tokio::test]
+async fn an_openai_shaped_endpoint_answers_the_same_three_ways() {
+    // The same claims through the other protocol, because a rule that only one provider
+    // follows is not a rule this crate has.
+    let listing = json!({ "data": [{ "id": "gpt-test" }, { "id": "gpt-other" }] });
+
+    let ready = openai(
+        Recorded::replying(200, listing.clone()),
+        Reach::FirstPartyApi,
+    )
+    .validate(&"gpt-test".into())
+    .await;
+    assert!(ready.is_ready(), "{ready}");
+
+    let denied = openai(Recorded::replying(200, listing), Reach::FirstPartyApi)
+        .validate(&"gpt-missing".into())
+        .await;
+    assert!(denied.is_denied(), "{denied}");
+
+    let unknown = openai(
+        Recorded::replying(500, json!({ "error": "boom" })),
+        Reach::FirstPartyApi,
+    )
+    .validate(&"gpt-test".into())
+    .await;
+    assert!(unknown.is_unknown(), "{unknown}");
+}

@@ -41,7 +41,7 @@ use crate::chat::response::ChatResponse;
 use crate::cost::usage::Usage;
 use crate::error::{Error, Result};
 use crate::model::{ModelCapabilities, ModelId, Reach};
-use crate::provider::Provider;
+use crate::provider::{Access, Provider};
 use async_trait::async_trait;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -243,7 +243,17 @@ pub struct LocalCli {
     serves: std::collections::BTreeSet<String>,
     runner: Arc<dyn ProcessRunner>,
     envelope: Option<Envelope>,
+    /// Crate visible so a vendor preset's own tests can assert it shipped with one. Not
+    /// public: an accessor widened for a test is public surface forever.
+    pub(crate) probe: Option<Vec<String>>,
 }
+
+/// How long a probe may take before it is given up on.
+///
+/// Not the chat timeout, which is minutes: a program that hangs on `--version` would hold a
+/// startup check for the length of a whole conversation, and a preflight nobody can wait
+/// through is a preflight nobody runs.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl LocalCli {
     /// A tool that takes a prompt on standard input and writes the reply to standard output.
@@ -265,6 +275,7 @@ impl LocalCli {
             serves: std::collections::BTreeSet::new(),
             runner: Arc::new(Spawning),
             envelope: None,
+            probe: None,
         }
     }
 
@@ -276,6 +287,26 @@ impl LocalCli {
     #[must_use]
     pub fn reading(mut self, envelope: Envelope) -> Self {
         self.envelope = Some(envelope);
+        self
+    }
+
+    /// Runs the program with these arguments to find out whether it can be reached.
+    ///
+    /// Without it, [`Provider::validate`] answers [`Access::Unknown`], because nothing was
+    /// asked. With it, a program that is missing or exits non zero is
+    /// [`Access::Denied`], which is how "not logged in" reaches a person at startup rather
+    /// than inside the first request.
+    ///
+    /// **Pick the strongest check the tool offers.** `--version` proves the program is
+    /// installed and nothing about the login inside it, so a tool with a sign in command
+    /// should be probed with that instead. The presets here use `--version` because that is
+    /// all the vendor tools answer for free, and they say so.
+    ///
+    /// Nothing is written to the probe's standard input, and it is given at most ten seconds
+    /// however long the chat timeout is.
+    #[must_use]
+    pub fn with_probe(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.probe = Some(args.into_iter().map(Into::into).collect());
         self
     }
 
@@ -487,6 +518,78 @@ impl Provider for LocalCli {
             request.model.clone(),
         )
         .with_stop_details("a command line tool does not report why it stopped"))
+    }
+
+    /// Runs the probe, and reads what a running program does and does not prove.
+    ///
+    /// A `Ready` here is a weaker claim than one from a provider with a model list to ask.
+    /// A vendor tool that starts is installed, and whether the login inside it still works
+    /// is a question it will only answer by doing the work. That gap is the reason
+    /// [`LocalCli::with_probe`] takes the arguments rather than fixing them: a tool with a
+    /// sign in command can prove more, and should be asked to.
+    ///
+    /// Nothing is billed either way. The prompt is not sent, and no model is asked anything.
+    async fn validate(&self, model: &ModelId) -> Access {
+        let Some(probe) = &self.probe else {
+            return Access::unknown(format!(
+                "{} was given no probe, so nothing was asked. `with_probe` says how to ask",
+                self.id
+            ));
+        };
+
+        let output = match self
+            .runner
+            .run(&self.program, probe, "", self.timeout.min(PROBE_TIMEOUT))
+            .await
+        {
+            Ok(output) => output,
+            // The runner reports a program that is not on the path as unsupported, and that
+            // is settled: nothing clears it but installing the tool.
+            Err(Error::Unsupported(said)) => {
+                return Access::denied(format!("{}: {said}", self.id));
+            }
+            // A timeout or a failure to spawn is a moment rather than an answer.
+            Err(e) => {
+                return Access::unknown(format!("{} could not be probed: {e}", self.id));
+            }
+        };
+
+        if output.exit_code != Some(0) {
+            // Where "not logged in" arrives. The tool wrote it to standard error and exited,
+            // and the first line of that is the only thing anybody needs from this.
+            let said = String::from_utf8_lossy(&output.stderr);
+            return Access::denied(format!(
+                "{} exited with {}: {}",
+                self.program,
+                output
+                    .exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "a signal".into()),
+                said.lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("nothing")
+            ));
+        }
+
+        if self.serves.is_empty() {
+            // The tool runs, and which models it serves is genuinely not knowable from
+            // here. Ready would be a claim about a model nobody has said it can reach.
+            return Access::unknown(format!(
+                "{} runs, and a command line tool cannot be asked which models it serves.                  Name them with `serving` and this becomes an answer",
+                self.program
+            ));
+        }
+
+        if !self.serves.contains(model.as_str()) {
+            // `capabilities` already answers None for this model. The two have to agree, or
+            // a route that can never be selected reports as reachable.
+            return Access::denied(format!(
+                "{} was not told it serves {model}, so nothing here can reach it",
+                self.id
+            ));
+        }
+
+        Access::Ready
     }
 }
 
@@ -781,5 +884,205 @@ mod tests {
             .map(|r| r.usage)
             .unwrap_or_default();
         assert_eq!(usage.coverage(), crate::UsageCoverage::Absent);
+    }
+
+    /// Records everything a probe was run with, including the deadline it was given.
+    #[derive(Default)]
+    struct Probing(std::sync::Mutex<Vec<(Vec<String>, String, Duration)>>);
+
+    #[async_trait]
+    impl ProcessRunner for Probing {
+        async fn run(
+            &self,
+            _program: &str,
+            args: &[String],
+            stdin: &str,
+            timeout: Duration,
+        ) -> Result<ProcessOutput> {
+            if let Ok(mut seen) = self.0.lock() {
+                seen.push((args.to_vec(), stdin.to_string(), timeout));
+            }
+            Ok(ProcessOutput::new(Some(0), b"1.2.3\n".to_vec()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_with_no_probe_answers_unknown_rather_than_denied() {
+        // Nothing was asked. Denied would take a perfectly good tool out of a router for
+        // the crime of not having been configured with a question.
+        let cli = cli(Arc::new(Recording::default())).serving(["any-model"]);
+        let access = cli.validate(&"any-model".into()).await;
+
+        assert!(access.is_unknown(), "{access:?}");
+        assert!(
+            access.detail().unwrap_or_default().contains("with_probe"),
+            "{access}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probed_tool_that_runs_and_serves_the_model_is_ready() {
+        let cli = cli(Arc::new(Probing::default()))
+            .with_probe(["--version"])
+            .serving(["claude-sonnet-5"]);
+
+        assert_eq!(cli.validate(&"claude-sonnet-5".into()).await, Access::Ready);
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_is_not_installed_is_denied() {
+        // Settled. Nothing clears this but installing the program, so an unknown here would
+        // send a router on retrying something that will never work.
+        //
+        // Through a runner that fails the way `Spawning` fails, rather than the scripted one
+        // that reports everything as transient: the classification is what is under test.
+        struct Missing;
+
+        #[async_trait]
+        impl ProcessRunner for Missing {
+            async fn run(
+                &self,
+                program: &str,
+                _args: &[String],
+                _stdin: &str,
+                _timeout: Duration,
+            ) -> Result<ProcessOutput> {
+                Err(Error::Unsupported(format!(
+                    "{program} is not on the path, so nothing ran. This is not an empty answer"
+                )))
+            }
+        }
+
+        let missing = cli(Arc::new(Missing))
+            .with_probe(["--version"])
+            .serving(["any-model"]);
+
+        let access = missing.validate(&"any-model".into()).await;
+        assert!(access.is_denied(), "{access:?}");
+        assert!(
+            access
+                .detail()
+                .unwrap_or_default()
+                .contains("not on the path"),
+            "{access}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_is_installed_and_signed_out_is_denied_and_says_what_it_complained_about() {
+        // The case this whole method exists for. Without it, a signed out tool looks fine at
+        // startup and fails inside the first request somebody was waiting on.
+        let cli = cli(Scripted::new(Ok(ProcessOutput::new(Some(1), Vec::new())
+            .with_stderr(b"\nnot logged in: run `a-tool login`\n".to_vec()))))
+        .with_probe(["--version"])
+        .serving(["any-model"]);
+
+        let access = cli.validate(&"any-model".into()).await;
+        assert!(access.is_denied(), "{access:?}");
+        assert!(
+            access
+                .detail()
+                .unwrap_or_default()
+                .contains("not logged in"),
+            "{access}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_that_could_not_be_run_at_all_is_unknown() {
+        // A machine under load that could not spawn is a moment, not an answer.
+        let cli = cli(Scripted::new(Err(Error::Timeout {
+            elapsed: Duration::from_secs(10),
+        })))
+        .with_probe(["--version"])
+        .serving(["any-model"]);
+
+        assert!(cli.validate(&"any-model".into()).await.is_unknown());
+    }
+
+    #[tokio::test]
+    async fn a_running_tool_that_was_never_told_what_it_serves_is_unknown() {
+        // The tool works and nobody has said which models it reaches. Ready would be a
+        // claim about a model no one has made, and denied would blame the tool for it.
+        let cli = cli(Arc::new(Probing::default())).with_probe(["--version"]);
+        let access = cli.validate(&"claude-sonnet-5".into()).await;
+
+        assert!(access.is_unknown(), "{access:?}");
+        assert!(
+            access.detail().unwrap_or_default().contains("serving"),
+            "{access}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_and_capabilities_agree_about_a_model_nobody_named() {
+        // If these disagreed, a route that can never be selected would report as reachable
+        // and `Router::unusable` and `Router::preflight` would tell two different stories.
+        let cli = cli(Arc::new(Probing::default()))
+            .with_probe(["--version"])
+            .serving(["claude-sonnet-5"]);
+
+        assert_eq!(cli.capabilities(&"a-typo".into()), None);
+        assert!(cli.validate(&"a-typo".into()).await.is_denied());
+    }
+
+    #[tokio::test]
+    async fn the_probe_runs_the_arguments_it_was_given_and_sends_no_prompt() {
+        // A probe that sent the conversation would be a preflight that costs a call, which
+        // is the one thing validate may not do.
+        let runner = Arc::new(Probing::default());
+        let cli = cli(runner.clone())
+            .with_probe(["auth", "status"])
+            .serving(["any-model"]);
+
+        let _ = cli.validate(&"any-model".into()).await;
+
+        let seen = runner.0.lock().map(|s| s.clone()).unwrap_or_default();
+        let (args, stdin, _) = seen.first().cloned().unwrap_or_default();
+        assert_eq!(args, vec!["auth".to_string(), "status".to_string()]);
+        assert!(stdin.is_empty(), "{stdin:?}");
+    }
+
+    #[tokio::test]
+    async fn a_probe_is_not_given_the_whole_chat_deadline() {
+        // A chat timeout is minutes. A program that hangs on `--version` would hold startup
+        // for all of it, and a preflight nobody can wait through is one nobody runs.
+        let runner = Arc::new(Probing::default());
+        let cli = LocalCli::new(
+            "test-cli",
+            "a-tool",
+            [] as [&str; 0],
+            Duration::from_secs(300),
+        )
+        .with_runner(runner.clone())
+        .with_probe(["--version"])
+        .serving(["any-model"]);
+
+        let _ = cli.validate(&"any-model".into()).await;
+
+        let seen = runner.0.lock().map(|s| s.clone()).unwrap_or_default();
+        let (_, _, deadline) = seen.first().cloned().unwrap_or_default();
+        assert_eq!(deadline, PROBE_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn a_shorter_chat_deadline_is_not_stretched_to_the_probe_ceiling() {
+        // The other half. A caller who asked for two seconds meant two seconds.
+        let runner = Arc::new(Probing::default());
+        let cli = LocalCli::new(
+            "test-cli",
+            "a-tool",
+            [] as [&str; 0],
+            Duration::from_secs(2),
+        )
+        .with_runner(runner.clone())
+        .with_probe(["--version"])
+        .serving(["any-model"]);
+
+        let _ = cli.validate(&"any-model".into()).await;
+
+        let seen = runner.0.lock().map(|s| s.clone()).unwrap_or_default();
+        let (_, _, deadline) = seen.first().cloned().unwrap_or_default();
+        assert_eq!(deadline, Duration::from_secs(2));
     }
 }

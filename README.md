@@ -79,6 +79,46 @@ assert_eq!(request.needs().unmet_by(&through_a_cli), vec!["structured_output"]);
 Without that, you find out by reading a reply that quietly ignored half of what you asked
 for, and paying for it.
 
+### Whether you can reach it has three answers
+
+`capabilities()` says what a model can do. It cannot say whether your key works, whether your
+account may reach that model, or whether the tool is installed. `validate` asks that, without
+sending a request and without spending anything.
+
+```rust,no_run
+use llmr::{Access, Provider};
+
+# async fn example(provider: &impl Provider) {
+match provider.validate(&"claude-sonnet-5".into()).await {
+    // Nothing found that would stop a call.
+    Access::Ready => {}
+    // Settled. A key, an entitlement, an install: somebody has to fix it.
+    Access::Denied { reason } => eprintln!("no, and it will stay no: {reason}"),
+    // Nothing established. Still worth trying, and not grounds for dropping the provider.
+    other => eprintln!("could not tell: {other}"),
+}
+# }
+```
+
+Three answers rather than two, because `Unknown` is the one a boolean loses. A network that
+was down while the check ran is not a provider that refused, and collapsing them takes a
+working provider out of a router for a reason that had cleared before anybody read the log.
+
+Call it once at startup over the whole router:
+
+```rust,no_run
+# async fn example(router: &llmr::Router) {
+for (route, access) in router.preflight().await {
+    println!("{route:<28} {access}");
+}
+# }
+```
+
+`preflight` reports and does not prune, and nothing on the request path calls it. Validating
+per request would double every round trip to learn something that was almost always true.
+
+`cargo run --example is_it_reachable` prints one line per route.
+
 ### Usage that was never reported is absent, not zero
 
 A subscription command line tool reports no token counts. Writing zero would turn an unknown
@@ -143,6 +183,10 @@ while nothing is failing.
 `Router::unusable()` reports routes no request can ever select, which is almost always a typo
 in a model name. Worth calling at startup, because otherwise it looks like a fallback that is
 configured and simply never needed.
+
+`Router::preflight()` is the other half, and neither one finds what the other does. `unusable`
+is about your configuration; `preflight` is about the outside world, and it catches the key
+that was rejected and the tool that is not installed.
 
 ## Providers
 
@@ -340,8 +384,14 @@ audio or documents.
 
 **Anything that is not chat.** No embeddings, no reranking, no completion endpoints.
 
-**Model catalogues, mostly.** Only the OpenAI shaped provider implements `catalogue()`. The
-others answer `Error::Unsupported`, which is an answer and not an empty list.
+**Model catalogues, on the command line providers.** The Anthropic and OpenAI shaped
+providers implement `catalogue()`. A command line tool cannot be asked what it serves, so it
+answers `Error::Unsupported`, which is an answer and not an empty list.
+
+**A free way to check a command line login.** `validate` on a CLI provider probes the program
+and establishes that it is installed. No vendor tool answers "is this login still good"
+without doing work, so a `Ready` from that reach is a weaker claim than one from an API
+provider, and it says so.
 
 ## Contributing
 

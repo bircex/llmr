@@ -9,20 +9,20 @@ reason.
 
 ## Where it stands
 
-As of streaming landing.
+As of streaming landing on top of reachability.
 
 | | |
 |---|---:|
-| Source | 6,052 lines across 26 files |
-| Tests | 145 passing |
-| Public items | 180 |
+| Source | 7,071 lines across 26 files |
+| Tests | 197 passing |
+| Public items | 189 |
 | Dependency tree, default features | 30 crates |
 | Published | no |
-| CI on GitHub | has never run, see phase 4 |
+| CI on GitHub | runs, and is green as of phase 4 |
 
-Everything below is green locally: `cargo fmt --check`, clippy under three feature
-combinations, `cargo doc` with warnings denied under both feature sets, every feature built
-alone, and the full test suite.
+Everything below is green: `cargo fmt --check`, clippy under three feature combinations,
+`cargo doc` with warnings denied under two feature sets, every feature built alone, and the
+full test suite.
 
 ```sh
 cargo fmt --all -- --check
@@ -34,14 +34,19 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --all-features
 ```
 
-Run all seven before any commit. The third one catches more than it looks like it should,
-because a lint can fire under one feature set and not another, and the sixth is there for
-the same reason: a doc link to a feature gated item resolves under `--all-features` and
-nowhere else.
+Run all seven before any commit, and run them on the toolchain in `rust-toolchain.toml`
+rather than whatever a laptop happens to have. That file is the reason these commands mean
+the same thing here as on a runner; without it they passed on 1.97 and failed on 1.98 for
+months.
+
+The third one catches more than it looks like it should, because a lint can fire under one
+feature set and not another. The sixth is there for the same reason: a doc link to a feature
+gated item resolves under `--all-features` and nowhere else, so the all-features pass alone
+cannot see one that is broken.
 
 ---
 
-## Phase 1 — structure and the dependency floor · **done**
+## Phase 1: structure and the dependency floor · **done**
 
 Two things that are cheap before publish and breaking after it.
 
@@ -69,7 +74,28 @@ shape of what it prints.
 
 ---
 
-## Phase 2 — streaming · **done**
+## Phase 1b: reachability · **done**
+
+`capabilities` said what a model could do and nothing said whether you could reach it, so the
+only way to find out was to send a request and read the failure. That costs a call and it
+happens in production.
+
+`Provider::validate` answers `Access`: `Ready`, `Denied` or `Unknown`. Three rather than
+two, because a network that was down while the check ran is not a provider that refused, and
+a boolean collapses them. `Router::preflight` asks every route once at startup, reports, and
+prunes nothing.
+
+It cost the Anthropic provider a `catalogue()` implementation, which is what it now asks for
+free, and the command line providers a `with_probe`. The contract suite checks both halves,
+and `assert_a_bad_credential_is_denied` is a second entry point because the suite cannot
+break your credential for you.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the four decisions in it, and
+`cargo run --example is_it_reachable` for what it prints.
+
+---
+
+## Phase 2: streaming · **done**
 
 The largest gap, and the reason it is before publish rather than after: it changes the shape
 of `Provider`, so doing it in 0.2 breaks every implementation written against 0.1.
@@ -119,7 +145,7 @@ compiles and still answers.
 
 ---
 
-## Phase 3 — retries and observability · **next**
+## Phase 3: retries and observability · **next**
 
 ### Retries
 
@@ -157,17 +183,27 @@ and a call with the feature off emits nothing.
 
 ---
 
-## Phase 4 — the pipeline, actually running
+## Phase 4: the pipeline, actually running
 
 `.github/workflows/ci.yml` covers formatting, three clippy passes, docs with warnings denied
 under two feature sets, tests on three operating systems, every feature built alone, and the
 stated minimum Rust version. Every one of those passes locally.
 
-**On GitHub every job has finished in three seconds with zero steps.** Nothing ran. The
-repository is private, private repositories draw on the account's Actions allowance, and that
-account is blocked for billing. Public repositories get unlimited free minutes and do not
-touch the allowance, so making this one public is likely to fix it outright and is worth
-trying before assuming anything else is wrong.
+**It runs. The diagnosis that used to be written here was wrong**, and the wrong part is
+worth keeping because it is the interesting bit: this section said every job finished in three
+seconds having done nothing, and blamed a private repository drawing on a blocked Actions
+allowance. The repository is public, Actions is enabled, and every run had in fact executed
+and gone red. Nobody had opened one.
+
+What was actually failing: CI asked for `stable`, 1.98 landed on 2026-08-20 with a new
+`clippy::manual_slice_fill`, and `Secret::drop` zeroed its bytes with a loop. The crate had
+not changed. Six commands passing on a laptop running 1.97 said nothing about a runner
+running 1.98, so **green locally was not a claim about anything**.
+
+`rust-toolchain.toml` now pins the compiler, so the six commands mean the same thing in both
+places, and raising it is a deliberate commit. A weekly `ahead-of-stable` job runs clippy on
+whatever stable is now, so a bump waiting to be done is news on a Monday rather than a red
+tick on somebody's unrelated pull request.
 
 ### Still to add
 
@@ -183,11 +219,12 @@ trying before assuming anything else is wrong.
 ### Done when
 
 A green run exists on GitHub, on three operating systems, with a job identifier somebody can
-open.
+open. **Open it.** The failure this section describes survived for as long as it did because
+a red tick was read as the thing that was already known to be broken.
 
 ---
 
-## Phase 5 — 0.1.0
+## Phase 5: 0.1.0
 
 ### The public surface
 
@@ -223,5 +260,6 @@ Not planned in detail, and roughly in this order.
 
 ## Things known to be missing, said in the README
 
-Streaming, retries, images, embeddings, and model catalogues on everything except the OpenAI
-shape. If you fix one, take it out of the README's list in the same commit.
+Streaming, retries, images, embeddings, and a model catalogue on the command line providers,
+which cannot be asked what they serve. If you fix one, take it out of the README's list in
+the same commit.

@@ -26,6 +26,10 @@ pub fn envelope() -> Envelope {
 /// It knows no models until you name them. A command line tool cannot be asked what it
 /// serves, so a provider that answered for every name would turn a typo into a real model.
 ///
+/// [`llmr::Provider::validate`](crate::Provider::validate) probes with `--version`, which
+/// establishes that the tool is installed and nothing about the login inside it. That is all
+/// this tool answers for free, and a `Ready` from here should be read as no more than that.
+///
 /// ```no_run
 /// use llmr::providers::anthropic::cli;
 /// use llmr::{ChatRequest, Message, Provider};
@@ -50,4 +54,20 @@ pub fn provider(timeout: Duration) -> LocalCli {
     )
     .reading(envelope())
     .with_model_flag("--model")
+    .with_probe(["--version"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_preset_is_probed() {
+        // A preset that shipped without one would answer unknown for every user who never
+        // read this far, which is the same as not having the method at all.
+        //
+        // This lives here rather than in `providers::cli` because it is a fact about this
+        // preset, not about the runner. The runner's tests are about the runner.
+        assert!(provider(Duration::from_secs(60)).probe.is_some());
+    }
 }

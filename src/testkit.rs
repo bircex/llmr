@@ -31,7 +31,7 @@ use crate::chat::request::ChatRequest;
 use crate::chat::stream::Transcript;
 use crate::cost::usage::UsageCoverage;
 use crate::model::ModelId;
-use crate::provider::Provider;
+use crate::provider::{Access, Provider};
 
 /// Checks the promises a provider makes.
 ///
@@ -68,6 +68,34 @@ pub async fn assert_provider_contract(provider: &impl Provider, known_model: &st
             "{id} says {known_model} produces more tokens than fit in its window"
         );
     }
+
+    // Reachability, before anything is sent. A provider that has nothing free to ask may
+    // answer `Unknown` to all of this and still pass: what it may not do is contradict
+    // itself.
+    let access = provider.validate(&model).await;
+    assert!(
+        !access.is_denied(),
+        "{id} says {known_model} cannot be reached ({access}), and this suite is about to \
+         reach it. Denied is for a settled no, so one of the two is wrong"
+    );
+
+    assert!(
+        !provider.validate(&unknown).await.is_ready(),
+        "{id} says a model that does not exist is reachable. That is the same failure as a \
+         provider claiming to know every model name, one method along: it turns a typo into \
+         something a router will happily select"
+    );
+
+    // Asked twice, for the same reason `chat` is below. An answer that changed here without
+    // anything else changing means the provider is remembering, and a remembered answer is a
+    // claim about a moment that has passed.
+    let again = provider.validate(&model).await;
+    assert_eq!(
+        access.as_str(),
+        again.as_str(),
+        "{id} answered {access} and then {again} for the same model. Either it cached the \
+         first answer or it is holding state between calls"
+    );
 
     let reply = provider
         .chat(
@@ -168,4 +196,48 @@ pub async fn assert_provider_contract(provider: &impl Provider, known_model: &st
         "{id} answered once and failed the second time, which usually means state left \
          over from the first call"
     );
+}
+
+/// Checks that a provider built with a credential it will reject says so.
+///
+/// A second entry point rather than part of [`assert_provider_contract`], because the suite
+/// cannot break your credential for you: only you can build the provider with the wrong key,
+/// the wrong account, or a tool that is signed out.
+///
+/// It is worth the call it asks of you. [`Access::Unknown`] reads as "ask again later", so a
+/// router keeps the provider, a retry loop keeps trying it, and the one failure that needs a
+/// person is the one that never surfaces. `Denied` is what stops that.
+///
+/// ```no_run
+/// # #[cfg(feature = "testkit")]
+/// # async fn example(with_a_bad_key: &impl llmr::Provider) {
+/// use llmr::testkit::assert_a_bad_credential_is_denied;
+///
+/// assert_a_bad_credential_is_denied(with_a_bad_key, "the-model-you-serve").await;
+/// # }
+/// ```
+///
+/// # Panics
+///
+/// Panics naming what was answered instead. It is a test helper, so failing loudly is the
+/// job.
+pub async fn assert_a_bad_credential_is_denied(provider: &impl Provider, model: &str) {
+    let id = provider.id();
+    let access = provider.validate(&ModelId::from(model)).await;
+
+    match access {
+        Access::Denied { .. } => {}
+        Access::Ready => panic!(
+            "{id} says it is ready with a credential that will be rejected. Whatever this \
+             checked, it was not the credential"
+        ),
+        Access::Unknown { ref why } => panic!(
+            "{id} reports a rejected credential as unknown ({why}). Unknown means ask again \
+             later, so a router keeps this provider and a retry loop keeps trying it. A key \
+             nobody is told about is a key nobody fixes"
+        ),
+    }
+    // No catch all arm. `Access` is non exhaustive to the outside and not in here, so a
+    // variant added later stops this compiling, which is where somebody decides what the
+    // new answer means for a rejected credential.
 }
