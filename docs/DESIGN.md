@@ -627,6 +627,45 @@ accident, because a refusal arrives looking like any other error.
 `Routed::fell_through` carries what was tried first and why. A non empty list on a
 *successful* call is a provider degrading while nothing is failing.
 
+### A budget refuses before the money goes, and says what it cannot promise
+
+`Ledger` records what a run cost and nothing stopped it. `Router::within` is the cap, and
+three things decide whether it means anything.
+
+**It is checked before a request goes out.** A cap checked after the call is a report. What
+can actually be checked beforehand is two things, and both are real numbers rather than
+guesses: whether anything is left, and whether the reply alone could overrun what is left.
+The second needs `max_tokens`, and it is an upper bound, which is what makes it safe to
+refuse on: no reply is longer than the limit it was given.
+
+**The prompt is not priced, because that needs a token count.** Same decision as everywhere
+else: a tokeniser that is close produces numbers that look right and are not. So a budget is
+a cap on what a run may *start*, and the last call can carry it over by whatever the prompt
+cost. Said in the docs rather than implied, because a cap that quietly does not hold is worse
+than no cap.
+
+**An unpriced route is refused by default.** A route with no price book cannot be measured
+against a cap at all, and running it would break the one promise the budget makes without
+anything noticing. `Budget::allowing_unpriced` is how a caller says otherwise, out loud, and
+what comes back is a `Spending::unmeasured` count that makes `spent` read as the floor it is.
+
+**Another currency is refused, not converted.** `Ledger::total` already answers `None` for a
+mixed run, and for the same reason: an exchange rate has a date and a source exactly like a
+price, and inventing one produces a figure nobody can audit.
+
+**`Error::OverBudget` is its own variant.** Not the last provider error, because there is no
+provider error: nothing was sent and nothing was billed. It opens no circuit either, for the
+same reason. Adding it forced that decision, which is what the missing wildcard arm in
+`Breaker::opening_for` is for.
+
+**Two races are admitted rather than hidden.** Concurrent tasks can both see room for one
+call and both spend it, because holding a reservation across the call means holding a lock
+across an await. And a streamed call cannot be charged by the router at all, because its
+usage arrives in a `Transcript` the router never sees: `Router::stream` counts one as
+unmeasured, and `Router::charge` is how the caller settles it against the same book.
+
+---
+
 ### A deadline bounds the whole attempt, and says so by its type
 
 A transport can have a timeout and a `Retry` policy can have delays, and nothing bounded the

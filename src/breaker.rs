@@ -28,6 +28,7 @@
 //! | [`Error::InvalidRequest`] | **no** | it will be malformed on the next route too |
 //! | [`Error::Unsupported`] | **no** | same |
 //! | [`Error::Unreadable`] | **no** | one unparseable reply is not a broken provider |
+//! | [`Error::OverBudget`] | **no** | nothing was sent, so nothing was learned |
 //!
 //! [`Error::Unreadable`] is the one worth arguing about. The provider did answer, and a
 //! single reply this crate could not read is as likely to be one odd body as a provider gone
@@ -133,7 +134,10 @@ impl Breaker {
             Error::Refused { .. }
             | Error::InvalidRequest(_)
             | Error::Unsupported(_)
-            | Error::Unreadable(_) => None,
+            | Error::Unreadable(_)
+            // Nothing was sent. The provider was never asked, so there is nothing about it
+            // to have learned.
+            | Error::OverBudget(_) => None,
             // Deliberately no wildcard. `Error` is non exhaustive to the outside world and
             // exhaustive in here, so a variant added later stops this compiling until
             // somebody decides which side of the rule above it falls on. That decision is

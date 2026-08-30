@@ -1370,3 +1370,272 @@ async fn a_deadline_that_is_never_reached_changes_nothing() {
     assert_eq!(routed.route, "alive/m");
     assert!(routed.fell_through.is_empty());
 }
+
+// ---- Budget ----------------------------------------------------------------------------
+//
+// The ledger recorded what a run cost and nothing stopped it. A bot spends money with
+// nobody watching, and a loop that retries is found out about on the invoice.
+
+use llmr::{Budget, Micros, Transcript, Usage as U};
+
+/// A provider that answers with a measured usage, so the budget has something to charge.
+struct Metered {
+    id: String,
+    output: u64,
+    calls: AtomicUsize,
+}
+
+impl Metered {
+    fn new(id: &str, output: u64) -> Arc<Self> {
+        Arc::new(Self {
+            id: id.into(),
+            output,
+            calls: AtomicUsize::new(0),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Metered {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn capabilities(&self, model: &ModelId) -> Option<ModelCapabilities> {
+        (model.as_str() == "m").then_some(plain(Reach::FirstPartyApi))
+    }
+
+    async fn chat(&self, request: ChatRequest) -> llmr::Result<ChatResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ChatResponse::new(
+            Message {
+                role: Role::Assistant,
+                content: vec![llmr::ContentBlock::Text("answered".into())],
+            },
+            StopReason::EndTurn,
+            U::absent()
+                .with_input(0)
+                .with_cache_read(0)
+                .with_cache_write(0)
+                .with_output(self.output),
+            request.model,
+        ))
+    }
+}
+
+/// One dollar in and ten out, per million.
+fn dollar_book() -> Arc<PriceBook> {
+    priced("m", "1.00", "10.00")
+}
+
+#[tokio::test]
+async fn a_run_stops_when_the_cap_is_spent() {
+    // A million output tokens at ten dollars a million is ten dollars a call, against a cap
+    // of twenty five.
+    let provider = Metered::new("metered", 1_000_000);
+    let router = Router::new(vec![
+        Route::new(provider.clone(), "m").priced_by(dollar_book())
+    ])
+    .within(Budget::of(Micros(25_000_000), "USD"));
+
+    for _ in 0..2 {
+        assert!(router
+            .chat(request(), Requirements::default())
+            .await
+            .is_ok());
+    }
+
+    let spending = router
+        .spending()
+        .unwrap_or_else(|| panic!("there is a budget"));
+    assert_eq!(spending.spent, Micros(20_000_000));
+    assert_eq!(spending.remaining, Micros(5_000_000));
+    assert!(spending.is_exact());
+
+    // The third would take it over, and the reply alone says so before anything is sent.
+    let sending = request().with_max_tokens(1_000_000);
+    let refused = router.chat(sending, Requirements::default()).await;
+    match refused {
+        Err(Error::OverBudget(why)) => assert!(why.contains("only 5.000000 is left"), "{why}"),
+        other => panic!("expected a budget refusal, got {other:?}"),
+    }
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        2,
+        "nothing was sent, so nothing was billed"
+    );
+}
+
+#[tokio::test]
+async fn a_spent_budget_refuses_everything() {
+    let provider = Metered::new("metered", 1_000_000);
+    let router = Router::new(vec![
+        Route::new(provider.clone(), "m").priced_by(dollar_book())
+    ])
+    .within(Budget::of(Micros(5_000_000), "USD"));
+
+    assert!(router
+        .chat(request(), Requirements::default())
+        .await
+        .is_ok());
+    assert_eq!(router.spending().map(|s| s.remaining), Some(Micros(0)));
+
+    let refused = router.chat(request(), Requirements::default()).await;
+    match refused {
+        Err(Error::OverBudget(why)) => assert!(why.contains("is spent"), "{why}"),
+        other => panic!("expected a budget refusal, got {other:?}"),
+    }
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn an_unpriced_route_is_refused_under_a_budget_rather_than_run_blind() {
+    // A cap that cannot be checked is not a cap. This is the setting under which "the run
+    // spent at most five dollars" is a sentence somebody should believe.
+    let unpriced = Metered::new("unpriced", 1_000);
+    let router = Router::new(vec![Route::new(unpriced.clone(), "m")])
+        .within(Budget::of(Micros(5_000_000), "USD"));
+
+    let refused = router.chat(request(), Requirements::default()).await;
+    match refused {
+        Err(Error::OverBudget(why)) => {
+            assert!(why.contains("cannot be measured against a budget"), "{why}");
+        }
+        other => panic!("expected a budget refusal, got {other:?}"),
+    }
+    assert_eq!(unpriced.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn an_unpriced_route_can_be_allowed_out_loud_and_makes_the_figure_a_floor() {
+    let unpriced = Metered::new("unpriced", 1_000);
+    let router = Router::new(vec![Route::new(unpriced.clone(), "m")])
+        .within(Budget::of(Micros(5_000_000), "USD").allowing_unpriced());
+
+    assert!(router
+        .chat(request(), Requirements::default())
+        .await
+        .is_ok());
+
+    let spending = router
+        .spending()
+        .unwrap_or_else(|| panic!("there is a budget"));
+    assert_eq!(spending.spent, Micros(0), "nobody could price it");
+    assert_eq!(
+        spending.unmeasured, 1,
+        "counted rather than ignored, so the figure reads as the floor it is"
+    );
+    assert!(!spending.is_exact());
+    assert_eq!(unpriced.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_route_priced_in_another_currency_is_refused_rather_than_converted() {
+    // There is no exchange rate in this crate and there should not be one: a rate has a date
+    // and a source exactly like a price does.
+    let euros = Arc::new(
+        PriceBook::parse(
+            r#"
+id             = "eur"
+provider       = "test"
+effective_from = "2026-08-01"
+source         = "a fixture"
+verified_at    = "2026-08-31"
+currency       = "EUR"
+
+[[price]]
+model  = "m"
+input  = "1.00"
+output = "10.00"
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}")),
+    );
+
+    let provider = Metered::new("euros", 1_000);
+    let router = Router::new(vec![Route::new(provider.clone(), "m").priced_by(euros)])
+        .within(Budget::of(Micros(5_000_000), "USD"));
+
+    match router.chat(request(), Requirements::default()).await {
+        Err(Error::OverBudget(why)) => assert!(why.contains("no exchange rate"), "{why}"),
+        other => panic!("expected a budget refusal, got {other:?}"),
+    }
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_streamed_call_is_counted_as_unmeasured_until_somebody_settles_it() {
+    // Its usage arrives in a transcript this router never sees, so the honest record is
+    // "one call I could not price" rather than a silent zero.
+    let real = Streamer::new("real", "m", Streams::Whole);
+    let router = Router::new(vec![Route::new(real.clone(), "m").priced_by(dollar_book())])
+        .within(Budget::of(Micros(25_000_000), "USD"));
+
+    let (events, routed) = router
+        .stream(request(), Requirements::default().streaming())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    let before = router
+        .spending()
+        .unwrap_or_else(|| panic!("there is a budget"));
+    assert!(!before.is_exact(), "nothing has priced this yet");
+    assert_eq!(before.unmeasured, 1);
+
+    let mut transcript = Transcript::new("m");
+    let _ = transcript.drain(events).await;
+    let reply = transcript.finish();
+
+    // What the caller has after reading the stream, priced against the same book the budget
+    // would have used.
+    let charged = router.charge(
+        &routed.route,
+        &reply.model,
+        &U::absent()
+            .with_input(0)
+            .with_cache_read(0)
+            .with_cache_write(0)
+            .with_output(1_000_000),
+    );
+
+    assert!(charged);
+    let after = router
+        .spending()
+        .unwrap_or_else(|| panic!("there is a budget"));
+    assert_eq!(after.spent, Micros(10_000_000));
+    assert!(after.is_exact(), "settled");
+}
+
+#[tokio::test]
+async fn a_budget_refusal_never_takes_a_route_out_of_the_router() {
+    // Nothing was sent, so nothing about the provider was learned. Closing a circuit here
+    // would punish a working provider for the caller running out of money.
+    let provider = Metered::new("metered", 1_000_000);
+    let router = Router::new(vec![
+        Route::new(provider.clone(), "m").priced_by(dollar_book())
+    ])
+    .within(Budget::of(Micros(5_000_000), "USD"))
+    .breaking(quick());
+
+    let _ = router.chat(request(), Requirements::default()).await;
+    let _ = router.chat(request(), Requirements::default()).await;
+
+    assert!(router.resting().is_empty());
+}
+
+#[tokio::test]
+async fn without_a_budget_nothing_is_capped_or_counted() {
+    let provider = Metered::new("metered", 1_000_000);
+    let router = Router::new(vec![
+        Route::new(provider.clone(), "m").priced_by(dollar_book())
+    ]);
+
+    for _ in 0..5 {
+        assert!(router
+            .chat(request(), Requirements::default())
+            .await
+            .is_ok());
+    }
+    assert_eq!(router.spending(), None);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 5);
+}
