@@ -627,6 +627,55 @@ accident, because a refusal arrives looking like any other error.
 `Routed::fell_through` carries what was tried first and why. A non empty list on a
 *successful* call is a provider degrading while nothing is failing.
 
+### A router that does not learn is an ordered `try` list
+
+`Router::route` started at route 0 on every call, so a provider that had been answering 503
+for ten minutes was tried first, waited on, and fallen through, for every single request.
+`Router::breaking` gives the router a memory.
+
+**Atomics, not a lock.** `chat` takes `&self` so one router can be shared across as many
+tasks as a program has, and this crate denies holding a lock across an await crate wide. Two
+tasks racing to record a failure are recording the same fact, so the race does not matter.
+
+**Monotonic, not the wall clock.** A circuit needs two times compared. `Instant` is captured
+when the router is built and everything is measured from it, so a machine whose clock steps
+backwards cannot leave a route closed for a day.
+
+**One rule about which failures count: the circuit opens for a failure about the provider and
+stays shut for a failure about the request.** A refusal is the model answering about the
+work; an invalid request will be malformed on the next route too. Closing a circuit for
+either removes a working provider for something it had nothing to do with. `Breaker`'s table
+lists all nine variants, and there is no wildcard arm: a variant added later stops the crate
+compiling until somebody decides which side it falls on.
+
+`Error::Unreadable` is the one worth arguing about, and it does not open the circuit. The
+provider answered; a single reply this crate could not parse is as likely to be one odd body
+as a provider gone bad, and the call falls through to the next route either way.
+
+**The circuit is told once per request, not once per attempt.** A `Retry` policy asking three
+times against a provider that is down is one piece of evidence, not three.
+
+**Nothing reopens a circuit, because time does.** There is no half open state and nothing to
+call. A route whose wait has passed is simply tried, and answering clears both the timer and
+the count: leaving the count would make the next failure back off as though the run of
+successes in between had not happened.
+
+**A skipped route is never skipped silently.** It goes into `fell_through` with how much
+longer it is resting and how many requests it has failed, and `Router::resting()` answers the
+same without making a request. The wait is reported as a duration rather than a wall clock
+time because formatting one would mean a date dependency this crate does not have, and
+"another 4200ms" is the number somebody acts on anyway.
+
+**When every route that could serve a request is resting, the error is `Transient`, not
+`Unsupported`.** Nothing is wrong with the request, and the difference decides whether a
+person fixes their configuration or waits.
+
+**Handed in, never assumed**, exactly like `Retry`. Not trying a provider is a decision with
+consequences a library cannot weigh, and a router that quietly stopped trying something is
+one people work around by not using the router.
+
+---
+
 ### A streamed route is replaceable until the first event, and not after
 
 `Router::stream` follows every rule `Router::chat` follows and adds one that only makes sense
