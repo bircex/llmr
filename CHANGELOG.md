@@ -7,6 +7,11 @@ change is a minor bump.
 
 ### Added
 
+- `Router::within_deadline`, a bound over the whole routed attempt. Checked before every
+  attempt and before every retry wait, so a `Retry` policy's attempt count is a maximum
+  rather than a promise. It answers `Error::Timeout` rather than the last error from a route,
+  because giving up on time and giving up on failures need different fixes. It cannot cut
+  short a call already in flight; that is your transport's timeout. (#45)
 - `Order` and `Router::ordering`, so selection can be something other than the order you
   wrote: `Cheapest` by published rate, or `Healthiest` by fewest consecutive failures. A
   route with no price sorts **last**, never first, because reading a missing price as zero
@@ -59,6 +64,8 @@ change is a minor bump.
 
 ### Documentation
 
+- `docs/DESIGN.md` records what a deadline bounds, what it cannot bound, and why the reason
+  is the error's type rather than an entry in `fell_through`. (#45)
 - `docs/DESIGN.md` records what `Order::Cheapest` is claiming, and why an unpriced route
   sorts last rather than first. (#44)
 - `docs/DESIGN.md` records what `preflight` now changes, and why `Unknown` still changes

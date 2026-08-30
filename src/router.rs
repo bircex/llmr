@@ -339,6 +339,7 @@ pub struct Router {
     routes: Vec<Route>,
     retry: Option<Retry>,
     breaker: Option<Breaker>,
+    deadline: Option<Duration>,
     order: Order,
     /// One per route, in the same order. Atomics, so this stays shareable.
     health: Vec<Health>,
@@ -362,6 +363,7 @@ impl Router {
             routes,
             retry: None,
             breaker: None,
+            deadline: None,
             order: Order::AsListed,
             health,
             since: Instant::now(),
@@ -396,6 +398,58 @@ impl Router {
     #[must_use]
     pub fn breaking(mut self, policy: Breaker) -> Self {
         self.breaker = Some(policy);
+        self
+    }
+
+    /// Give up on the whole request after this long, however many routes are left.
+    ///
+    /// A transport can have a timeout and a [`Retry`] policy can have delays, and nothing
+    /// bounded the sum. Three routes and a policy of two attempts each is six timeouts plus
+    /// the waits between them, and a caller waiting on an agent has no way to say "answer or
+    /// fail within twenty seconds".
+    ///
+    /// ```
+    /// # use llmr::Router;
+    /// # use std::time::Duration;
+    /// # fn example(routes: Vec<llmr::Route>) {
+    /// let router = Router::new(routes).within_deadline(Duration::from_secs(20));
+    /// # }
+    /// ```
+    ///
+    /// # Where it is checked
+    ///
+    /// Before every attempt rather than only at the start, and before every retry wait. A
+    /// [`Retry`] policy that says three attempts is a maximum rather than a promise, so when
+    /// the two disagree the deadline wins: a wait that would run past it is not taken, and
+    /// the router stops instead of spending what is left on an attempt that had no time to
+    /// finish in.
+    ///
+    /// # What it cannot do
+    ///
+    /// **It does not cut short a call that is already running.** Cancelling one needs a
+    /// timer, which needs a runtime, and this crate does not pick yours. So the deadline
+    /// bounds when a new attempt is *started* and how long the router waits between
+    /// attempts, and the length of any single call is your transport's timeout. Set both:
+    /// one call that hangs for ever will hold a request past any deadline set here.
+    ///
+    /// **There is no minimum.** Any time left at all is enough to try again. A minimum would
+    /// be this crate guessing how long a call takes, and a guess that stopped an attempt
+    /// which would have finished is worse than one attempt that overruns.
+    ///
+    /// # How it says so
+    ///
+    /// [`Error::Timeout`], carrying how long the whole thing ran, rather than the last error
+    /// from a route. A call that gave up has to say whether everything failed or time ran
+    /// out: one of those is a provider to look at and the other is a deadline to raise, and
+    /// a caller that cannot tell them apart goes looking in the wrong place.
+    ///
+    /// Not through [`Routed::fell_through`], though that is the obvious place. A `Routed`
+    /// only exists when a reply came back, and a spent deadline never produces one, so an
+    /// entry there would be written and never read. What was tried is recorded on the span
+    /// instead, under the `tracing` feature.
+    #[must_use]
+    pub fn within_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = Some(deadline);
         self
     }
 
@@ -689,6 +743,7 @@ impl Router {
     where
         Fut: std::future::Future<Output = Result<T>> + 'a,
     {
+        let started = Instant::now();
         let mut fell_through = Vec::new();
         let mut last: Option<Error> = None;
         let mut attempts = 0;
@@ -723,6 +778,10 @@ impl Router {
                     why: health.why(left),
                 });
                 continue;
+            }
+
+            if self.out_of_time(started) {
+                return Err(self.gave_up(started, attempts, &fell_through));
             }
 
             let mut sending = request.clone();
@@ -788,6 +847,13 @@ impl Router {
                             },
                         });
                         match waiting {
+                            // A policy that says three attempts is a maximum, not a promise.
+                            // Waiting into the deadline spends what is left on a call that
+                            // has nowhere to arrive.
+                            Some(wait) if self.no_room_for(started, wait) => {
+                                self.record(health, &error);
+                                return Err(self.gave_up(started, attempts, &fell_through));
+                            }
                             Some(wait) => {
                                 last = Some(error);
                                 if let Some(policy) = &self.retry {
@@ -826,6 +892,35 @@ impl Router {
                 Self::listing(&fell_through)
             ))),
         }
+    }
+
+    /// Whether the whole request has already used everything it was given.
+    ///
+    /// `false` without a deadline, which is what every caller had before there was one.
+    fn out_of_time(&self, started: Instant) -> bool {
+        self.deadline
+            .is_some_and(|deadline| started.elapsed() >= deadline)
+    }
+
+    /// Whether a wait of this length would run past the deadline.
+    fn no_room_for(&self, started: Instant, wait: Duration) -> bool {
+        self.deadline
+            .is_some_and(|deadline| started.elapsed().saturating_add(wait) >= deadline)
+    }
+
+    /// The answer when time rather than failure is why this stopped.
+    ///
+    /// [`Error::Timeout`] rather than the last error from a route, because a call that gave
+    /// up has to say whether everything failed or time ran out: one of those is a provider
+    /// to look at and the other is a deadline to raise, and a caller that cannot tell them
+    /// apart will go looking in the wrong place.
+    ///
+    /// What was tried goes on the span rather than into [`Routed::fell_through`], which
+    /// only exists on a reply and a spent deadline never produces one.
+    fn gave_up(&self, started: Instant, attempts: u32, fell_through: &[Attempted]) -> Error {
+        let elapsed = started.elapsed();
+        observe::gave_up(elapsed, attempts, &Self::listing(fell_through));
+        Error::Timeout { elapsed }
     }
 
     /// Tells this route's health what happened, when there is a policy to tell it about.
