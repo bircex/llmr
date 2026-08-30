@@ -3,8 +3,9 @@
 //! | Module | Reach | What it is |
 //! |---|---|---|
 //! | `api` | [`crate::Reach::FirstPartyApi`] | The `generateContent` API |
+//! | `embed` | [`crate::Reach::FirstPartyApi`] | The `batchEmbedContents` API |
 //!
-//! One reach so far. A Gemini command line tool would land beside it as `gemini::cli`, and
+//! One reach so far. A Gemini command line tool would land beside them as `gemini::cli`, and
 //! the reason this directory exists rather than a single file is that a caller comparing
 //! two reaches for one vendor is what the grouping is for.
 //!
@@ -15,3 +16,9 @@
 #[cfg(feature = "gemini")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gemini")))]
 pub mod api;
+
+// Embeddings are a different trait, so they are a sibling of `api` rather than something
+// inside it. This is the one reach in the crate where `Purpose` reaches a wire.
+#[cfg(all(feature = "gemini", feature = "embeddings"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "gemini", feature = "embeddings"))))]
+pub mod embed;

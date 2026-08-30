@@ -9,13 +9,13 @@ reason.
 
 ## Where it stands
 
-As of embeddings landing, the last thing #26 left to build.
+As of the second embedder, which is what turned the first one's trait into a specification.
 
 | | |
 |---|---:|
-| Source | 10,663 lines across 35 files |
-| Tests | 292 passing, all features · 200 on the default set |
-| Public items | 6,802 all in, 1,416 hand written · see below |
+| Source | 11,243 lines across 36 files |
+| Tests | 304 passing, all features · 200 on the default set |
+| Public items | 6,854 all in, 1,440 hand written · see below |
 | Dependency tree, default features | 31 crates |
 | Published | no |
 | CI on GitHub | runs, and is green as of phase 4 |
@@ -34,7 +34,7 @@ cargo +nightly public-api --all-features \
   --omit blanket-impls,auto-trait-impls,auto-derived-impls | wc -l
 ```
 
-6,802 is every public item, dominated by the trait implementations `derive` writes. 1,416 is
+6,854 is every public item, dominated by the trait implementations `derive` writes. 1,440 is
 that with them omitted, which is roughly what a reader of the docs meets. Either is fine.
 Using the same one next time is what matters, and after 0.1.0 `cargo public-api --diff`
 answers the better question anyway.
@@ -305,7 +305,7 @@ Not planned in detail, and roughly in this order.
 | ~~Images~~ · **done** | `ContentBlock::Image`, refused rather than stripped where a reach cannot carry one |
 | More CLI presets | Gemini CLI and whatever else appears (#24). A preset is a file and it goes beside its vendor's other reaches — but it needs a recorded `--output-format json` sample first, because inventing the usage field names reports a number that looks right and is not |
 | ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor, and refuses to be one number when the run mixes currencies |
-| ~~Embeddings~~ · **done** | `embed`, behind a feature, as #26 decided. A vector carries the model that made it and `similarity` refuses across two — the currency rule in a different type |
+| ~~Embeddings~~ · **done** | `embed`, behind a feature, as #26 decided. A vector carries the model that made it and `similarity` refuses across two — the currency rule in a different type. Two implementations, agreeing on nothing at the wire and passing one contract |
 
 ## Things known to be missing, said in the README
 
