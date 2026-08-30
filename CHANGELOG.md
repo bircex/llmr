@@ -5,7 +5,17 @@ change is a minor bump.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- `Ledger::record_cancelled`, for a call that went out and whose reply was never read. The
+  case is hedging: two providers asked the same question, the loser's future dropped. That
+  request was billed, no `ChatResponse` came back, so nothing called `Ledger::record` and the
+  ledger reported one measured call and an `Exact` total. (#48)
+
+### Documentation
+
+- `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
+  have cost, and the ledger debt it leaves. (#48)
 
 ## 0.1.0 — 2026-08-30
 
