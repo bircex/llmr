@@ -251,17 +251,7 @@ async fn the_local_command_line_provider_denies_a_tool_that_is_signed_out() {
 fn a_registry_entry_can_be_built_by_hand() {
     // Someone writing a provider outside this crate needs to be able to build a table
     // without a TOML file. If this stops compiling, the type has been closed to them.
-    let entry = Entry {
-        id: "their-model".into(),
-        context_window: 8_192,
-        max_output: 1_024,
-        tools: false,
-        structured_output: false,
-        prompt_caching: false,
-        thinking: false,
-        streaming: false,
-        source: "their own documentation".into(),
-        verified_at: "2026-08-28".into(),
-    };
+    let entry = Entry::new("their-model", "their own documentation", "2026-08-28")
+        .with_window(8_192, 1_024);
     assert_eq!(entry.id, "their-model");
 }

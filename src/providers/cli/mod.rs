@@ -773,6 +773,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_image_through_a_reach_that_takes_text_is_refused_too() {
+        // A tool prints and reads text. An image through here is a path at best and a wrong
+        // answer at worst: the model would answer about a picture it never received, and
+        // the reply would read as though it had.
+        let cli = cli(Scripted::new(Ok(ProcessOutput::new(
+            Some(0),
+            b"an answer".to_vec(),
+        ))));
+
+        let with_an_image = ChatRequest::new(
+            "m",
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    source: crate::chat::message::ImageSource::Bytes(vec![0x89, 0x50]),
+                }],
+            }],
+        );
+
+        let refused = cli.chat(with_an_image).await;
+        let message = refused.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(message.contains("images"), "{message}");
+    }
+
+    #[tokio::test]
     async fn a_plain_request_still_goes_through() {
         // The other half. A refusal that fired on everything would make this provider
         // useless rather than honest.

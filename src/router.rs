@@ -80,6 +80,8 @@ pub struct Requirements {
     pub prompt_caching: bool,
     /// The model must be able to reason.
     pub thinking: bool,
+    /// The model must accept an image.
+    pub images: bool,
     /// The reply must be readable as it arrives.
     ///
     /// Not something a request can express, because it is about how you intend to read the
@@ -106,6 +108,7 @@ impl Requirements {
             structured_output: needs.structured_output,
             prompt_caching: needs.prompt_caching,
             thinking: needs.thinking,
+            images: needs.images,
             // Neither of these is in the request. One is about how you will read the reply,
             // the other about where your data may go, and a request says nothing about
             // either.
@@ -143,6 +146,7 @@ impl Requirements {
             && (!self.prompt_caching || have.prompt_caching)
             && (!self.thinking || have.thinking)
             && (!self.streaming || have.streaming)
+            && (!self.images || have.images)
     }
 
     /// What is missing, by name, for a message somebody reads.
@@ -165,6 +169,9 @@ impl Requirements {
         }
         if self.thinking && !have.thinking {
             missing.push("thinking");
+        }
+        if self.images && !have.images {
+            missing.push("images");
         }
         missing
     }

@@ -16,7 +16,7 @@ As of phase 3 landing.
 | Source | 7,668 lines across 28 files |
 | Tests | 216 passing |
 | Public items | 189 |
-| Dependency tree, default features | 30 crates |
+| Dependency tree, default features | 31 crates |
 | Published | no |
 | CI on GitHub | runs, and is green as of phase 4 |
 
@@ -69,7 +69,7 @@ what headers, what JSON goes out, what comes back. On the command line side `Loc
 the spawning and the deadline, and a vendor preset is a program name, its arguments, and the
 shape of what it prints.
 
-**Adding this crate used to cost 105 crates and now costs 30.** The providers never needed
+**Adding this crate used to cost 105 crates and now costs 31.** The providers never needed
 `reqwest`; only `from_env` did. Protocols and the bundled client are separate features.
 
 ---

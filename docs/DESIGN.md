@@ -468,7 +468,7 @@ that never surfaces.
 
 | Feature | Crates | |
 |---|---:|---|
-| `anthropic`, `openai` | 30 | Both protocols. You supply the transport |
+| `anthropic`, `openai` | 31 | Both protocols. You supply the transport |
 | `+ reqwest` | 105 | And a bundled client, with `from_env` |
 | `cli` alone | 30 | A local tool as a subprocess, no network code |
 

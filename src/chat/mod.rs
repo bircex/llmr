@@ -8,7 +8,7 @@ pub mod request;
 pub mod response;
 pub mod stream;
 
-pub use message::{ContentBlock, Message, Role, StopReason};
+pub use message::{ContentBlock, ImageSource, Message, Role, StopReason};
 pub use request::{ChatRequest, Effort, Generation, Needs, Thinking, ToolSchema};
 pub use response::ChatResponse;
 pub use stream::{Event, EventStream, Transcript};

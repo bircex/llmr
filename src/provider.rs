@@ -276,10 +276,13 @@ fn replay(reply: &ChatResponse) -> Vec<Event> {
                     raw: raw.clone(),
                 });
             }
-            // A tool result is something the caller sent, not something a model produces.
-            // It cannot appear in a reply, and inventing an event for it would put one
-            // into a transcript that reassembles into a message the provider never sent.
-            crate::chat::message::ContentBlock::ToolResult { .. } => {}
+            // Neither of these is something a model produces. A tool result is something
+            // the caller sent, and no protocol here reads an image out of a reply — an
+            // unrecognised block comes back as `Opaque`. Inventing an event for either
+            // would put it into a transcript that reassembles into a message the provider
+            // never sent.
+            crate::chat::message::ContentBlock::ToolResult { .. }
+            | crate::chat::message::ContentBlock::Image { .. } => {}
         }
     }
     events

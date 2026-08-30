@@ -188,6 +188,12 @@ impl ChatRequest {
             structured_output: self.response_schema.is_some(),
             prompt_caching: !self.cache_breakpoints.is_empty(),
             thinking: matches!(self.thinking, Thinking::On(_)),
+            images: self.messages.iter().any(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, crate::chat::message::ContentBlock::Image { .. }))
+            }),
         }
     }
 }
@@ -204,6 +210,8 @@ pub struct Needs {
     pub prompt_caching: bool,
     /// The request asks the model to reason.
     pub thinking: bool,
+    /// The request carries an image.
+    pub images: bool,
 }
 
 impl Needs {
@@ -225,6 +233,9 @@ impl Needs {
         }
         if self.thinking && !have.thinking {
             missing.push("thinking");
+        }
+        if self.images && !have.images {
+            missing.push("images");
         }
         missing
     }

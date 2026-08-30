@@ -12,8 +12,8 @@ use llmr::providers::anthropic;
 use llmr::providers::openai;
 use llmr::transport::{HttpRequest, HttpResponse, HttpTransport};
 use llmr::{
-    ChatRequest, ContentBlock, Effort, Error, Message, Provider, Reach, Registry, Secret,
-    StopReason, Thinking, ToolSchema, UsageCoverage,
+    ChatRequest, ContentBlock, Effort, Error, Message, ModelCapabilities, Provider, Reach,
+    Registry, Secret, StopReason, Thinking, ToolSchema, UsageCoverage,
 };
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -767,4 +767,86 @@ async fn an_openai_shaped_endpoint_answers_the_same_three_ways() {
     .validate(&"gpt-test".into())
     .await;
     assert!(unknown.is_unknown(), "{unknown}");
+}
+
+// ---- Images -----------------------------------------------------------------------------
+
+/// A one pixel PNG, so the bytes on the wire are checkable by hand.
+const PIXEL: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+fn with_an_image() -> ChatRequest {
+    ChatRequest::new(
+        "m",
+        vec![Message {
+            role: llmr::Role::User,
+            content: vec![
+                ContentBlock::Text("what is this".into()),
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    source: llmr::ImageSource::Bytes(PIXEL.to_vec()),
+                },
+            ],
+        }],
+    )
+}
+
+#[tokio::test]
+async fn anthropic_sends_an_image_as_base64_with_the_media_type_it_was_given() {
+    let transport = Recorded::replying(200, anthropic_reply());
+    let _ = anthropic(Arc::clone(&transport))
+        .chat(with_an_image())
+        .await;
+
+    let blocks = &transport.body()["messages"][0]["content"];
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[1]["type"], "image");
+    assert_eq!(blocks[1]["source"]["type"], "base64");
+    // The caller's, not sniffed from the bytes. A provider told the wrong type decodes it
+    // wrongly or rejects it, and this crate does not know better than the caller.
+    assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+    assert_eq!(blocks[1]["source"]["data"], "iVBORw0KGgo=");
+}
+
+#[tokio::test]
+async fn the_openai_shape_sends_an_image_as_a_data_url_and_keeps_the_text_beside_it() {
+    let transport = Recorded::replying(200, openai_reply());
+    let _ = openai(Arc::clone(&transport), Reach::FirstPartyApi)
+        .chat(with_an_image())
+        .await;
+
+    let content = &transport.body()["messages"][0]["content"];
+    assert!(
+        content.is_array(),
+        "a turn with an image carries parts: {content}"
+    );
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "what is this");
+    assert_eq!(content[1]["type"], "image_url");
+    assert_eq!(
+        content[1]["image_url"]["url"],
+        "data:image/png;base64,iVBORw0KGgo="
+    );
+}
+
+#[tokio::test]
+async fn a_turn_with_no_image_still_carries_plain_text_content() {
+    // The smaller endpoints speaking this shape accept a string and nothing else, so the
+    // parts array must appear only when there is something that needs it.
+    let transport = Recorded::replying(200, openai_reply());
+    let _ = openai(Arc::clone(&transport), Reach::FirstPartyApi)
+        .chat(ChatRequest::new("m", vec![Message::user("hello")]))
+        .await;
+
+    assert_eq!(transport.body()["messages"][0]["content"], "hello");
+}
+
+#[test]
+fn a_request_carrying_an_image_says_so_before_it_is_sent() {
+    // The whole point: found by asking, not by reading a reply that answered a question
+    // about an image it never received.
+    let needs = with_an_image().needs();
+    assert!(needs.images);
+
+    let text_only = ModelCapabilities::none(Reach::LocalCli);
+    assert_eq!(needs.unmet_by(&text_only), vec!["images"]);
 }

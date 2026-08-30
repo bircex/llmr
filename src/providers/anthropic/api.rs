@@ -18,7 +18,8 @@
 
 use crate::chat::stream::Event;
 use crate::chat::{
-    ChatRequest, ChatResponse, ContentBlock, Effort, Message, Role, StopReason, Thinking,
+    ChatRequest, ChatResponse, ContentBlock, Effort, ImageSource, Message, Role, StopReason,
+    Thinking,
 };
 use crate::cost::Usage;
 use crate::error::{Error, Result};
@@ -334,6 +335,12 @@ impl Protocol for Messages {
     }
 }
 
+/// Image bytes, as this protocol carries them.
+fn encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 /// One string field of a delta, when it is there and is a string.
 fn text_of(delta: &Value, field: &str) -> Option<String> {
     delta.get(field).and_then(Value::as_str).map(str::to_string)
@@ -393,6 +400,20 @@ fn wire_block(block: &ContentBlock) -> Value {
         ContentBlock::ToolUse { id, name, input } => {
             json!({ "type": "tool_use", "id": id, "name": name, "input": input })
         }
+        ContentBlock::Image { media_type, source } => match source {
+            ImageSource::Bytes(bytes) => json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": encode(bytes),
+                },
+            }),
+            ImageSource::Url(url) => json!({
+                "type": "image",
+                "source": { "type": "url", "url": url },
+            }),
+        },
         // Byte for byte. The provider checks the history against what it produced, so a
         // block reshaped here is a block it will not recognise.
         ContentBlock::Opaque { raw, .. } => raw.clone(),

@@ -140,6 +140,11 @@ pub struct ModelCapabilities {
     pub prompt_caching: bool,
     /// Whether the model can be asked to reason before answering.
     pub thinking: bool,
+    /// Whether a request may carry an image.
+    ///
+    /// A fact about the pairing. Some models take images and some do not, and no reach that
+    /// speaks only text can carry one whatever the model could do.
+    pub images: bool,
     /// Whether the reply can be read as it arrives rather than all at once.
     ///
     /// A fact about the pairing, not the model. A command line tool that prints one JSON
@@ -162,6 +167,7 @@ impl ModelCapabilities {
             structured_output: false,
             prompt_caching: false,
             thinking: false,
+            images: false,
             streaming: false,
             reach,
         }
@@ -200,6 +206,13 @@ impl ModelCapabilities {
     #[must_use]
     pub fn with_thinking(mut self) -> Self {
         self.thinking = true;
+        self
+    }
+
+    /// Says a request may carry an image.
+    #[must_use]
+    pub fn with_images(mut self) -> Self {
+        self.images = true;
         self
     }
 

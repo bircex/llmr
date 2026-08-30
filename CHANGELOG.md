@@ -78,6 +78,21 @@ First release. Nothing published yet.
 - Issue templates, a pull request template carrying the seven commands, and a code of
   conduct.
 
+### Added, images
+
+- `ContentBlock::Image` and `ImageSource`, carrying bytes or a URL with a media type the
+  caller gives. Both protocols write it: Anthropic as base64 with the media type beside it,
+  the OpenAI shape as a data URL inside a parts array — and a turn with no image keeps the
+  plain string content the smaller endpoints speaking that shape require.
+- `ModelCapabilities::images`, `Needs::images` and `Requirements::images`, so a reach that
+  speaks only text refuses rather than dropping the image. A reply that answered about a
+  picture it never received is the failure this prevents.
+- `Entry` is `#[non_exhaustive]` with `Entry::new` and builders. Adding `streaming` and then
+  `images` broke its struct literal twice, which is exactly what the crate's own rule about
+  public structs exists to stop.
+- One crate: `base64`, behind the protocol features, because putting image bytes on a wire
+  is the one thing a pure translation cannot do with nothing.
+
 ### Changed
 
 - Providers are grouped by vendor and then by reach: `providers::anthropic::{api, cli}` and

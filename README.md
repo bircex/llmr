@@ -26,7 +26,7 @@ println!("{}", reply.text());
 ```
 
 The `reqwest` feature is the bundled HTTP client. Without it you get both protocols and
-supply your own transport, which costs 30 crates instead of 105.
+supply your own transport, which costs 31 crates instead of 105.
 
 ## What this is for
 
@@ -222,7 +222,7 @@ not the same place for your data to go.
 
 | Feature | Crates | What you get |
 |---|---:|---|
-| `anthropic`, `openai` | 30 | Both protocols. You supply the transport |
+| `anthropic`, `openai` | 31 | Both protocols. You supply the transport |
 | `+ reqwest` | 105 | And a bundled client, with `from_env` |
 | `cli` alone | 30 | A local tool as a subprocess, no network code |
 | `testkit` | 30 | The contract suite for your own providers |
@@ -393,6 +393,17 @@ that is the shape of the code rather than a promise, and there is a test that sa
 The line worth having is a warning on a *successful* call that did not take the first route.
 Nothing failed, and something is going wrong.
 
+## Images
+
+`ContentBlock::Image` carries bytes or a URL, with the media type you give it — sniffing it
+here would be this crate deciding something you already know, and a provider told the wrong
+type either rejects the request or decodes it wrongly.
+
+A reach that speaks only text cannot carry one at all, and that is the point: it is a
+capability, so `needs().unmet_by()` names it before anything is sent and a provider that
+cannot carry it **refuses rather than dropping it**. A reply that answered confidently about
+a picture it never received is the failure this prevents, and nothing in that reply says so.
+
 ## Model tables and prices
 
 `Registry` holds what a model can do. `PriceBook` holds what it costs. Both carry where the
@@ -419,8 +430,8 @@ question: how do I reach this model, and what did it cost.
 
 Said plainly, because finding a gap by hitting it is worse than reading about it.
 
-**Images and other input.** `ContentBlock` carries text, reasoning and tool calls. No images,
-audio or documents.
+**Audio and documents.** `ContentBlock` carries text, reasoning, tool calls and images.
+Nothing else yet.
 
 **Anything that is not chat.** No embeddings, no reranking, no completion endpoints.
 

@@ -23,7 +23,9 @@
 //! numbers, and a cost report comparing them would be comparing two different things.
 
 use crate::chat::stream::Event;
-use crate::chat::{ChatRequest, ChatResponse, ContentBlock, Message, Role, StopReason};
+use crate::chat::{
+    ChatRequest, ChatResponse, ContentBlock, ImageSource, Message, Role, StopReason,
+};
 use crate::cost::Usage;
 use crate::error::{Error, Result};
 use crate::model::{ModelId, Reach};
@@ -378,6 +380,7 @@ fn wire_message(message: &Message) -> Vec<Value> {
     let mut out = Vec::new();
     let mut text = Vec::new();
     let mut calls = Vec::new();
+    let mut images = Vec::new();
 
     for block in &message.content {
         match block {
@@ -389,6 +392,24 @@ fn wire_message(message: &Message) -> Vec<Value> {
             // nowhere to put it. Dropped rather than guessed at, which is safe here for the
             // same reason: nothing in this protocol checks the history against a signature.
             ContentBlock::Opaque { .. } => {}
+            // This shape takes an image as a URL, and a data URL is how bytes get into
+            // one. The media type is the caller's rather than sniffed here, so what the
+            // provider is told is what they said it was.
+            ContentBlock::Image { media_type, source } => images.push(json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": match source {
+                        ImageSource::Url(url) => url.clone(),
+                        ImageSource::Bytes(bytes) => {
+                            use base64::Engine as _;
+                            format!(
+                                "data:{media_type};base64,{}",
+                                base64::engine::general_purpose::STANDARD.encode(bytes)
+                            )
+                        }
+                    },
+                },
+            })),
             ContentBlock::ToolUse { id, name, input } => calls.push(json!({
                 "id": id,
                 "type": "function",
@@ -412,12 +433,25 @@ fn wire_message(message: &Message) -> Vec<Value> {
         }
     }
 
-    if !text.is_empty() || !calls.is_empty() {
+    if !text.is_empty() || !calls.is_empty() || !images.is_empty() {
         let role = match message.role {
             Role::User => "user",
             Role::Assistant => "assistant",
         };
-        let mut turn = json!({ "role": role, "content": text.join("\n") });
+        // A turn with an image has to carry its content as parts. A turn without one keeps
+        // the plain string, because that is what every endpoint speaking this shape accepts
+        // and some of the smaller ones accept nothing else.
+        let content = if images.is_empty() {
+            json!(text.join("\n"))
+        } else {
+            let mut parts: Vec<Value> = text
+                .iter()
+                .map(|t| json!({ "type": "text", "text": t }))
+                .collect();
+            parts.extend(images);
+            Value::Array(parts)
+        };
+        let mut turn = json!({ "role": role, "content": content });
         if !calls.is_empty() {
             turn["tool_calls"] = Value::Array(calls);
         }
