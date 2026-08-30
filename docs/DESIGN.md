@@ -330,6 +330,42 @@ by the people using both, to save a feature flag from the people using one.
 **If this is reversed**, the moment to do it is before anything is published. Afterwards it
 means yanking a feature, which is a breaking change dressed as a tidy-up.
 
+### A vector belongs to the model that made it
+
+`Embedding` carries the model that produced it, and `Embedding::similarity` answers `None`
+rather than a number when asked to compare across two of them.
+
+This is the currency rule again, in a different type. Two vectors of the same length from two
+models occupy unrelated spaces; cosine similarity computes happily and returns a confident
+number between -1 and 1 that means nothing at all. Every operation anybody performs on the
+result — clustering, a nearest neighbour index, a relevance threshold — works perfectly and
+is wrong. **The failures worth designing against are the ones that produce a plausible answer
+rather than an error**, and this crate now has two of them written down.
+
+### The reply is index for index with the request
+
+Several vendors send an `index` on every row precisely because their arrays carry no order.
+A provider that trusts arrival order pairs every document with another document's vector, the
+index builds, the queries run, and the results are quietly wrong.
+
+So it is a contract rather than a convention: `testkit::assert_embedder_contract` embeds each
+input alone and checks it lands nearest the batch vector at its own position, and
+`tests/an_embedder_honours_the_contract.rs` runs it through an endpoint double that reverses
+every reply. A suite a broken implementation passes is worse than no suite, so there is a
+`#[should_panic]` test holding a deliberately broken embedder against it.
+
+### `Usage::embedding` is a claim, and it is stated
+
+An embeddings endpoint reports prompt tokens and nothing else, because text goes in and a
+vector comes out and a vector is not tokens. Left as one field of four, `coverage()` would
+read `Partial` for a call that was measured exactly, and one embedding anywhere in a run would
+turn every `Ledger` total into a floor for good.
+
+So `Usage::embedding` sets the other three to zero and reads `Exact`. That is the claim
+`prompt_tokens` already makes — a provider reporting some fields and not others is saying the
+others did not happen — and here they did not. A vendor that does report cached tokens on an
+embedding call uses the builders instead.
+
 ---
 
 ---

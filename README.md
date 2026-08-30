@@ -13,6 +13,9 @@ use llmr::providers::anthropic;
 use llmr::{ChatRequest, Message, Provider};
 use std::time::Duration;
 
+# // The snippet above the block says to turn `reqwest` on, and `from_env` is one of the
+# // constructors it provides. Guarded so this compiles under the default feature set too.
+# #[cfg(feature = "reqwest")]
 # async fn example() -> llmr::Result<()> {
 let claude = anthropic::api::from_env(Duration::from_secs(60))?;
 
@@ -232,6 +235,7 @@ not the same place for your data to go.
 | `anthropic`, `openai` | 31 | Both protocols. You supply the transport |
 | `+ reqwest` | 105 | And a bundled client, with `from_env` |
 | `cli` alone | 30 | A local tool as a subprocess, no network code |
+| `embeddings` | 30 | Text as vectors, its own trait |
 | `testkit` | 30 | The contract suite for your own providers |
 
 Counted as distinct crates compiled — `cargo tree` output with duplicate nodes collapsed.
@@ -266,11 +270,17 @@ A vendor preset is a program name, its arguments, and the shape of what it print
 why the vendor files are forty lines:
 
 ```rust,no_run
+# // Compiled only when the feature that provides these modules is on. Without the guard
+# // this block is a compile error under the default feature set, which `cargo test
+# // --all-features` is the one build that cannot see.
+# #[cfg(feature = "cli")]
+# fn presets() {
 use llmr::providers::{anthropic, openai};
 use std::time::Duration;
 
 let tool = anthropic::cli::provider(Duration::from_secs(300)).serving(["claude-sonnet-5"]);
 let other = openai::cli::provider(Duration::from_secs(300)).serving(["gpt-5.3-codex"]);
+# }
 ```
 
 ## Concurrency
@@ -411,6 +421,56 @@ capability, so `needs().unmet_by()` names it before anything is sent and a provi
 cannot carry it **refuses rather than dropping it**. A reply that answered confidently about
 a picture it never received is the failure this prevents, and nothing in that reply says so.
 
+## Embeddings
+
+Behind the `embeddings` feature, and a trait of their own rather than a method on `Provider`.
+An embedding call is a different request, a different reply and a different usage shape, and
+adding `embed` to `Provider` would make every chat-only provider implement a refusal.
+
+```rust,no_run
+# #[cfg(all(feature = "openai", feature = "embeddings", feature = "reqwest"))]
+# async fn example() -> llmr::Result<()> {
+use llmr::embed::{EmbedRequest, Embedder};
+use llmr::providers::openai;
+use std::time::Duration;
+
+let embedder = openai::embed::from_env(Duration::from_secs(30))?;
+
+let stored = embedder
+    .embed(EmbedRequest::new(
+        "text-embedding-3-small".into(),
+        vec!["the tide came in".into(), "compile times are long".into()],
+    ))
+    .await?;
+
+let asked = embedder
+    .embed(EmbedRequest::one("text-embedding-3-small", "when is high water"))
+    .await?;
+
+// `None` would mean these vectors are not comparable. They are, so this is a number.
+let nearest = stored.get(0).and_then(|v| asked.get(0)?.similarity(v));
+println!("{nearest:?}");
+# Ok(())
+# }
+```
+
+**A vector belongs to the model that made it.** Two vectors of the same length from two
+different models are not comparable, and nothing about them says so: cosine similarity
+computes happily and returns a confident number that means nothing. It is the same failure as
+adding dollars to euros, so it is caught the same way — every `Embedding` carries its model
+and `similarity` returns `None` rather than a number across two of them.
+
+**The reply is index for index with the request.** Several vendors send an `index` on every
+row precisely because their arrays are not ordered, and a provider that trusts arrival order
+pairs every document with another document's vector. Nothing downstream fails: the index
+builds, the queries run, and the results are wrong. `testkit::assert_embedder_contract` sends
+a batch through a deliberately shuffled endpoint and checks each vector came back where it
+was put.
+
+**A dimension count asked for and not honoured is refused.** A caller who asked for 256 has
+sized something for 256, and an endpoint that ignores the parameter answers full length
+vectors with a 200.
+
 ## Model tables and prices
 
 `Registry` holds what a model can do. `PriceBook` holds what it costs. Both carry where the
@@ -471,7 +531,8 @@ Said plainly, because finding a gap by hitting it is worse than reading about it
 **Audio and documents.** `ContentBlock` carries text, reasoning, tool calls and images.
 Nothing else yet.
 
-**Anything that is not chat.** No embeddings, no reranking, no completion endpoints.
+**Reranking and completion endpoints.** Embeddings are here, behind the `embeddings`
+feature. Nothing else that is not chat.
 
 **Model catalogues, on the command line providers.** All three API providers implement
 `catalogue()`. A command line tool cannot be asked what it serves, so it answers

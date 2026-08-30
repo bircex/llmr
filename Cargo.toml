@@ -40,6 +40,11 @@ cli = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/time"]
 # when you would rather not wire your own client.
 reqwest = ["dep:reqwest"]
 
+# Text as vectors. Its own trait rather than a method on `Provider`, and in this crate
+# rather than a second one: what a caller *relies on* is shared even though what they touch
+# is not. `docs/DESIGN.md` records the argument and what a separate crate would have cost.
+embeddings = []
+
 # The contract suite, for anyone writing a provider of their own.
 testkit = []
 

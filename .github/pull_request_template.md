@@ -8,7 +8,8 @@ belongs in docs/DESIGN.md rather than in this description, where nobody will fin
 ## Why
 
 <!--
-The checks below are the ones ROADMAP.md lists. Run them on the toolchain in
+The checks below are the ones ROADMAP.md lists. The last two are not one check twice: a
+doctest naming a feature gated item compiles under --all-features and nowhere else. Run them on the toolchain in
 rust-toolchain.toml rather than whatever your laptop has: that file exists because the same
 commands passed locally on 1.97 and failed on CI for months.
 -->
@@ -22,6 +23,7 @@ commands passed locally on 1.97 and failed on CI for months.
 - [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps`
 - [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`
 - [ ] `cargo test --all-features`
+- [ ] `cargo test`
 
 ## Two questions worth answering before merge
 

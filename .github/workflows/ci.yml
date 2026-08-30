@@ -64,6 +64,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features
 
+      # And again with the default set. A doctest naming a feature gated module compiles
+      # under `--all-features` and nowhere else, which is the one build this job used to be:
+      # the README's command line preset example was a compile error on default features for
+      # as long as this job only ran the line above.
+      - run: cargo test
+
   features:
     name: each provider alone
     runs-on: ubuntu-latest
@@ -80,6 +86,7 @@ jobs:
       - run: cargo build --no-default-features --features openai
       - run: cargo build --no-default-features --features gemini
       - run: cargo build --no-default-features --features bedrock
+      - run: cargo build --no-default-features --features embeddings
       - run: cargo build --no-default-features --features testkit
       - run: cargo build --no-default-features --features retry
       - run: cargo build --no-default-features --features tracing
