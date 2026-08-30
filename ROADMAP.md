@@ -9,14 +9,14 @@ reason.
 
 ## Where it stands
 
-As of the vendor-first provider tree.
+As of streaming landing.
 
 | | |
 |---|---:|
-| Source | 4,694 lines across 25 files |
-| Tests | 124 passing |
+| Source | 6,052 lines across 26 files |
+| Tests | 145 passing |
 | Public items | 180 |
-| Dependency tree, default features | 52 crates |
+| Dependency tree, default features | 30 crates |
 | Published | no |
 | CI on GitHub | has never run, see phase 4 |
 
@@ -64,12 +64,12 @@ what headers, what JSON goes out, what comes back. On the command line side `Loc
 the spawning and the deadline, and a vendor preset is a program name, its arguments, and the
 shape of what it prints.
 
-**Adding this crate used to cost 250 crates and now costs 52.** The providers never needed
+**Adding this crate used to cost 105 crates and now costs 30.** The providers never needed
 `reqwest`; only `from_env` did. Protocols and the bundled client are separate features.
 
 ---
 
-## Phase 2 — streaming · **next**
+## Phase 2 — streaming · **done**
 
 The largest gap, and the reason it is before publish rather than after: it changes the shape
 of `Provider`, so doing it in 0.2 breaks every implementation written against 0.1.
@@ -79,11 +79,13 @@ of `Provider`, so doing it in 0.2 breaks every implementation written against 0.
 A second method on `Provider`:
 
 ```rust
-async fn stream(&self, request: ChatRequest) -> Result<BoxStream<'_, Result<Event>>>;
+async fn stream(&self, request: ChatRequest) -> Result<EventStream<'_>>;
 ```
 
-with a default implementation that calls `chat` and yields the whole reply as one event, so
-an existing provider still compiles and still works.
+with a default implementation that calls `chat` and yields the whole reply as one burst, so
+an existing provider still compiles and still works. `EventStream` is a boxed
+`futures_core::Stream`; `futures-core` is one crate with no dependencies of its own, and
+`futures` proper would have pulled a combinator stack this crate has no use for.
 
 An `Event` carries a delta rather than a whole message: text appended, a thinking block
 opened, a tool call accumulating, the stop reason, and finally usage.
@@ -117,7 +119,7 @@ compiles and still answers.
 
 ---
 
-## Phase 3 — retries and observability
+## Phase 3 — retries and observability · **next**
 
 ### Retries
 

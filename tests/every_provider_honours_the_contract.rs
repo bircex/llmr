@@ -14,19 +14,60 @@ use llmr::transport::{HttpRequest, HttpResponse, HttpTransport};
 use llmr::{Reach, Secret};
 use std::sync::Arc;
 
-/// Answers everything with the same recorded reply.
-struct Always(Vec<u8>);
+/// Answers with a recorded reply, in the form the request asked for.
+///
+/// A request carrying `stream: true` gets server sent events back, because that is what the
+/// endpoints being doubled do. A double that answered a streamed request with a whole JSON
+/// body would make the suite pass against a provider that cannot stream at all, which is
+/// the one thing this fixture exists to catch.
+struct Always {
+    whole: Vec<u8>,
+    events: String,
+}
 
 #[async_trait::async_trait]
 impl HttpTransport for Always {
-    async fn send(&self, _request: HttpRequest) -> llmr::Result<HttpResponse> {
-        Ok(HttpResponse::new(200, self.0.clone()))
+    async fn send(&self, request: HttpRequest) -> llmr::Result<HttpResponse> {
+        let asked_to_stream = serde_json::from_slice::<serde_json::Value>(&request.body)
+            .ok()
+            .and_then(|body| body.get("stream").and_then(serde_json::Value::as_bool))
+            .unwrap_or(false);
+
+        Ok(HttpResponse::new(
+            200,
+            if asked_to_stream {
+                self.events.clone().into_bytes()
+            } else {
+                self.whole.clone()
+            },
+        ))
     }
 }
 
-fn always(body: serde_json::Value) -> Arc<Always> {
-    Arc::new(Always(serde_json::to_vec(&body).unwrap_or_default()))
+fn always(whole: serde_json::Value, events: &str) -> Arc<Always> {
+    Arc::new(Always {
+        whole: serde_json::to_vec(&whole).unwrap_or_default(),
+        events: events.to_string(),
+    })
 }
+
+/// The Anthropic frames that add up to the recorded whole reply.
+const ANTHROPIC_EVENTS: &str = concat!(
+    "event: message_start\n",
+    "data: {\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":5}}}\n\n",
+    "event: content_block_delta\n",
+    "data: {\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+    "event: message_delta\n",
+    "data: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+);
+
+/// The same, in the OpenAI shape.
+const OPENAI_EVENTS: &str = concat!(
+    "data: {\"model\":\"gpt-5.3\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n",
+    "data: {\"model\":\"gpt-5.3\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: {\"model\":\"gpt-5.3\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}\n\n",
+    "data: [DONE]\n\n",
+);
 
 /// A registry holding exactly one model, so the suite can check that a model the provider
 /// knows and one it does not give different answers.
@@ -51,12 +92,15 @@ verified_at = "2026-08-28"
 #[tokio::test]
 async fn the_anthropic_provider_honours_the_contract() {
     let provider = anthropic::api::with(
-        always(serde_json::json!({
-            "model": "claude-sonnet-5",
-            "stop_reason": "end_turn",
-            "content": [{ "type": "text", "text": "ok" }],
-            "usage": { "input_tokens": 5, "output_tokens": 1 }
-        })),
+        always(
+            serde_json::json!({
+                "model": "claude-sonnet-5",
+                "stop_reason": "end_turn",
+                "content": [{ "type": "text", "text": "ok" }],
+                "usage": { "input_tokens": 5, "output_tokens": 1 }
+            }),
+            ANTHROPIC_EVENTS,
+        ),
         Secret::new("key", "sk-test"),
         holding("claude-sonnet-5", Reach::FirstPartyApi),
     );
@@ -69,14 +113,17 @@ async fn the_openai_shaped_provider_honours_the_contract() {
     let provider = openai::api::at(
         "test-endpoint",
         "https://example.invalid/v1",
-        always(serde_json::json!({
-            "model": "gpt-test",
-            "choices": [{
-                "finish_reason": "stop",
-                "message": { "role": "assistant", "content": "ok" }
-            }],
-            "usage": { "prompt_tokens": 5, "completion_tokens": 1 }
-        })),
+        always(
+            serde_json::json!({
+                "model": "gpt-test",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": { "role": "assistant", "content": "ok" }
+                }],
+                "usage": { "prompt_tokens": 5, "completion_tokens": 1 }
+            }),
+            OPENAI_EVENTS,
+        ),
         Secret::new("key", "sk-test"),
         Reach::FirstPartyApi,
         holding("gpt-test", Reach::FirstPartyApi),
@@ -133,6 +180,7 @@ fn a_registry_entry_can_be_built_by_hand() {
         structured_output: false,
         prompt_caching: false,
         thinking: false,
+        streaming: false,
         source: "their own documentation".into(),
         verified_at: "2026-08-28".into(),
     };

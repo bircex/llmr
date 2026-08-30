@@ -22,11 +22,12 @@
 //! Without that, the same conversation through two providers would report different input
 //! numbers, and a cost report comparing them would be comparing two different things.
 
+use crate::chat::stream::Event;
 use crate::chat::{ChatRequest, ChatResponse, ContentBlock, Message, Role, StopReason};
 use crate::cost::Usage;
 use crate::error::{Error, Result};
 use crate::model::{ModelId, Reach};
-use crate::providers::api::{ApiProvider, Protocol};
+use crate::providers::api::{ApiProvider, Protocol, SseFrame};
 use crate::registry::Registry;
 use crate::secret::Secret;
 use crate::transport::HttpTransport;
@@ -237,6 +238,122 @@ impl Protocol for ChatCompletions {
             response = response.with_stop_details(reason);
         }
         Ok(response)
+    }
+
+    fn stream_body(&self, request: &ChatRequest) -> Result<Option<Value>> {
+        let mut body = self.body(request)?;
+        body["stream"] = json!(true);
+        // Asked for explicitly, because this shape reports no usage in a streamed call
+        // unless you do. A stream that forgets reports nothing, and nothing turns into zero
+        // in whatever adds it up — the one failure this crate exists to prevent.
+        body["stream_options"] = json!({ "include_usage": true });
+        Ok(Some(body))
+    }
+
+    fn read_event(&self, frame: &SseFrame, asked_for: &ModelId) -> Result<Vec<Event>> {
+        // This shape names no frames and terminates with a sentinel that is not JSON.
+        if frame.data.trim() == "[DONE]" {
+            return Ok(Vec::new());
+        }
+        let Some(body) = frame.json() else {
+            return Err(Error::Unreadable(format!(
+                "a frame that was neither JSON nor [DONE]: {}",
+                frame.data.chars().take(120).collect::<String>()
+            )));
+        };
+
+        let mut events = Vec::new();
+
+        // Every frame repeats the model. Emitted once; a second `Started` would only
+        // overwrite the first with the same value, but sending it on every text delta is
+        // noise in anything that logs events.
+        if let Some(model) = body.get("model").and_then(Value::as_str) {
+            if body
+                .get("choices")
+                .and_then(Value::as_array)
+                .is_some_and(|c| {
+                    c.first()
+                        .and_then(|choice| choice.get("delta"))
+                        .and_then(|delta| delta.get("role"))
+                        .is_some()
+                })
+            {
+                events.push(Event::Started {
+                    model: ModelId::from(model),
+                });
+            }
+        }
+
+        if let Some(choice) = body
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+        {
+            if let Some(delta) = choice.get("delta") {
+                if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        events.push(Event::TextDelta(text.to_string()));
+                    }
+                }
+                // Reasoning, where a backend behind this shape produces it. There is no
+                // signature in this shape, so there is none to lose.
+                for field in ["reasoning_content", "reasoning"] {
+                    if let Some(text) = delta.get(field).and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            events.push(Event::ThinkingDelta(text.to_string()));
+                        }
+                    }
+                }
+                for call in delta
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .unwrap_or(&Vec::new())
+                {
+                    let function = call.get("function");
+                    // A name means a new call. Later frames for the same call carry only
+                    // more arguments.
+                    if let Some(name) = function.and_then(|f| f.get("name")).and_then(Value::as_str)
+                    {
+                        events.push(Event::ToolUseStarted {
+                            id: call
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            name: name.to_string(),
+                        });
+                    }
+                    if let Some(arguments) = function
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(Value::as_str)
+                    {
+                        if !arguments.is_empty() {
+                            events.push(Event::ToolArgumentsDelta(arguments.to_string()));
+                        }
+                    }
+                }
+            }
+
+            if let Some(reason) = choice.get("finish_reason") {
+                if !reason.is_null() {
+                    events.push(Event::Stopped {
+                        reason: read_stop(reason.as_str()),
+                        details: None,
+                    });
+                }
+            }
+        }
+
+        // Arrives in its own final frame, after the one carrying `finish_reason`. Read
+        // through the same function the whole call uses, so the cached part is subtracted
+        // the same way and a streamed and a non streamed call report the same numbers.
+        let usage = read_usage(body.get("usage"));
+        if usage.coverage() != crate::cost::UsageCoverage::Absent {
+            events.push(Event::Metered(usage));
+        }
+
+        let _ = asked_for;
+        Ok(events)
     }
 
     fn read_catalogue(&self, body: &Value) -> Result<Vec<ModelId>> {

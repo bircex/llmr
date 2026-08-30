@@ -29,8 +29,8 @@ pub mod providers;
 pub mod testkit;
 
 pub use chat::{
-    ChatRequest, ChatResponse, ContentBlock, Effort, Generation, Message, Needs, Role, StopReason,
-    Thinking, ToolSchema,
+    ChatRequest, ChatResponse, ContentBlock, Effort, Event, EventStream, Generation, Message,
+    Needs, Role, StopReason, Thinking, ToolSchema, Transcript,
 };
 pub use cost::{Micros, PriceBook, Priced, Rate, Usage, UsageCoverage};
 pub use error::{Error, Result};

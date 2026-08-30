@@ -182,6 +182,42 @@ worse than one that is obviously approximate.
 
 ---
 
+## A stream is the same reply, and has to prove it
+
+`Provider::stream` exists beside `chat` rather than replacing it, and the default
+implementation calls `chat` and hands the whole reply over as one burst of events.
+
+**That default is an answer, not a refusal.** A provider that cannot really stream still
+answers `stream` with the same text and the same usage, all at once. The alternative — an
+`Unsupported` error — would push every caller into writing the fallback themselves, and they
+would each write it slightly differently.
+
+Whether a pairing *really* streams is `ModelCapabilities::streaming`, read before the call
+like every other capability. A command line tool that prints one JSON document when it
+finishes cannot stream whatever model is behind it, and it says so rather than failing.
+
+The contract suite checks a streamed and a whole call agree about usage coverage. Two ways to
+ask the same question that disagree about what it cost make every cost report depend on which
+one happened to be used, and nothing in the report says which.
+
+**If the default were removed**, adding `stream` would break every provider written against
+`chat`. That is the reason this landed before publish rather than after: it is the shape of
+the trait, so afterwards it is a version rather than a patch.
+
+### Interrupted is a stop reason
+
+A stream that ends without one arrives as `StopReason::Interrupted` rather than through a
+separate channel. It is not something a provider reports, which is the argument against
+putting it here — but `is_complete()` is the guard callers already check before using the
+text, and a parallel channel is one they can forget to look at while rendering half an
+answer as finished.
+
+`Transcript::drain` returns the error and leaves the transcript intact, so what arrived, that
+the turn did not finish, and why are three separate answers rather than one inferred from
+another.
+
+---
+
 ## Nothing holds a lock across an await
 
 Every provider is immutable once built. `chat` takes `&self`, and anything shared is either
@@ -301,12 +337,17 @@ turns a typo into a real model.
 
 | Feature | Crates | |
 |---|---:|---|
-| `anthropic`, `openai` | 52 | Both protocols. You supply the transport |
-| `+ reqwest` | 250 | And a bundled client, with `from_env` |
-| `cli` alone | 53 | A local tool as a subprocess, no network code |
+| `anthropic`, `openai` | 30 | Both protocols. You supply the transport |
+| `+ reqwest` | 105 | And a bundled client, with `from_env` |
+| `cli` alone | 30 | A local tool as a subprocess, no network code |
 
 The first two are on by default and `reqwest` is not. Almost every program already has an HTTP
-client, and adding this crate should not add two hundred more.
+client, and adding this crate should not add a hundred more.
+
+**Count distinct crates, not lines of `cargo tree`.** These read 52, 250 and 53 for a while.
+Those were `cargo tree | wc -l`, which prints a crate once per dependent that reaches it, so
+every figure was roughly 1.8x the truth. The argument held and the numbers did not, which is
+the more embarrassing half. `cargo tree --prefix none | sort -u` is what these are now.
 
 Examples are gated with Cargo's `required-features` rather than a `cfg` attribute inside the
 file, so `cargo run --example` reports the missing feature instead of building a binary with

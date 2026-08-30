@@ -168,6 +168,16 @@ pub enum StopReason {
     PauseTurn,
     /// The conversation no longer fits. Nothing will fix this except sending less.
     ContextWindowExceeded,
+    /// A streamed reply stopped arriving before the model said it was done.
+    ///
+    /// Not something a provider reports — it is what this crate knows when a stream ends
+    /// without a stop reason. It lives here, beside the reasons a provider does give,
+    /// because [`StopReason::is_complete`] is the guard callers already check, and a
+    /// separate channel for "the stream broke" is one they can forget to look at while
+    /// rendering half an answer as finished.
+    ///
+    /// What arrived is still real. See [`crate::chat::stream::Transcript`].
+    Interrupted,
     /// The provider reported a reason this crate does not know.
     ///
     /// Kept rather than mapped to something close, because a stop reason invented on the

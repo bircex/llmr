@@ -26,7 +26,7 @@ println!("{}", reply.text());
 ```
 
 The `reqwest` feature is the bundled HTTP client. Without it you get both protocols and
-supply your own transport, which costs 52 crates instead of 250.
+supply your own transport, which costs 30 crates instead of 105.
 
 ## What this is for
 
@@ -178,10 +178,15 @@ not the same place for your data to go.
 
 | Feature | Crates | What you get |
 |---|---:|---|
-| `anthropic`, `openai` | 52 | Both protocols. You supply the transport |
-| `+ reqwest` | 250 | And a bundled client, with `from_env` |
-| `cli` alone | 53 | A local tool as a subprocess, no network code |
-| `testkit` | 52 | The contract suite for your own providers |
+| `anthropic`, `openai` | 30 | Both protocols. You supply the transport |
+| `+ reqwest` | 105 | And a bundled client, with `from_env` |
+| `cli` alone | 30 | A local tool as a subprocess, no network code |
+| `testkit` | 30 | The contract suite for your own providers |
+
+Counted as distinct crates compiled — `cargo tree` output with duplicate nodes collapsed.
+These read 52 and 250 until somebody checked: those were `cargo tree | wc -l`, which counts
+a crate once for every dependent that reaches it. The ratio was about right and every figure
+was not.
 
 The first two are on by default. `reqwest` is not, because almost every program already has
 an HTTP client and adding this crate should not add two hundred more.
@@ -261,6 +266,45 @@ cargo run --example anything_openai_shaped
 The last one needs no key. It sets up three very different endpoints through one provider
 and asks each what it serves, which is the quickest way to see what `Reach` is for.
 
+## Streaming
+
+`chat` waits for the whole reply. `stream` hands it over as it arrives.
+
+```rust,no_run
+use llmr::chat::stream::Transcript;
+# async fn example(p: &impl llmr::Provider, request: llmr::ChatRequest) -> llmr::Result<()> {
+let mut transcript = Transcript::new(request.model.clone());
+let outcome = transcript.drain(p.stream(request).await?).await;
+
+let reply = transcript.finish();
+if let Err(cut_short) = outcome {
+    // What arrived is still yours, and the reply says it did not finish.
+    eprintln!("stopped early: {cut_short}");
+}
+# Ok(())
+# }
+```
+
+Every provider answers `stream`. One that cannot really stream sends the finished reply as a
+single burst, which is an answer rather than a refusal — the same text, the same usage, just
+all at once. Ask `capabilities()` which pairings do it for real, or set
+`Requirements::streaming()` and let the router pick one.
+
+Three things are easy to get wrong here and are handled rather than left to you.
+
+**Usage arrives last, and absent is still not zero.** A stream reports its token counts in
+the final frame. One cut off before that reports what really arrived and `None` for the rest,
+never a zero standing in for a number nobody sent. The OpenAI shape is asked for usage
+explicitly, because it sends none otherwise.
+
+**Reasoning keeps its signature.** A thinking block assembled from deltas ends up with the
+provider's signature attached. Without it the *next* turn is rejected, which is a long way
+from the mistake.
+
+**A stream that breaks is not a call that failed.** `Transcript::drain` returns the error and
+leaves the transcript intact, so what arrived, that the turn did not finish, and why are three
+separate answers rather than one guess.
+
 ## Model tables and prices
 
 `Registry` holds what a model can do. `PriceBook` holds what it costs. Both carry where the
@@ -286,11 +330,6 @@ question: how do I reach this model, and what did it cost.
 ## What is not here yet
 
 Said plainly, because finding a gap by hitting it is worse than reading about it.
-
-**Streaming.** `chat` sends a request and waits for the whole reply. There is no token by
-token API. If you are building something a person watches, this will feel slow, and no
-workaround here will fix it. It changes the shape of the `Provider` trait, so it is a version
-rather than a patch.
 
 **Retries.** `Error::is_retryable` tells you a failure was not your fault and not permanent.
 Nothing acts on it. That is deliberate for now: a retry is safe or not depending on your

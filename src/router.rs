@@ -78,6 +78,11 @@ pub struct Requirements {
     pub prompt_caching: bool,
     /// The model must be able to reason.
     pub thinking: bool,
+    /// The reply must be readable as it arrives.
+    ///
+    /// Not something a request can express, because it is about how you intend to read the
+    /// answer rather than about what you asked. Set it with [`Requirements::streaming`].
+    pub streaming: bool,
     /// The data may not leave this machine.
     ///
     /// A floor rather than a preference. When this is set, only [`crate::Reach::SelfHosted`] is
@@ -99,6 +104,10 @@ impl Requirements {
             structured_output: needs.structured_output,
             prompt_caching: needs.prompt_caching,
             thinking: needs.thinking,
+            // Neither of these is in the request. One is about how you will read the reply,
+            // the other about where your data may go, and a request says nothing about
+            // either.
+            streaming: false,
             must_stay_on_device: false,
         }
     }
@@ -107,6 +116,18 @@ impl Requirements {
     #[must_use]
     pub fn on_device(mut self) -> Self {
         self.must_stay_on_device = true;
+        self
+    }
+
+    /// The reply has to arrive in pieces.
+    ///
+    /// Worth setting when a person is watching. Every provider answers
+    /// [`crate::Provider::stream`], but one that cannot really stream
+    /// answers it all at once at the end, and routing to it is how a screen stays blank for
+    /// thirty seconds while nothing appears to be wrong.
+    #[must_use]
+    pub fn streaming(mut self) -> Self {
+        self.streaming = true;
         self
     }
 
@@ -119,6 +140,7 @@ impl Requirements {
             && (!self.structured_output || have.structured_output)
             && (!self.prompt_caching || have.prompt_caching)
             && (!self.thinking || have.thinking)
+            && (!self.streaming || have.streaming)
     }
 
     /// What is missing, by name, for a message somebody reads.
@@ -135,6 +157,9 @@ impl Requirements {
         }
         if self.prompt_caching && !have.prompt_caching {
             missing.push("prompt_caching");
+        }
+        if self.streaming && !have.streaming {
+            missing.push("streaming");
         }
         if self.thinking && !have.thinking {
             missing.push("thinking");

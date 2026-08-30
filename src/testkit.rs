@@ -28,6 +28,7 @@
 
 use crate::chat::message::Message;
 use crate::chat::request::ChatRequest;
+use crate::chat::stream::Transcript;
 use crate::cost::usage::UsageCoverage;
 use crate::model::ModelId;
 use crate::provider::Provider;
@@ -102,6 +103,56 @@ pub async fn assert_provider_contract(provider: &impl Provider, known_model: &st
             reply.usage.output_tokens.unwrap_or(1) > 0 || !reply.text().is_empty(),
             "{id} reported zero output tokens for a reply that has text in it"
         );
+    }
+
+    // The same question, streamed. Every provider answers `stream`, whether it really
+    // streams or hands the finished reply over in one burst, so this holds for all of them.
+    let streamed = provider
+        .stream(
+            ChatRequest::new(
+                model.clone(),
+                vec![Message::user("Reply with the word ok.")],
+            )
+            .with_max_tokens(16),
+        )
+        .await;
+
+    match streamed {
+        Err(e) => panic!("{id} could not answer the same request as a stream: {e}"),
+        Ok(stream) => {
+            let mut transcript = Transcript::new(model.clone());
+            if let Err(e) = transcript.drain(stream).await {
+                panic!("{id} broke partway through a stream: {e}");
+            }
+            let assembled = transcript.finish();
+
+            assert!(
+                !assembled.message.content.is_empty(),
+                "{id} streamed a reply with no content in it. The same rule as `chat`: an \
+                 unreadable reply is an error, never an empty answer"
+            );
+
+            assert!(
+                assembled.stop_reason != crate::chat::message::StopReason::Interrupted,
+                "{id} ended a stream without ever saying why it stopped. That reads as a \
+                 connection that broke, so a caller cannot tell this apart from one that did"
+            );
+
+            // The one that matters. Two ways to ask the same question that disagree about
+            // what the call cost make every cost report depend on which one you used.
+            assert_eq!(
+                assembled.usage.coverage(),
+                reply.usage.coverage(),
+                "{id} reports usage differently depending on whether the reply was streamed. \
+                 A streamed call that reports nothing where a whole one reports numbers \
+                 becomes a free call in every report that adds it up"
+            );
+
+            assert!(
+                !assembled.model.as_str().trim().is_empty(),
+                "{id} did not say which model served the streamed request"
+            );
+        }
     }
 
     // Asked twice, because a provider holding state between calls is the bug this cannot

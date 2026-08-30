@@ -23,6 +23,25 @@ First release. Nothing published yet.
 - A dated Anthropic model table and price book, both refusing a row with no provenance.
 - Examples: `ask`, `what_it_cost`, and `anything_openai_shaped`.
 
+### Added, since the restructure
+
+- `Provider::stream`, with a default that calls `chat` and hands the finished reply over as
+  one burst of events. A provider implementing only `chat` still compiles and still answers.
+- `chat::stream`: `Event`, and `Transcript` to fold events back into the `ChatResponse` a
+  whole call would have returned. The contract suite checks the two agree.
+- `StopReason::Interrupted`, for a stream that stopped arriving before the model was done.
+  It is not a reason a provider reports — it is what this crate knows when a stream ends
+  without one — and it lives beside the others so `is_complete` already catches it.
+- `ModelCapabilities::streaming` and `Requirements::streaming`, so a caller who needs the
+  reply word by word can find out by asking instead of by watching a blank screen.
+- `HttpTransport::send_streaming`, defaulting to one whole call yielded as a single chunk.
+  It checks the status before handing over any bytes, because a 429 has nowhere to go once
+  the first chunk has been read as content.
+- Server sent event framing in `providers::api`, shared, plus `Protocol::stream_body` and
+  `Protocol::read_event`. Both shipped protocols implement them.
+- One dependency: `futures-core`, for the `Stream` trait. There is none in std yet, and
+  `futures` proper would pull a combinator stack this crate has no use for.
+
 ### Changed
 
 - Providers are grouped by vendor and then by reach: `providers::anthropic::{api, cli}` and
@@ -38,4 +57,4 @@ First release. Nothing published yet.
 
 ### Not in this release
 
-Streaming, retries, images, embeddings. See the README for what each one costs you.
+Retries, images, embeddings. See the README for what each one costs you.

@@ -25,6 +25,12 @@ pub struct Entry {
     /// Whether it can be asked to reason.
     #[serde(default)]
     pub thinking: bool,
+    /// Whether the reply can be read as it arrives.
+    ///
+    /// Defaults to false like the others, so a table written before this column existed
+    /// says "no" rather than claiming something nobody checked.
+    #[serde(default)]
+    pub streaming: bool,
     /// Where the facts on this row came from.
     ///
     /// Required. A capability table with no provenance is a set of claims, and the first
@@ -128,6 +134,7 @@ impl Registry {
             structured_output: entry.structured_output,
             prompt_caching: entry.prompt_caching,
             thinking: entry.thinking,
+            streaming: entry.streaming,
             reach: self.reach,
         })
     }
