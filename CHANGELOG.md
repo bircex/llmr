@@ -7,6 +7,14 @@ change is a minor bump.
 
 ### Added
 
+- `Budget`, `Router::within`, `Router::spending` and `Router::charge`, so a run has a cap
+  that refuses before the money goes rather than a report afterwards. A route nobody can
+  price is refused rather than run blind, a route in another currency is refused rather than
+  converted, and what a budget cannot promise is written down: the prompt is not priced
+  before it is sent, concurrent calls can overshoot, and a streamed call has to be settled by
+  the caller. (#40)
+- `Error::OverBudget`, for a call that was never made because it would have taken the run
+  over its cap. Nothing was sent, nothing was billed, and it opens no circuit. (#40)
 - `Router::within_deadline`, a bound over the whole routed attempt. Checked before every
   attempt and before every retry wait, so a `Retry` policy's attempt count is a maximum
   rather than a promise. It answers `Error::Timeout` rather than the last error from a route,
@@ -64,6 +72,8 @@ change is a minor bump.
 
 ### Documentation
 
+- `docs/DESIGN.md` records what a budget checks before a call, what it cannot check, and the
+  two races it admits rather than hides. (#40)
 - `docs/DESIGN.md` records what a deadline bounds, what it cannot bound, and why the reason
   is the error's type rather than an entry in `fell_through`. (#45)
 - `docs/DESIGN.md` records what `Order::Cheapest` is claiming, and why an unpriced route

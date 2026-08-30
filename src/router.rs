@@ -12,6 +12,9 @@
 //!   that does not is paying for a reply that ignored half of what you sent.
 //! * **Reach.** A caller can say the data must not leave this machine. Nothing below that
 //!   floor is considered, whatever else it can do.
+//! * **Money, when there is a cap.** [`Router::within`] refuses a route the run cannot
+//!   afford, before anything is sent. A route nobody can price cannot be measured against a
+//!   cap and is refused rather than run blind.
 //! * **Order.** The routes are tried in the order you gave them, or in whichever
 //!   [`Order`] you asked for: cheapest published rate, or fewest recent failures. First
 //!   that fits, wins. With [`Router::breaking`], a route that has been failing is skipped
@@ -40,10 +43,12 @@
 //! stays there.
 
 use crate::breaker::{Breaker, Health};
+use crate::budget::{Budget, Purse, Spending, Unpriced};
 use crate::chat::request::ChatRequest;
 use crate::chat::response::ChatResponse;
 use crate::chat::stream::EventStream;
 use crate::cost::pricing::{Micros, PriceBook, Rate};
+use crate::cost::usage::Usage;
 use crate::error::{Error, Result};
 use crate::model::{ModelCapabilities, ModelId};
 use crate::observe;
@@ -339,6 +344,9 @@ pub struct Router {
     routes: Vec<Route>,
     retry: Option<Retry>,
     breaker: Option<Breaker>,
+    budget: Option<Budget>,
+    /// What the budget has been spent on. Atomics, so this stays shareable.
+    purse: Purse,
     deadline: Option<Duration>,
     order: Order,
     /// One per route, in the same order. Atomics, so this stays shareable.
@@ -363,6 +371,8 @@ impl Router {
             routes,
             retry: None,
             breaker: None,
+            budget: None,
+            purse: Purse::default(),
             deadline: None,
             order: Order::AsListed,
             health,
@@ -399,6 +409,178 @@ impl Router {
     pub fn breaking(mut self, policy: Breaker) -> Self {
         self.breaker = Some(policy);
         self
+    }
+
+    /// Refuse a call that would take this run over a cap.
+    ///
+    /// [`crate::Ledger`] records what a run cost and nothing stopped it. An agentic bot
+    /// spends money with nobody watching, and a loop that retries or a plan that expands is
+    /// found out about on the invoice.
+    ///
+    /// ```
+    /// # use llmr::{Budget, Micros, Router};
+    /// # fn example(routes: Vec<llmr::Route>) -> Result<(), String> {
+    /// let budget = Budget::of(Micros::parse("5.00")?, "USD");
+    /// let router = Router::new(routes).within(budget);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// The routes have to carry price books for any of this to mean anything. See
+    /// [`Route::priced_by`], and [`crate::budget`] for what can be checked before a call and
+    /// what cannot.
+    ///
+    /// # What it refuses, and how it says so
+    ///
+    /// A route is skipped, with a reason in [`Routed::fell_through`], when the budget is
+    /// spent, when the reply alone could overrun what is left, when the route has no price
+    /// for this model, or when its book is in another currency. If no route survives, the
+    /// answer is [`Error::OverBudget`] naming every reason. Nothing was sent, so nothing was
+    /// billed.
+    ///
+    /// # What it cannot promise
+    ///
+    /// **The prompt is not priced before it is sent**, because that needs a token count and
+    /// this crate does not count tokens. So a budget caps what a run may *start*, and the
+    /// last call can carry it over by whatever the prompt cost. Set
+    /// [`ChatRequest::with_max_tokens`](crate::ChatRequest::with_max_tokens) and the reply's share of
+    /// that overshoot is bounded by a rate you can read.
+    ///
+    /// **Concurrent calls can overshoot.** Two tasks can both see room for one call and both
+    /// spend it. Holding a reservation across the call would mean holding a lock across an
+    /// await, which this crate forbids for a worse reason than this one.
+    ///
+    /// **A streamed call is not charged automatically.** Usage arrives in a
+    /// [`crate::Transcript`] the router never sees, so [`Router::stream`] counts one against
+    /// [`Spending::unmeasured`] and [`Router::charge`] is how you settle it.
+    #[must_use]
+    pub fn within(mut self, budget: Budget) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// What this run has spent, and what is left.
+    ///
+    /// `None` without [`Router::within`]. Read [`Spending::is_exact`] before presenting the
+    /// figure as a bill.
+    pub fn spending(&self) -> Option<Spending> {
+        self.budget
+            .as_ref()
+            .map(|budget| self.purse.spending(budget))
+    }
+
+    /// Charges the budget for a call this router could not price itself.
+    ///
+    /// The case is a streamed reply: its usage arrives in a [`crate::Transcript`] long after
+    /// [`Router::stream`] returned, so the router counted one call as unmeasured and left
+    /// the settling to you.
+    ///
+    /// `route` is the name [`Routed::route`] gave you. The usage is priced against that
+    /// route's own book, which is the same book the budget would have used, so a streamed
+    /// call and a whole one are charged identically.
+    ///
+    /// Answers whether it could be priced. `false` means the route is unknown here, has no
+    /// book, has no row for the model, is in another currency, or the usage was never
+    /// reported: the call stays counted as unmeasured, which is the honest record.
+    pub fn charge(&self, route: &str, model: &ModelId, usage: &Usage) -> bool {
+        let Some(amount) = self.price_against(route, model, usage) else {
+            return false;
+        };
+        self.purse.spend(amount);
+        // Settling one the router already counted. Only this entry point does it: the chat
+        // path prices a call that was never pending, and taking one off there would clear a
+        // streamed call somebody has not settled yet.
+        self.purse.measured_after_all();
+        true
+    }
+
+    /// What this call cost against the route's own book, in the budget's currency.
+    ///
+    /// `None` when there is no budget, no such route, no book, no row for the model, a book
+    /// in another currency, or usage nobody reported. Every one of those means the same
+    /// thing to a cap: this call cannot be measured.
+    fn price_against(&self, route: &str, model: &ModelId, usage: &Usage) -> Option<Micros> {
+        let budget = self.budget.as_ref()?;
+        let found = self.routes.iter().find(|r| r.name() == route)?;
+        let book = found.prices.as_ref()?;
+        if book.currency != budget.currency() {
+            return None;
+        }
+        Some(book.price(model, usage)?.amount)
+    }
+
+    /// Puts what a completed call cost on the budget, or records that nobody could.
+    ///
+    /// Nothing happens without a budget. With one, a call that could not be priced is
+    /// counted rather than ignored, which is what makes [`Spending::is_exact`] answer
+    /// honestly for a run that mixed priced routes with unpriced ones.
+    fn settle(&self, route: &str, model: &ModelId, usage: &Usage) {
+        if self.budget.is_none() {
+            return;
+        }
+        match self.price_against(route, model, usage) {
+            Some(amount) => self.purse.spend(amount),
+            None => self.purse.unmeasured(),
+        }
+    }
+
+    /// Why this route may not be used under the budget, if it may not.
+    ///
+    /// Everything here is checked before a request goes out, because a cap checked after the
+    /// call is a report rather than a budget.
+    fn unaffordable(&self, route: &Route, request: &ChatRequest) -> Option<String> {
+        let budget = self.budget.as_ref()?;
+        let left = self.purse.remaining(budget.cap());
+
+        if left == Micros(0) {
+            return Some(format!(
+                "the {} budget of {} is spent",
+                budget.currency(),
+                budget.cap()
+            ));
+        }
+
+        // No price is not a low price. A route nobody can price cannot be measured against a
+        // cap at all, and letting it run would break the one promise the budget makes.
+        let Some(book) = &route.prices else {
+            return self.without_a_price(route, "carries no price book");
+        };
+        if book.currency != budget.currency() {
+            return Some(format!(
+                "priced in {} and the budget is in {}. There is no exchange rate in this                  crate: a rate has a date and a source exactly like a price does",
+                book.currency,
+                budget.currency()
+            ));
+        }
+        let Some(rate) = book.rate(&route.model) else {
+            return self.without_a_price(route, "is not in this route's price book");
+        };
+
+        // The one thing about this call that can be bounded before it is sent. No reply is
+        // longer than the limit it was given, so this is an upper bound rather than a guess,
+        // which is what makes it safe to refuse on.
+        if let Some(max_tokens) = request.generation.max_tokens {
+            let most = Budget::most_a_reply_can_cost(max_tokens, rate);
+            if most > left {
+                return Some(format!(
+                    "the reply alone could cost {most} and only {left} is left",
+                ));
+            }
+        }
+
+        None
+    }
+
+    /// What a budget does about a route it cannot price.
+    fn without_a_price(&self, route: &Route, why: &str) -> Option<String> {
+        match self.budget.as_ref().map(Budget::unpriced) {
+            Some(Unpriced::Refused) => Some(format!(
+                "{} {why}, so it cannot be measured against a budget",
+                route.model
+            )),
+            // Allowed, and the run says so: `Spending::unmeasured` makes the figure a floor.
+            _ => None,
+        }
     }
 
     /// Give up on the whole request after this long, however many routes are left.
@@ -628,6 +810,10 @@ impl Router {
         let journey = self.attempt(request, needs, |provider, request| provider.chat(request));
         let (response, routed) = observe::inside(span.clone(), journey).await?;
 
+        // Charged here rather than inside the loop, because this is the only entry point
+        // that has a usage to charge. `stream` has none yet and says so.
+        self.settle(&routed.route, &response.model, &response.usage);
+
         observe::routed(
             &span,
             &routed.route,
@@ -714,6 +900,14 @@ impl Router {
         let journey = self.attempt(request, needs, |provider, request| provider.stream(request));
         let (events, routed) = observe::inside(span.clone(), journey).await?;
 
+        // A stream reports its tokens into a `Transcript` this router never sees, so the
+        // call goes on the budget as one nobody has priced. `Router::charge` settles it once
+        // the caller has the transcript, and until then `Spending::is_exact` is false, which
+        // is the honest record rather than a silent zero.
+        if self.budget.is_some() {
+            self.purse.unmeasured();
+        }
+
         observe::routed_stream(
             &span,
             &routed.route,
@@ -748,6 +942,7 @@ impl Router {
         let mut last: Option<Error> = None;
         let mut attempts = 0;
         let mut resting = 0;
+        let mut over_budget = 0;
 
         for index in self.reaching_order() {
             let (route, health) = (&self.routes[index], &self.health[index]);
@@ -776,6 +971,16 @@ impl Router {
                 fell_through.push(Attempted {
                     route: route.name(),
                     why: health.why(left),
+                });
+                continue;
+            }
+
+            // Before anything is sent, because a cap checked after the call is a report.
+            if let Some(why) = self.unaffordable(route, &request) {
+                over_budget += 1;
+                fell_through.push(Attempted {
+                    route: route.name(),
+                    why,
                 });
                 continue;
             }
@@ -880,6 +1085,11 @@ impl Router {
 
         match last {
             Some(error) => Err(error),
+            // Nothing was sent and nothing was billed. Its own variant rather than the last
+            // provider error, because there is no provider error: every route that could
+            // have served this was refused by the cap, and that is a run to change rather
+            // than a provider to look at.
+            None if over_budget > 0 => Err(Error::OverBudget(Self::listing(&fell_through))),
             // Every route that could have served this is resting. Transient rather than
             // unsupported: nothing is wrong with the request, and the difference decides
             // whether a caller fixes their configuration or waits.
