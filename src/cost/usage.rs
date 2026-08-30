@@ -17,6 +17,27 @@ pub enum UsageCoverage {
     Absent,
 }
 
+impl UsageCoverage {
+    /// How a coverage is written down, in records and in spans.
+    ///
+    /// One spelling in one place, for the reason [`crate::Reach::as_str`] has one: two
+    /// copies of this mapping is two chances for a log line and a report to disagree about
+    /// what "absent" means.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UsageCoverage::Exact => "exact",
+            UsageCoverage::Partial => "partial",
+            UsageCoverage::Absent => "absent",
+        }
+    }
+}
+
+impl std::fmt::Display for UsageCoverage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The tokens one call consumed.
 ///
 /// Every field is optional because providers differ in what they report, and a missing

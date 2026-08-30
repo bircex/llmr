@@ -79,6 +79,8 @@ jobs:
       - run: cargo build --no-default-features --features anthropic
       - run: cargo build --no-default-features --features openai
       - run: cargo build --no-default-features --features testkit
+      - run: cargo build --no-default-features --features retry
+      - run: cargo build --no-default-features --features tracing
 
   msrv:
     name: minimum supported rust version

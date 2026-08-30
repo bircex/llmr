@@ -28,6 +28,7 @@ use crate::chat::stream::{Event, EventStream};
 use crate::chat::{ChatRequest, ChatResponse};
 use crate::error::{Error, Result};
 use crate::model::{ModelCapabilities, ModelId, Reach};
+use crate::observe;
 use crate::provider::{Access, Provider};
 use crate::registry::Registry;
 use crate::secret::Secret;
@@ -242,17 +243,23 @@ impl<P: Protocol> Provider for ApiProvider<P> {
     }
 
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
-        let body = serde_json::to_vec(&self.protocol.body(&request)?)
-            .map_err(|e| Error::InvalidRequest(format!("building the request: {e}")))?;
+        let span = observe::calling(self.protocol.id(), &request.model, self.reach);
+        observe::inside(span.clone(), async move {
+            let body = serde_json::to_vec(&self.protocol.body(&request)?)
+                .map_err(|e| Error::InvalidRequest(format!("building the request: {e}")))?;
 
-        let parsed = self
-            .call(HttpRequest::new(
-                self.protocol.chat_url(&self.base_url),
-                body,
-            ))
-            .await?;
+            let parsed = self
+                .call(HttpRequest::new(
+                    self.protocol.chat_url(&self.base_url),
+                    body,
+                ))
+                .await?;
 
-        self.protocol.read(&parsed, &request.model)
+            let reply = self.protocol.read(&parsed, &request.model)?;
+            observe::measured(&span, reply.usage.coverage());
+            Ok(reply)
+        })
+        .await
     }
 
     async fn catalogue(&self) -> Result<Vec<ModelId>> {

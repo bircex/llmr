@@ -9,12 +9,12 @@ reason.
 
 ## Where it stands
 
-As of streaming landing on top of reachability.
+As of phase 3 landing.
 
 | | |
 |---|---:|
-| Source | 7,071 lines across 26 files |
-| Tests | 197 passing |
+| Source | 7,668 lines across 28 files |
+| Tests | 216 passing |
 | Public items | 189 |
 | Dependency tree, default features | 30 crates |
 | Published | no |
@@ -145,7 +145,7 @@ compiles and still answers.
 
 ---
 
-## Phase 3: retries and observability · **next**
+## Phase 3: retries and observability · **done**
 
 ### Retries
 
@@ -183,7 +183,7 @@ and a call with the feature off emits nothing.
 
 ---
 
-## Phase 4: the pipeline, actually running
+## Phase 4: the pipeline, actually running · **next**
 
 `.github/workflows/ci.yml` covers formatting, three clippy passes, docs with warnings denied
 under two feature sets, tests on three operating systems, every feature built alone, and the

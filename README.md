@@ -349,6 +349,50 @@ from the mistake.
 leaves the transcript intact, so what arrived, that the turn did not finish, and why are three
 separate answers rather than one guess.
 
+## Trying again
+
+Nothing retries unless you say so. `Error::is_retryable` says a failure was not your fault
+and not permanent; whether the *request* is safe to repeat is a question about your request,
+and this crate cannot answer it.
+
+```rust,no_run
+use llmr::retry::Retry;
+use std::time::Duration;
+
+# #[cfg(feature = "retry")]
+# fn example(router: llmr::Router) -> llmr::Router {
+router.retrying(Retry::new(3).with_base(Duration::from_millis(200)))
+# }
+```
+
+Four failures are never repeated, because each returns the same answer the second time:
+a rejected credential, a malformed request, a refusal and a reply that could not be read.
+
+**A timeout is not repeated either, unless you ask.** The deadline passed; the work may not
+have. A second attempt can leave you billed for two answers to one question, so
+`repeating_timeouts()` is a decision you make rather than one made for you.
+
+**A wait the provider named is used exactly.** No jitter, no doubling, no ceiling applied to
+it. The provider is telling you when the limit clears, and a local timer that fires sooner
+turns one rate limit into two. Waits this crate computes for itself are jittered, so two
+callers that failed together do not come back together.
+
+`Routed::attempts` says how many calls a reply actually cost, and each retry leaves a line in
+`fell_through`. A call paid for twice should not be invisible.
+
+## Spans
+
+Behind the `tracing` feature, off by default. With it off the crate gains no dependency and
+does no work on the path a request takes; a library that emitted whether you asked or not is
+one people work around.
+
+A span carries which provider, which model, which reach, how complete the usage was, which
+route answered, and how many attempts it took. **Never the prompt and never a credential** —
+that is the shape of the code rather than a promise, and there is a test that says so.
+
+The line worth having is a warning on a *successful* call that did not take the first route.
+Nothing failed, and something is going wrong.
+
 ## Model tables and prices
 
 `Registry` holds what a model can do. `PriceBook` holds what it costs. Both carry where the
@@ -374,10 +418,6 @@ question: how do I reach this model, and what did it cost.
 ## What is not here yet
 
 Said plainly, because finding a gap by hitting it is worse than reading about it.
-
-**Retries.** `Error::is_retryable` tells you a failure was not your fault and not permanent.
-Nothing acts on it. That is deliberate for now: a retry is safe or not depending on your
-request, and a library that decided for you would double a bill on a timeout.
 
 **Images and other input.** `ContentBlock` carries text, reasoning and tool calls. No images,
 audio or documents.

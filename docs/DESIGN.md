@@ -295,6 +295,53 @@ another.
 
 ---
 
+## A retry policy is handed in, never assumed
+
+`Router` retries nothing until you call `retrying`. The crate knows which failures are worth
+repeating and what the provider asked you to wait; it does not know whether **your** request
+is safe to send twice, and that is the half that decides.
+
+`Error::Timeout` is the case that makes this concrete. It is retryable — the failure was not
+your fault and not permanent — and repeating it can still leave you billed for two answers,
+because the deadline passing does not stop the provider generating. So it is excluded by
+default and `repeating_timeouts()` turns it on.
+
+**A wait the provider named is used exactly**: no jitter, no doubling, no ceiling. Capping it
+would be a local timer firing before the limit clears, which earns a second 429 and a longer
+wait. Waits this crate computes itself are jittered, because two callers that failed together
+coming back together is how a provider recovering from a fault gets knocked over again.
+
+**Jitter without `rand`.** A dependency on `rand` to spread retries apart would cost more
+crates than the whole OpenAI protocol. Nothing here is a secret, so the clock's nanoseconds
+through an xorshift are enough. If this ever needs to be unguessable rather than merely
+uneven, that is a different requirement and it should arrive with its own reason.
+
+**If retrying became the default**, the first timeout in somebody's production run would
+double a bill, and the line that did it would not appear in any diff.
+
+---
+
+## Spans carry facts, and structurally cannot carry content
+
+Behind the `tracing` feature, off by default, because a library that emits whether you asked
+or not is one people work around. With it off there is no dependency and no work.
+
+The rule is that a span never holds a prompt or a credential. That is not enforced by review:
+every function in `observe` takes a `ModelId`, a `Reach`, a `UsageCoverage`, a count or a
+route name, so there is nowhere to pass a message even by accident, and `Secret` has no
+`Display`. `tests/what_a_span_says.rs` puts a known string into both the prompt and the key
+and asserts it appears in no recorded field.
+
+The span is attached to the future rather than entered around it. A span guard held across an
+await attaches the span to whatever else that thread picks up next, which is the same class
+of mistake as holding a lock across one.
+
+**If the fields became a formatted string**, the first person who wanted a bit more context
+would interpolate the request into it, and every program that upgraded would start logging
+its users' text.
+
+---
+
 ## Nothing holds a lock across an await
 
 Every provider is immutable once built. `chat` takes `&self`, and anything shared is either

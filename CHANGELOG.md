@@ -51,6 +51,20 @@ First release. Nothing published yet.
 - One dependency: `futures-core`, for the `Stream` trait. There is none in std yet, and
   `futures` proper would pull a combinator stack this crate has no use for.
 
+### Added, phase 3
+
+- `retry::Retry`, a policy the caller configures and `Router::retrying` applies. Honours a
+  `Retry-After` exactly, jitters what it computes itself, never repeats a rejected
+  credential, a malformed request, a refusal or an unreadable reply, and does not repeat a
+  timeout unless asked — a second attempt can buy two answers to one question.
+- `retry::Delay`, so waiting goes through something you supply. `TokioDelay` behind the
+  `retry` feature is the one this crate ships; the trait is always there for another runtime.
+- `Routed::attempts`, so a reply that cost three calls says so.
+- `tracing` spans behind a feature, carrying provider, model, reach, usage coverage, route
+  and attempts — and never the prompt or the credential. With the feature off the crate
+  gains no dependency and does no work.
+- `UsageCoverage::as_str` and `Display`, one spelling for records and spans.
+
 ### Changed
 
 - Providers are grouped by vendor and then by reach: `providers::anthropic::{api, cli}` and
@@ -66,4 +80,4 @@ First release. Nothing published yet.
 
 ### Not in this release
 
-Retries, images, embeddings. See the README for what each one costs you.
+Images, embeddings. See the README for what each one costs you.

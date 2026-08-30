@@ -33,6 +33,16 @@ reqwest = ["dep:reqwest"]
 # The contract suite, for anyone writing a provider of their own.
 testkit = []
 
+# A retry policy the router applies, and a `tokio` timer to wait through. The `Retry` and
+# `Delay` types are always present; this is only what waits, because waiting is the part
+# that needs a runtime and this crate does not pick yours.
+retry = ["dep:tokio", "tokio/time"]
+
+# `tracing` spans on every call. Off by default: a library that emits whether you asked or
+# not is a library people work around, and with this off the crate adds no dependency and
+# does no work.
+tracing = ["dep:tracing"]
+
 [dependencies]
 async-trait = "0.1"
 # The `Stream` trait and nothing else. There is no `Stream` in std yet, and `stream` on
@@ -45,6 +55,7 @@ thiserror   = "2"
 toml        = "1.1"
 reqwest     = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio       = { version = "1", optional = true, default-features = false }
+tracing     = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }
