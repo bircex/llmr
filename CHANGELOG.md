@@ -5,7 +5,20 @@ change is a minor bump.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- `Router::stream`, so the crate routes a streamed call and not only a whole one. It falls
+  through a provider that fails while the stream is opening and never after the first event
+  has reached the caller: continuing a half written answer on a second model produces text
+  nobody wrote, in one voice, with nothing downstream able to detect it. (#41)
+### Changed
+
+- **Breaking:** `Routed` is now `Routed<T = ChatResponse>`. Written as `Routed` it means what
+  it always did; `Router::stream` answers a `Routed<()>` beside the stream. (#41)
+### Documentation
+
+- `docs/DESIGN.md` records why a streamed route stops being replaceable at the first event.
+  (#41)
 
 ## 0.1.0 — 2026-08-30
 
