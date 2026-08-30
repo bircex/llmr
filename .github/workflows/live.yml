@@ -1,0 +1,54 @@
+name: Against a real endpoint
+
+# Never on a push and never on a pull request. Every test this runs costs money and sends a
+# prompt to a vendor, which is not a thing that should happen because somebody opened a
+# branch. It is dispatched by hand, by a person who meant it.
+on:
+  workflow_dispatch:
+    inputs:
+      providers:
+        description: "Which to run: all, anthropic, openai, gemini"
+        required: true
+        default: "all"
+        type: choice
+        options: [all, anthropic, openai, gemini]
+      record:
+        description: "Upload the replies as an artefact, to be committed as fixtures"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live:
+    name: call the real thing
+    runs-on: ubuntu-latest
+    # A key is a repository secret and an environment gates who may use one. Without this,
+    # anybody who can dispatch a workflow can spend the account's money.
+    environment: live-providers
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      # Only the keys for what was asked for. A key that is not in the environment is a test
+      # that skips itself and says so, which is why one job can serve all four choices.
+      - name: Run the suite
+        run: |
+          cargo test --all-features --test against_a_real_endpoint -- --ignored --nocapture
+        env:
+          ANTHROPIC_API_KEY: ${{ (inputs.providers == 'all' || inputs.providers == 'anthropic') && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (inputs.providers == 'all' || inputs.providers == 'openai') && secrets.OPENAI_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ (inputs.providers == 'all' || inputs.providers == 'gemini') && secrets.GEMINI_API_KEY || '' }}
+          LLMR_RECORD: ${{ inputs.record && 'recorded' || '' }}
+
+      # The point of recording. A reply that stayed in a runner's log is a call somebody
+      # made; a reply committed to the repository is a call anybody can check.
+      - name: Keep what came back
+        if: ${{ inputs.record && always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: recorded-replies
+          path: recorded/
+          if-no-files-found: warn

@@ -154,6 +154,34 @@ Three things the suite is checking, and they are the ones that are easy to get w
 
 Put your provider behind a feature and add it to the table in the README.
 
+### And then call it for real, once
+
+The contract suite and every fixture in this repository are written here, which means they
+catch a translation that changed and cannot catch a field name that was wrong from the
+beginning: the fixture has the same wrong name in it and the two agree.
+
+`tests/against_a_real_endpoint.rs` is the file that settles that. Add your provider to it,
+and run it once with a key:
+
+```sh
+YOUR_API_KEY=... cargo test --all-features --test against_a_real_endpoint -- --ignored --nocapture
+```
+
+Every test in it is `#[ignore]`, so nobody runs one by accident and CI never spends money.
+A test whose key is missing skips itself and says so.
+
+What it asserts is deliberately not "it answered", because a fixture already proves that.
+It asserts the things a fixture cannot: that usage came back `Exact` rather than `Partial`,
+which is the exact shape of a field name read wrong; that the reply named a real model; that
+the stop reason mapped to something rather than to a fallback; and that a streamed call and a
+whole call agree about what was consumed, against the wire rather than against two fixtures
+written the same afternoon.
+
+Set `LLMR_RECORD` to a directory and it writes what came back, so a real reply becomes a
+fixture in this repository rather than staying in your terminal. Commit that with the
+provider. The `Against a real endpoint` workflow does the same thing on a runner and is
+dispatched by hand, never on a push.
+
 ## Model tables and prices
 
 Every row carries a `source` and a `verified_at`. A row without them is refused at parse

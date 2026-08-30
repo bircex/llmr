@@ -725,6 +725,45 @@ nothing in it.
 
 ---
 
+## A fixture cannot check a field name that was wrong from the start
+
+Every fixture in this repository was written here. That makes them good at one thing and
+blind to another.
+
+They catch a **regression**: a translation that used to produce this and now produces that.
+They cannot catch a **mistake**, because a field name read wrong from a vendor's
+documentation is read the same wrong way into the fixture, and the two agree forever. Three
+hundred passing tests say nothing about it, and nothing inside the crate can.
+
+`tests/against_a_real_endpoint.rs` is the only thing that can. Every test in it is
+`#[ignore]`, so `cargo test` never runs one and CI never spends money, and a test whose key is
+missing skips itself rather than failing, so one key is enough to run the file.
+
+**What it asserts is not "it answered".** A fixture already proves the crate can read a reply
+it was handed. These are the four claims only a real endpoint settles:
+
+* **Usage is `Exact`, not `Partial`.** A `Partial` means a field this crate reads by name was
+  not there under that name. That is precisely the shape of the mistake, and every cost report
+  built on it is a floor nobody knows is a floor.
+* **The reply names a real model**, and it is printed, because what a vendor actually serves
+  for a given alias is a fact worth having in a commit.
+* **The stop reason mapped to something** rather than to a fallback. A provider that maps
+  every reason it does not recognise onto `EndTurn` reports a truncated answer as a complete
+  one.
+* **A streamed call and a whole one agree**, against the wire rather than against two
+  fixtures written the same afternoon.
+
+Gemini is exempted from the first of those and says why in the test: that API reports no cache
+write count at all, so its usage is `Partial` by design, and asserting `Exact` would be
+asserting that a documented decision is a bug.
+
+`LLMR_RECORD` writes what came back to a directory, because a reply that stayed in somebody's
+terminal is a call they made and a reply committed here is a call anybody can check. The
+`Against a real endpoint` workflow does the same on a runner, dispatched by hand behind a
+gated environment, never on a push.
+
+---
+
 ## Naming and prose
 
 Tests are named after the claim they make, not the function they call.
