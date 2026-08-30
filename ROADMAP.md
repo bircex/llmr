@@ -218,7 +218,10 @@ tick on somebody's unrelated pull request.
   so a packaging problem is found on a pull request rather than at the moment of release.
 - **`cargo-semver-checks` on pull requests.** Nothing to compare against until 0.1.0 is
   published, and it is here now so the first release after it is checked by a job somebody
-  already trusts rather than one added in a hurry.
+  already trusts rather than one added in a hurry. It does **not** skip on its own when the
+  crate is unpublished — it exits 101 with "not found in registry", which is what it did the
+  first time this job ran — so the job asks the sparse index first and says why it is
+  skipping. A probe that cannot tell fails the job rather than guessing.
 - **Issue and pull request templates, and a code of conduct.** The provider template asks
   which vendor *and* which reach, because those decide different things: the vendor decides
   the directory, the reach decides what it can carry.

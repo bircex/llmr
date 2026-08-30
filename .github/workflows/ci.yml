@@ -159,15 +159,45 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # Until 0.1.0 is on crates.io there is no published version to compare against, and
-      # this reports that and passes. It is here now so that the first release after 0.1.0
-      # is checked by a job somebody already trusts rather than one added in a hurry.
+      # There has to be a published version to compare against. `cargo-semver-checks` does
+      # not skip when there is not — it exits 101 with "llmr not found in registry", which
+      # is what this job did the first time it ran.
       #
-      # This crate is unusually exposed: everything public is #[non_exhaustive], so fields
-      # can be added without a major version — which is exactly the arrangement where
-      # somebody assumes every change is additive. Adding a required method to `Provider` is
-      # breaking. Narrowing a return type is breaking. Neither looks like it in a diff.
+      # So the precondition is checked out loud rather than assumed. Asking the sparse index
+      # is one request and no API token, and it fails the job only if the probe itself
+      # breaks: `curl -f` distinguishes a 404 from a network error.
+      - name: Is there a published version to compare against
+        id: published
+        run: |
+          set -euo pipefail
+          name=$(grep -m1 '^name' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          case ${#name} in
+            1) path="1/$name" ;;
+            2) path="2/$name" ;;
+            3) path="3/${name:0:1}/$name" ;;
+            *) path="${name:0:2}/${name:2:2}/$name" ;;
+          esac
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://index.crates.io/$path")
+          case "$code" in
+            200) echo "exists=true"  >> "$GITHUB_OUTPUT" ;;
+            404) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::the crates.io index answered $code, so this job cannot tell" \
+                    "whether $name is published" >&2; exit 1 ;;
+          esac
+
+      - name: Nothing published yet
+        if: steps.published.outputs.exists == 'false'
+        run: |
+          echo "::notice::Not on crates.io yet, so there is no released API to break." \
+               "This job starts checking at the first release after 0.1.0."
+
+      # This crate is unusually exposed to an accidental break: everything public is
+      # #[non_exhaustive], so fields can be added without a major version — which is exactly
+      # the arrangement where somebody assumes every change is additive. Adding a required
+      # method to `Provider` is breaking. Narrowing a return type is breaking. Neither looks
+      # like it in a diff.
       - name: cargo-semver-checks
+        if: steps.published.outputs.exists == 'true'
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           feature-group: all-features

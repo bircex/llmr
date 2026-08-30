@@ -73,8 +73,8 @@ First release. Nothing published yet.
   tag disagrees with `Cargo.toml` or the changelog has no section for it, and holds the
   publish behind an environment so a person approves it.
 - A packaging job on pull requests, so what would ship is checked before release day.
-- `cargo-semver-checks`, which has nothing to compare against until 0.1.0 and is in place for
-  the release after it.
+- `cargo-semver-checks`, skipped with a note until 0.1.0 is published and in place for the
+  release after it.
 - Issue templates, a pull request template carrying the seven commands, and a code of
   conduct.
 

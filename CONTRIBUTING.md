@@ -95,8 +95,9 @@ The seven above, plus three you would not usually run by hand:
   there. Install it with `cargo install cargo-deny --locked` if you want to run it locally.
 - **`cargo publish --dry-run`** — what would actually ship. `exclude` in `Cargo.toml` keeps
   CI configuration, the roadmap, the design notes and `deny.toml` out of the package.
-- **`cargo-semver-checks`** — nothing to compare against until 0.1.0 is published. After
-  that it is the job that catches a break nobody meant: everything public here is
+- **`cargo-semver-checks`** — skipped, with a note saying so, until 0.1.0 is published;
+  there is no released API to compare against. After that it is the job that catches a break
+  nobody meant: everything public here is
   `#[non_exhaustive]`, which is exactly the arrangement where somebody assumes every change
   is additive. Adding a required method to `Provider` is breaking. Narrowing a return type
   is breaking. Neither looks like it in a diff.
