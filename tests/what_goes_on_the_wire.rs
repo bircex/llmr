@@ -479,11 +479,9 @@ async fn a_tool_schema_reaches_the_wire_in_this_protocols_shape() {
     let transport = Recorded::replying(200, openai_reply());
     let _ = openai(Arc::clone(&transport), Reach::FirstPartyApi)
         .chat(
-            ChatRequest::new("gpt-test", vec![Message::user("hi")]).with_tools(vec![ToolSchema {
-                name: "search".into(),
-                description: "look it up".into(),
-                parameters: json!({ "type": "object" }),
-            }]),
+            ChatRequest::new("gpt-test", vec![Message::user("hi")]).with_tools(vec![
+                ToolSchema::new("search", "look it up", json!({ "type": "object" })),
+            ]),
         )
         .await;
 

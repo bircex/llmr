@@ -13,9 +13,9 @@ As of images and the ledger landing.
 
 | | |
 |---|---:|
-| Source | 8,293 lines across 29 files |
+| Source | 8,859 lines across 31 files |
 | Tests | 231 passing |
-| Public items | 189 |
+| Public items | 6,128 all in, 1,209 hand written · see below |
 | Dependency tree, default features | 31 crates |
 | Published | no |
 | CI on GitHub | runs, and is green as of phase 4 |
@@ -23,6 +23,19 @@ As of images and the ledger landing.
 Everything below is green: `cargo fmt --check`, clippy under three feature combinations,
 `cargo doc` with warnings denied under two feature sets, every feature built alone, and the
 full test suite.
+
+The public item count is two numbers because it needs a stated method, and used to be one
+number twice with no method at all — this file said 180 and issue #19 said 189, and neither
+could be compared to anything. Both come from:
+
+```sh
+cargo +nightly public-api --all-features
+```
+
+6,128 is every public item, dominated by the trait implementations `derive` writes. 1,209 is
+that with derive-generated trait methods filtered out, which is roughly what a reader of the
+docs meets. Either is fine. Using the same one next time is what matters, and after 0.1.0
+`cargo public-api --diff` answers the better question anyway.
 
 ```sh
 cargo fmt --all -- --check
@@ -238,8 +251,17 @@ a red tick was read as the thing that was already known to be broken.
 
 ### The public surface
 
-180 public items is a lot to promise. Read it with fresh eyes and make anything that does not
-need to be public private, because narrowing after publish is breaking and widening never is.
+Read it with fresh eyes and make anything that does not need to be public private, because
+narrowing after publish is breaking and widening never is. Done once (#19); what it found:
+
+- The provider helpers were already private. `read_block`, `wire_message`, `budget` and their
+  neighbours are translation details and none of them was ever exposed.
+- Four types that a caller reads or builds gained `#[non_exhaustive]`: `Priced`, `ToolSchema`,
+  `Attempted` and `UsageNames`, with constructors for the two that callers build. `Priced` is
+  the pointed one — it has no currency field yet, and it will need one.
+- Four crates are part of the public API and a major bump of any is a breaking change here.
+  `docs/DESIGN.md` names them and what each costs.
+- The count needed a method more than it needed a number.
 
 Particular things to look at: `Protocol` and `Tool` are extension points and should stay;
 helper functions inside the providers should not be public unless somebody outside would call

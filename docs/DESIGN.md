@@ -417,6 +417,54 @@ its users' text.
 
 ---
 
+## Four crates are part of the public API, and a major bump of any is a breaking change
+
+Found by reading the surface rather than the manifest (#19). These types appear in signatures
+callers write, so they are promises even though nothing says so at the call site:
+
+| Crate | Where it shows | What a major bump costs |
+|---|---|---|
+| `serde_json` | `Value` in `ToolSchema::parameters`, `ContentBlock::ToolUse::input` and `Opaque::raw`, and across `Protocol` | A caller's `Value` stops being this crate's `Value` |
+| `serde` | `Serialize`/`Deserialize` on most public types | The same, for anything that round trips a request |
+| `futures-core` | `Stream` inside `EventStream` | Every `stream` implementation |
+| `reqwest` | `Client` in `Reqwest::with_client`, behind the `reqwest` feature | Only callers who build their own client |
+
+Three of the four are unavoidable and worth it: a JSON value has to be a JSON value somebody
+else can build, and a stream has to be a `Stream` other code can consume. Hiding them behind
+newtypes would mean converting at every boundary and would not remove the coupling, only
+disguise it.
+
+**What this means in practice** is that a `serde_json` 2.0 is a minor bump of this crate
+before 1.0 and a major one after, and that is a decision somebody should make deliberately
+rather than discover from a bug report. It is written down here because nothing in the
+manifest distinguishes a dependency that is an implementation detail from one that is part
+of the promise.
+
+---
+
+## How the public surface is counted
+
+The roadmap said 180 in one place and 189 in another, and neither said what it counted. Both
+were wrong in the way that matters: an unmethodical number cannot be compared to a later one,
+so it cannot tell you the surface grew.
+
+The method is now stated, and it is a command:
+
+```sh
+cargo +nightly public-api --all-features
+```
+
+That prints every public item including the trait implementations `derive` writes, which is
+the honest total and is dominated by them. What a reader of the docs meets is smaller, and
+the useful figure is whichever one you pick — as long as the next person picks the same one.
+The roadmap records both and the command that produced them.
+
+After 0.1.0 the same tool answers a better question than "how many": `cargo public-api
+--diff` against the published version says what *changed*, which is what
+`cargo-semver-checks` is in CI to enforce.
+
+---
+
 ## Nothing holds a lock across an await
 
 Every provider is immutable once built. `chat` takes `&self`, and anything shared is either

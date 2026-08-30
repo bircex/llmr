@@ -183,6 +183,7 @@ impl Requirements {
 /// arrived on the first, and a program that cannot tell them apart cannot see a provider
 /// going bad.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Attempted {
     /// Which route, as [`Route::name`] writes it.
     pub route: String,

@@ -246,11 +246,11 @@ async fn a_tool_call_survives_the_round_trip() {
         }],
     }));
 
-    let with_tools = request().with_tools(vec![ToolSchema {
-        name: "search".into(),
-        description: "search the web".into(),
-        parameters: json!({ "type": "object" }),
-    }]);
+    let with_tools = request().with_tools(vec![ToolSchema::new(
+        "search",
+        "search the web",
+        json!({ "type": "object" }),
+    )]);
     let answer = provider(Arc::clone(&transport))
         .chat(with_tools)
         .await

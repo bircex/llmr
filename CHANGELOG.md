@@ -100,6 +100,17 @@ First release. Nothing published yet.
   because "forty calls, thirty priced" is not "thirty calls"; and pricing happens once at
   record time, so a newer table cannot rewrite what an older call cost.
 
+### Narrowed
+
+- `Priced`, `ToolSchema`, `Attempted` and `UsageNames` are `#[non_exhaustive]`, with
+  constructors for the two callers build. `Priced` is the pointed one: it has no currency
+  field yet and will need one.
+- The public API's four external crates are written down in `docs/DESIGN.md` — `serde_json`,
+  `serde`, `futures-core` and `reqwest` all appear in signatures callers write, so a major
+  bump of any is a breaking change here and nothing in the manifest says so.
+- The public item count has a stated method for the first time. It was 180 in the roadmap and
+  189 in the issue, and neither said what it counted.
+
 ### Decided
 
 - **Where a gateway lives** (#29). The top level of `providers::` names who you reach and
