@@ -766,8 +766,6 @@ nothing in it.
 
 ---
 
-<<<<<<< HEAD
-=======
 ## A command line preset is four claims about somebody else's program
 
 What to run, where the answer is in the JSON, what the usage fields are called, and what the
@@ -838,7 +836,6 @@ gated environment, never on a push.
 
 ---
 
->>>>>>> cbff257 (fix: a command line preset checked against what the tool really prints)
 ## Naming and prose
 
 Tests are named after the claim they make, not the function they call.
