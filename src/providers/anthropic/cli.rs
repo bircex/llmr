@@ -12,10 +12,30 @@ pub const PROGRAM: &str = "claude";
 
 /// What `claude --output-format json` prints.
 ///
+/// **Checked against a recorded run**, not against the documentation. `claude 2.1.196`, on
+/// 2026-08-31, printed an envelope kept in this repository at
+/// `tests/recorded/claude-code.json`, and `tests/what_a_command_line_tool_prints.rs` holds
+/// this preset to it.
+///
 /// The answer is at `/result` and the usage at `/usage`, spelled the way Anthropic spells it
-/// everywhere else.
+/// everywhere else. The recorded run settles the question that matters about those names:
+/// `input_tokens` there was 4685 with `cache_creation_input_tokens` at 20208 beside it, so
+/// it is the **uncached remainder** and not the whole prompt, which is what
+/// [`crate::Usage::input_tokens`] means. Getting that backwards produces a number that looks
+/// right and is not.
+///
+/// `/stop_reason` is read because the recorded run has one. Before that it was not, and
+/// every reply from this tool came back [`crate::StopReason::Other`], which is not
+/// [complete](crate::StopReason::is_complete): a caller asking whether an answer finished was
+/// told "no" for every call it ever made.
+///
+/// The envelope also carries `total_cost_usd`, which nothing here reads. There is nowhere in
+/// [`crate::ChatResponse`] to put a cost a tool worked out itself, and inventing one is a
+/// larger decision than a preset.
 pub fn envelope() -> Envelope {
-    Envelope::at("/result").with_usage("/usage", UsageNames::anthropic())
+    Envelope::at("/result")
+        .with_stop_reason("/stop_reason")
+        .with_usage("/usage", UsageNames::anthropic())
 }
 
 /// A provider that runs the Claude Code tool.

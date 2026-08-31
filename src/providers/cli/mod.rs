@@ -165,6 +165,7 @@ impl ProcessRunner for Spawning {
 pub struct Envelope {
     answer: String,
     usage: Option<String>,
+    stop_reason: Option<String>,
     names: UsageNames,
 }
 
@@ -226,8 +227,32 @@ impl Envelope {
         Self {
             answer: answer.into(),
             usage: None,
+            stop_reason: None,
             names: UsageNames::anthropic(),
         }
+    }
+
+    /// Reads why the model stopped from a string at this pointer.
+    ///
+    /// Without it every reply from this tool is [`StopReason::Other`], which is the honest
+    /// answer for a tool that does not say and the wrong one for a tool that does. The
+    /// difference matters: `Other` is not
+    /// [complete](crate::StopReason::is_complete), so a caller checking whether an answer
+    /// finished is told "no" for every call, on every turn, forever.
+    ///
+    /// The strings are Anthropic's, because that is the vocabulary the vendor tools print:
+    /// `end_turn`, `tool_use`, `stop_sequence`, `max_tokens`, `refusal`, `pause_turn`,
+    /// `model_context_window_exceeded`. Anything else stays `Other` rather than being mapped
+    /// to the nearest one, for the reason the protocol does the same: guessing reports a
+    /// truncated reply as a finished one.
+    ///
+    /// **Only set this against a recorded run.** A pointer to a field the tool does not
+    /// print reads as nothing, which is the same as not setting it, and a pointer to the
+    /// wrong field reads as `Other` for every reply. Neither fails loudly.
+    #[must_use]
+    pub fn with_stop_reason(mut self, pointer: impl Into<String>) -> Self {
+        self.stop_reason = Some(pointer.into());
+        self
     }
 
     /// Reads usage from an object at this pointer, under these names.
@@ -270,6 +295,29 @@ pub struct LocalCli {
     /// Crate visible so a vendor preset's own tests can assert it shipped with one. Not
     /// public: an accessor widened for a test is public surface forever.
     pub(crate) probe: Option<Vec<String>>,
+}
+
+/// The reason a vendor tool printed, in the vocabulary the vendor tools print.
+///
+/// The same strings and the same rule as
+/// [`providers::anthropic::api`](crate::providers::anthropic::api): a reason this crate has
+/// not seen stays [`StopReason::Other`] rather than being mapped to the nearest one, because
+/// guessing reports a truncated reply as a finished one.
+///
+/// Written here rather than reused from there because that function is private to a protocol
+/// behind a feature, and a command line tool is not that protocol: it prints a JSON envelope
+/// of its own making that happens to borrow the vocabulary.
+fn read_stop(reason: &str) -> StopReason {
+    match reason {
+        "end_turn" => StopReason::EndTurn,
+        "tool_use" => StopReason::ToolUse,
+        "stop_sequence" => StopReason::StopSequence,
+        "max_tokens" => StopReason::MaxTokens,
+        "refusal" => StopReason::Refusal,
+        "pause_turn" => StopReason::PauseTurn,
+        "model_context_window_exceeded" => StopReason::ContextWindowExceeded,
+        _ => StopReason::Other,
+    }
 }
 
 /// How long a probe may take before it is given up on.
@@ -471,8 +519,8 @@ impl Provider for LocalCli {
             )));
         }
 
-        let (text, usage) = match &self.envelope {
-            None => (printed, Usage::absent()),
+        let (text, usage, stopped) = match &self.envelope {
+            None => (printed, Usage::absent(), None),
             Some(envelope) => {
                 let parsed: serde_json::Value = serde_json::from_str(&printed).map_err(|e| {
                     Error::Unreadable(format!(
@@ -518,7 +566,17 @@ impl Provider for LocalCli {
                     }
                 };
 
-                (answer, usage)
+                // Read only where a recorded run showed the tool prints one. A tool that
+                // says nothing stays `None`, which becomes `Other` below, and that is the
+                // honest answer rather than a completed turn.
+                let stopped = envelope
+                    .stop_reason
+                    .as_deref()
+                    .and_then(|pointer| parsed.pointer(pointer))
+                    .and_then(serde_json::Value::as_str)
+                    .map(read_stop);
+
+                (answer, usage, stopped)
             }
         };
 
@@ -529,19 +587,24 @@ impl Provider for LocalCli {
             )));
         }
 
-        Ok(ChatResponse::new(
+        let reply = ChatResponse::new(
             Message {
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text(text)],
             },
-            // A command line tool does not say why it stopped. Reported as unknown rather
-            // than as a completed turn, because a truncated reply would otherwise look
-            // finished.
-            StopReason::Other,
+            // What the tool said, when it said. Unknown rather than a completed turn when it
+            // did not, because a truncated reply would otherwise look finished.
+            stopped.unwrap_or(StopReason::Other),
             usage,
             request.model.clone(),
-        )
-        .with_stop_details("a command line tool does not report why it stopped"))
+        );
+
+        Ok(match stopped {
+            Some(_) => reply,
+            None => {
+                reply.with_stop_details("this command line tool does not report why it stopped")
+            }
+        })
     }
 
     /// Runs the probe, and reads what a running program does and does not prove.
