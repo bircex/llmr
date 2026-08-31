@@ -5,6 +5,29 @@ change is a minor bump.
 
 ## Unreleased
 
+### Added
+
+- `Envelope::with_stop_reason`, so a command line preset can read why the model stopped when
+  the tool prints it. A reason this crate has not seen stays `Other` rather than being mapped
+  to the nearest one. (#46)
+
+### Fixed
+
+- The Claude Code preset reported `StopReason::Other` for every reply, on the grounds that a
+  command line tool does not say why it stopped. A recorded run shows it does: the envelope
+  carries `stop_reason`. `Other` is not `is_complete`, so a caller asking whether an answer
+  finished was told "no" for every call it ever made. `Envelope::with_stop_reason` reads it,
+  and a tool that says nothing is still `Other`. (#46)
+
+### Testing
+
+- `tests/what_a_command_line_tool_prints.rs`, which drives each command line preset through a
+  scripted runner replaying a real recorded envelope, and puts both presets through the
+  contract suite for the first time. `tests/recorded/claude-code.json` is the recording:
+  `claude 2.1.196`, 2026-08-31. It settles the question a fixture cannot, which is whether
+  the tool's `input_tokens` is the whole prompt or the uncached remainder. It is the
+  remainder, which is what this crate means, so those names were right. (#46)
+
 ### Documentation
 
 - `docs/BEDROCK.md`, the worked example the signing decision needed: what SigV4 covers and in

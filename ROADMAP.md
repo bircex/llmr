@@ -9,16 +9,23 @@ reason.
 
 ## Where it stands
 
-As of the second embedder, which is what turned the first one's trait into a specification.
+As of the twelve issues filed after 0.1.0 was cut. See **After 0.1.0** below for what each
+of them was and where it got to.
 
 | | |
 |---|---:|
-| Source | 11,243 lines across 36 files |
-| Tests | 304 passing, all features · 200 on the default set |
-| Public items | 6,854 all in, 1,440 hand written · see below |
-| Dependency tree, default features | 31 crates |
+| Source | 13,843 lines across 38 files |
+| Tests | 400 passing, all features · 283 on the default set |
+| Public items | 6,854 all in, 1,440 hand written · **not re-measured since the second embedder** |
+| Dependency tree, default features | 35 crates |
 | Published | no |
 | CI on GitHub | runs, and is green as of phase 4 |
+
+The public item row is marked rather than updated, because re-running it needs a nightly
+toolchain and `cargo public-api`, and a number carried forward under a caption that does not
+say so is the exact thing the note below this table was written about. It has certainly
+grown: `Breaker`, `Budget`, `Order`, `Recheck`, `Spending` and a dozen methods landed since.
+Re-run the two commands below before the next release and replace the row.
 
 Everything below is green: `cargo fmt --check`, clippy under three feature combinations,
 `cargo doc` with warnings denied under two feature sets, every feature built alone, and the
@@ -303,9 +310,58 @@ Not planned in detail, and roughly in this order.
 | ~~Gemini~~ · **done** | `providers::gemini::api`. Writing it found two holes in `Protocol`: `chat_url` had no model, and nothing could say the streaming URL differs |
 | ~~Bedrock~~ · **done** | `providers::bedrock::api`, under the gateway as #29 decided, and the first use of `CloudPartner`. SigV4 is the transport's, not the protocol's |
 | ~~Images~~ · **done** | `ContentBlock::Image`, refused rather than stripped where a reach cannot carry one |
-| More CLI presets | Gemini CLI and whatever else appears (#24). A preset is a file and it goes beside its vendor's other reaches — but it needs a recorded `--output-format json` sample first, because inventing the usage field names reports a number that looks right and is not |
+| More CLI presets | Gemini CLI and whatever else appears (#24, #46). A preset is a file and it goes beside its vendor's other reaches — but it needs a recorded `--output-format json` sample first, because inventing the usage field names reports a number that looks right and is not |
 | ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor, and refuses to be one number when the run mixes currencies |
 | ~~Embeddings~~ · **done** | `embed`, behind a feature, as #26 decided. A vector carries the model that made it and `similarity` refuses across two — the currency rule in a different type. Two implementations, agreeing on nothing at the wire and passing one contract |
+
+## After 0.1.0: twelve issues, and where each got to
+
+Filed once 0.1.0 was cut, ordered by what an agentic layer that executes work and returns
+what it cost actually needs. Ten are finished. Two are finished as far as anything in this
+repository can take them, and both are blocked on the same thing: a machine with a key or a
+tool on it.
+
+| | State |
+|---|---|
+| #37 No provider has ever met a real endpoint | **suite in, calls not made.** `tests/against_a_real_endpoint.rs` and a dispatched workflow exist. Nobody has run them with a key |
+| #38 A CLI run's cost is always a floor | **done.** `UsageCoverage::Estimated`, `Total::About`, `Ledger::record_subscription`, `Provider::subscription`, `Ledger::summary` |
+| #39 Ship dated registry and price tables | **done.** OpenAI and Gemini tables read off vendor pages, plus `PriceBook::age` and `needs_rechecking` so staleness is findable |
+| #40 Budget | **done.** `Router::within`, refusing before the money goes, with what it cannot promise written down |
+| #41 `Router::stream` | **done.** Falls through before the first event and never after it |
+| #42 The router has no memory | **done.** `Breaker`, atomics, and a reason for every skip |
+| #43 `preflight` answers and nothing reads it | **done.** `Denied` rests a route, `Unknown` still changes nothing |
+| #44 Selection is list order and nothing else | **done.** `Order::Cheapest` and `Order::Healthiest`, with an unpriced route sorted last rather than free |
+| #45 No deadline across the whole attempt | **done.** `Router::within_deadline`, answering `Error::Timeout` |
+| #46 More command line presets | **half done.** Claude Code is now checked against a real recorded envelope, which found a stop reason bug. Codex and Gemini CLI still need a recorded run |
+| #47 Bedrock has no way to be called | **done.** `docs/BEDROCK.md`, and the wrapper as a compiled doctest |
+| #48 Hedging, and the ledger surviving it | **done.** `Ledger::record_cancelled`, and the decision written down |
+
+### What is left, precisely
+
+**#37 needs a key.** `ANTHROPIC_API_KEY=... cargo test --all-features --test
+against_a_real_endpoint -- --ignored --nocapture`, or the `Against a real endpoint` workflow
+with the secrets set. Set `LLMR_RECORD` and commit what comes back. Until somebody does,
+"the providers work" is a claim nobody has tested, and that is the largest remaining risk in
+the crate.
+
+**#46 needs the tools.** One recorded run each:
+
+```sh
+echo "say ok" | codex exec --json
+echo "say ok" | gemini --output-format json
+```
+
+Paste them into `tests/recorded/`, add a case to
+`tests/what_a_command_line_tool_prints.rs`, and fix whatever the presets turn out to have
+been reading wrongly. Claude Code's recording found one bug in three fields, so assume the
+others have one too. Guessing is not an option: the numbers arrive, they look plausible, and
+every cost report built on them is wrong.
+
+**One thing the Claude Code recording turned up and nobody has decided about.** Its envelope
+carries `total_cost_usd`, a figure the tool worked out itself. Nothing reads it, because
+there is nowhere in `ChatResponse` to put a cost that did not come from a `PriceBook`, and
+adding one is a larger decision than a preset: it would be a second source of truth for the
+one number this crate exists to get right.
 
 ## Things known to be missing, said in the README
 
