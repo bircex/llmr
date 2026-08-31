@@ -13,6 +13,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod breaker;
+pub mod budget;
 pub mod chat;
 pub mod cost;
 
@@ -37,6 +38,7 @@ pub mod providers;
 pub mod testkit;
 
 pub use breaker::Breaker;
+pub use budget::{Budget, Spending};
 pub use chat::{
     ChatRequest, ChatResponse, ContentBlock, Effort, Event, EventStream, Generation, ImageSource,
     Message, Needs, Role, StopReason, Thinking, ToolSchema, Transcript,
