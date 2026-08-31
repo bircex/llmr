@@ -16,6 +16,52 @@
 //! for. Every route through here reports that reach rather than `FirstPartyApi`, so a
 //! program deciding where a prompt may go gets the true answer.
 //!
+//! # Making a call
+//!
+//! There is no key argument and there is deliberately no SigV4 here. Read
+//! [`api`]'s header for why, and **`docs/BEDROCK.md` for the worked example**: what has to be
+//! signed and in what order, where the region comes from, what the colon in a model id does
+//! to a canonical URI, and why credentials that rotate belong in the transport.
+//!
+//! The seam is [`crate::HttpTransport`], and the wrapper is small enough to read:
+//!
+//! ```no_run
+//! use llmr::transport::{ByteStream, HttpRequest, HttpResponse, HttpTransport};
+//! use std::sync::Arc;
+//!
+//! /// Whatever you already use to sign, behind one method.
+//! trait Signer: Send + Sync {
+//!     /// Returns the request with `x-amz-date`, `authorization` and, for temporary
+//!     /// credentials, `x-amz-security-token` attached.
+//!     fn sign(&self, request: HttpRequest) -> llmr::Result<HttpRequest>;
+//! }
+//!
+//! /// Signs, then hands the request to whatever really sends it.
+//! struct Signing {
+//!     inner: Arc<dyn HttpTransport>,
+//!     signer: Arc<dyn Signer>,
+//! }
+//!
+//! #[async_trait::async_trait]
+//! impl HttpTransport for Signing {
+//!     async fn send(&self, request: HttpRequest) -> llmr::Result<HttpResponse> {
+//!         self.inner.send(self.signer.sign(request)?).await
+//!     }
+//!
+//!     // Both, always. A wrapper that signs one and forwards the other works until the
+//!     // first call down the unsigned path, and then fails with a 403 that says nothing
+//!     // about which of the two was wrong.
+//!     async fn send_streaming(&self, request: HttpRequest) -> llmr::Result<ByteStream> {
+//!         self.inner.send_streaming(self.signer.sign(request)?).await
+//!     }
+//! }
+//! ```
+//!
+//! Signing is the last thing that touches the request, because a signature covers the
+//! request as it will be sent. That is why this is a transport wrapper and not a step
+//! anywhere earlier: by the time [`crate::HttpTransport`] is handed an
+//! [`HttpRequest`](crate::HttpRequest), the URL is final and the protocol's headers are on.
+//!
 //! # One family so far
 //!
 //! Bedrock is one address for many vendors' models, and each family takes a different body.

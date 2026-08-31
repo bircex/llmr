@@ -34,6 +34,11 @@ change is a minor bump.
 
 ### Documentation
 
+- `docs/BEDROCK.md`, the worked example the signing decision needed: what SigV4 covers and in
+  what order to attach it, why the transport wrapper is the last thing to touch the request,
+  the colon in a Bedrock model id and what it does to a canonical URI, where the region comes
+  from, and why rotating credentials belong in the transport. The wrapper is also a compiled
+  doctest on `providers::bedrock`, so the half that touches this crate's API cannot rot. (#47)
 - `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
   have cost, and the ledger debt it leaves. (#48)
 
