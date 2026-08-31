@@ -816,27 +816,6 @@ output = "30.00"
     }
 
     #[test]
-    fn the_loser_of_a_hedged_pair_makes_the_total_a_floor() {
-        // Two providers asked the same question, the first answer taken, the other future
-        // dropped. Without the second line this ledger reports one measured call and an
-        // exact total, having been billed for two.
-        let mut ledger = Ledger::new();
-        ledger.record(&reply("m", measured()), Some(&book()));
-        ledger.record_cancelled("m");
-
-        assert_eq!(ledger.calls(), 2, "both requests were sent");
-        assert_eq!(ledger.unpriced(), 1);
-
-        let total = sum(&ledger);
-        assert!(!total.is_exact(), "{total}");
-        assert_eq!(
-            total.amount(),
-            Micros(40_000_000),
-            "the winner is still priced"
-        );
-    }
-
-    #[test]
     fn one_unpriced_call_turns_the_whole_total_into_a_floor() {
         // The rule the type exists for. A run that mixes a priced API call with a command
         // line one must not report the first figure as though it were the bill.

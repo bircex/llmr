@@ -47,6 +47,8 @@ change is a minor bump.
   the tool's `input_tokens` is the whole prompt or the uncached remainder. It is the
   remainder, which is what this crate means, so those names were right. (#46)
 
+### Changed
+
 - **Breaking:** `Usage` has a new `estimated` field, `Line` a new `subscription` field, and
   `Total` a new `About` variant. A `match` on `Total` needs the arm; both structs are
   `#[non_exhaustive]`, so only a struct literal inside this crate had to change. (#38)
