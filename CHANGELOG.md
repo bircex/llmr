@@ -7,6 +7,10 @@ change is a minor bump.
 
 ### Added
 
+- `Ledger::record_cancelled`, for a call that went out and whose reply was never read. The
+  case is hedging: two providers asked the same question, the loser's future dropped. That
+  request was billed, no `ChatResponse` came back, so nothing called `Ledger::record` and the
+  ledger reported one measured call and an `Exact` total. (#48)
 - `Envelope::with_stop_reason`, so a command line preset can read why the model stopped when
   the tool prints it. A reason this crate has not seen stays `Other` rather than being mapped
   to the nearest one. (#46)
@@ -27,6 +31,11 @@ change is a minor bump.
   `claude 2.1.196`, 2026-08-31. It settles the question a fixture cannot, which is whether
   the tool's `input_tokens` is the whole prompt or the uncached remainder. It is the
   remainder, which is what this crate means, so those names were right. (#46)
+
+### Documentation
+
+- `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
+  have cost, and the ledger debt it leaves. (#48)
 
 ## 0.1.0 — 2026-08-30
 
