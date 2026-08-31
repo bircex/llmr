@@ -7,6 +7,14 @@ change is a minor bump.
 
 ### Added
 
+- `Breaker` and `Router::breaking`, so a route that has been failing is skipped for a while
+  instead of being tried first, waited on and fallen through in every request. It opens for a
+  failure about the provider and never for one about the request, honours a `Retry-After`
+  exactly, leaves a rejected credential alone for a long time, and reopens on its own because
+  time does it rather than anything having to be called. Off unless you ask, like `Retry`.
+  (#42)
+- `Router::resting`, which routes are currently being skipped and for how long, so the same
+  fact is readable without making a request. (#42)
 - `Router::stream`, so the crate routes a streamed call and not only a whole one. It falls
   through a provider that fails while the stream is opening and never after the first event
   has reached the caller: continuing a half written answer on a second model produces text
@@ -43,6 +51,8 @@ change is a minor bump.
 
 ### Documentation
 
+- `docs/DESIGN.md` records why the circuit uses atomics and a monotonic clock, which failures
+  open it, and why nothing has to reopen one. (#42)
 - `docs/DESIGN.md` records why a streamed route stops being replaceable at the first event.
   (#41)
 - `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
