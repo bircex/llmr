@@ -25,6 +25,14 @@ change is a minor bump.
 
 ### Testing
 
+- `tests/against_a_real_endpoint.rs`, an opt-in suite that calls each shipped provider for
+  real. Every test is `#[ignore]` and a missing key skips rather than fails. It asserts the
+  things a fixture cannot: usage that came back `Exact` rather than `Partial`, a reply that
+  named a real model, a stop reason that mapped rather than fell back, and a streamed call
+  agreeing with a whole one against the wire. `LLMR_RECORD` writes what came back, so a real
+  reply can be committed as a fixture. (#37)
+- A manually dispatched `Against a real endpoint` workflow, gated behind an environment, so
+  the suite is runnable rather than theoretical and never runs on a push. (#37)
 - `tests/what_a_command_line_tool_prints.rs`, which drives each command line preset through a
   scripted runner replaying a real recorded envelope, and puts both presets through the
   contract suite for the first time. `tests/recorded/claude-code.json` is the recording:
