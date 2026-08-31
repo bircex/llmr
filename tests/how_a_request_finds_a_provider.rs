@@ -1047,3 +1047,171 @@ async fn preflight_without_a_breaker_still_only_reports() {
     let _ = router.chat(request(), Requirements::default()).await;
     assert_eq!(denied.chats.load(Ordering::SeqCst), 1, "tried, as before");
 }
+
+// ---- Order -----------------------------------------------------------------------------
+//
+// The crate knew what every route charged and never consulted any of it when choosing one.
+
+use llmr::{Order, PriceBook};
+
+/// A book pricing one model, at these rates per million.
+fn priced(model: &str, input: &str, output: &str) -> Arc<PriceBook> {
+    let toml = format!(
+        r#"
+id             = "test"
+provider       = "test"
+effective_from = "2026-08-01"
+source         = "a fixture"
+verified_at    = "2026-08-31"
+currency       = "USD"
+
+[[price]]
+model  = "{model}"
+input  = "{input}"
+output = "{output}"
+"#
+    );
+    Arc::new(PriceBook::parse(&toml).unwrap_or_else(|e| panic!("the fixture book: {e}")))
+}
+
+#[tokio::test]
+async fn cheapest_picks_by_price_rather_than_by_the_order_you_wrote() {
+    let dear = Stub::serving("dear", "m", plain(Reach::FirstPartyApi));
+    let cheap = Stub::serving("cheap", "m", plain(Reach::FirstPartyApi));
+
+    let router = Router::new(vec![
+        Route::new(dear.clone(), "m").priced_by(priced("m", "15.00", "75.00")),
+        Route::new(cheap.clone(), "m").priced_by(priced("m", "1.00", "5.00")),
+    ])
+    .ordering(Order::Cheapest);
+
+    let routed = router
+        .chat(request(), Requirements::default())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    assert_eq!(routed.route, "cheap/m");
+    assert_eq!(dear.calls(), 0);
+}
+
+#[tokio::test]
+async fn an_unpriced_route_is_never_chosen_because_it_looked_free() {
+    // The trap. `PriceBook::price` answers None for a model it does not list, and the
+    // obvious implementation reads None as zero and puts every unpriced route first, which
+    // is precisely backwards and confidently so.
+    let unpriced = Stub::serving("unpriced", "m", plain(Reach::FirstPartyApi));
+    let dear = Stub::serving("dear", "m", plain(Reach::FirstPartyApi));
+
+    let router = Router::new(vec![
+        Route::new(unpriced.clone(), "m"),
+        Route::new(dear.clone(), "m").priced_by(priced("m", "15.00", "75.00")),
+    ])
+    .ordering(Order::Cheapest);
+
+    let routed = router
+        .chat(request(), Requirements::default())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    assert_eq!(
+        routed.route, "dear/m",
+        "the expensive route with a price beats the one nobody can price"
+    );
+    assert_eq!(unpriced.calls(), 0);
+}
+
+#[tokio::test]
+async fn a_book_without_a_row_for_the_model_is_unpriced_too() {
+    // A route can carry a whole price book and still be unpriced for the model it serves,
+    // and that is the same fact as having no book at all.
+    let wrong_book = Stub::serving("wrong-book", "m", plain(Reach::FirstPartyApi));
+    let priced_route = Stub::serving("priced", "m", plain(Reach::FirstPartyApi));
+
+    let router = Router::new(vec![
+        Route::new(wrong_book.clone(), "m").priced_by(priced("something-else", "0.01", "0.01")),
+        Route::new(priced_route.clone(), "m").priced_by(priced("m", "15.00", "75.00")),
+    ])
+    .ordering(Order::Cheapest);
+
+    let routed = router
+        .chat(request(), Requirements::default())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(routed.route, "priced/m");
+}
+
+#[tokio::test]
+async fn an_ordering_never_overrules_what_the_request_needs() {
+    // Cheapest among the routes that can serve it, not cheapest full stop. A router that
+    // reordered past a capability would pay less for a reply that ignored half the request.
+    let cheap_but_plain = Stub::serving("cheap", "m", plain(Reach::FirstPartyApi));
+    let dear_with_tools = Stub::serving("dear", "m", plain(Reach::FirstPartyApi).with_tools());
+
+    let router = Router::new(vec![
+        Route::new(cheap_but_plain.clone(), "m").priced_by(priced("m", "0.10", "0.10")),
+        Route::new(dear_with_tools.clone(), "m").priced_by(priced("m", "99.00", "99.00")),
+    ])
+    .ordering(Order::Cheapest);
+
+    let routed = router
+        .chat(with_tools(), Requirements::of(&with_tools()))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    assert_eq!(routed.route, "dear/m");
+    assert_eq!(cheap_but_plain.calls(), 0);
+}
+
+#[tokio::test]
+async fn healthiest_puts_the_route_that_has_been_failing_last() {
+    let bad = Stub::failing(
+        "bad",
+        "m",
+        plain(Reach::FirstPartyApi),
+        Error::Transient("503".into()),
+    );
+    let good = Stub::serving("good", "m", plain(Reach::FirstPartyApi));
+
+    // No breaker. The count is kept anyway, so this works on its own.
+    let router = Router::new(vec![
+        Route::new(bad.clone(), "m"),
+        Route::new(good.clone(), "m"),
+    ])
+    .ordering(Order::Healthiest);
+
+    for _ in 0..3 {
+        let routed = router
+            .chat(request(), Requirements::default())
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(routed.route, "good/m");
+    }
+
+    assert_eq!(
+        bad.calls(),
+        1,
+        "tried once, and then sorted below the route that works"
+    );
+}
+
+#[tokio::test]
+async fn an_ordering_that_cannot_tell_two_routes_apart_keeps_the_order_you_wrote() {
+    // A stable sort, so a router where nothing has failed and nothing is priced behaves
+    // exactly like the one people already have.
+    let first = Stub::serving("first", "m", plain(Reach::FirstPartyApi));
+    let second = Stub::serving("second", "m", plain(Reach::FirstPartyApi));
+
+    for order in [Order::Cheapest, Order::Healthiest, Order::AsListed] {
+        let router = Router::new(vec![
+            Route::new(first.clone(), "m"),
+            Route::new(second.clone(), "m"),
+        ])
+        .ordering(order);
+
+        let routed = router
+            .chat(request(), Requirements::default())
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(routed.route, "first/m", "under {order:?}");
+    }
+}
