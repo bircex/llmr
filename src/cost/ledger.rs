@@ -18,6 +18,12 @@
 //! the [`Priced`], which carries the edition that produced it. Re-pricing later against a
 //! newer table would destroy the record the ledger exists to keep: what it cost *then*.
 //!
+//! **A call whose reply was never read still happened.** Drop the losing future of a hedged
+//! pair and the request went out and will be billed, but no reply came back, so nothing
+//! calls [`Ledger::record`] and the ledger says the run was one measured call. Say
+//! [`Ledger::record_cancelled`] instead. This is the rule that is easiest to miss, because
+//! nothing in the code that dropped the future looks like a cost.
+//!
 //! **A sum needs one currency.** [`Micros`] is an integer, and two of them add whether or not
 //! they are the same money. So [`Ledger::total`] answers `None` when the run was priced in
 //! more than one, and [`Ledger::totals`] gives one figure per currency instead. A number that
@@ -142,12 +148,46 @@ impl Ledger {
     ///
     /// For a reach with no price list at all, said out loud rather than arrived at by
     /// passing `None` and hoping.
+    ///
+    /// Not the method for a call whose reply was never read. That is
+    /// [`Ledger::record_cancelled`], which does the same thing under a name that says what
+    /// happened.
     pub fn record_unpriced(&mut self, model: impl Into<ModelId>, usage: Usage) {
         self.lines.push(Line {
             model: model.into(),
             usage,
             cost: None,
         });
+    }
+
+    /// Records a call that went out and whose reply was never read.
+    ///
+    /// The case this exists for is hedging: two providers are asked the same question, the
+    /// first answer wins, and the loser's future is dropped. That request was sent and it
+    /// will be billed. No [`ChatResponse`] ever came back, so there is no usage to record
+    /// and [`Ledger::record`] is never called for it.
+    ///
+    /// Without this line the ledger holds one call, that call was measured, and
+    /// [`Ledger::total`] answers [`Total::Exact`]. A confident figure that is wrong by
+    /// whatever the losing call cost, which is the one failure this whole module exists to
+    /// prevent.
+    ///
+    /// ```
+    /// use llmr::cost::ledger::Ledger;
+    /// let mut ledger = Ledger::new();
+    /// ledger.record_cancelled("claude-sonnet-5");
+    ///
+    /// assert_eq!(ledger.calls(), 1);
+    /// assert_eq!(ledger.unpriced(), 1);
+    /// ```
+    ///
+    /// Recorded as [`Usage::absent`], never as zero, for the same reason everything else
+    /// unmeasured is. The distinction from [`Ledger::record_unpriced`] is only in the name:
+    /// that one is a reach with no price list, this one is a reply nobody read. They cost
+    /// the ledger the same thing and they are different mistakes to make, so a report that
+    /// says which is a report somebody can act on.
+    pub fn record_cancelled(&mut self, model: impl Into<ModelId>) {
+        self.record_unpriced(model, Usage::absent());
     }
 
     /// Takes everything from another ledger.
@@ -376,6 +416,27 @@ output = "30.00"
         assert_eq!(ledger.unpriced(), 0);
         // Two calls of 10 in and 30 out, per million, on a million each.
         assert_eq!(total.amount(), Micros(80_000_000));
+    }
+
+    #[test]
+    fn the_loser_of_a_hedged_pair_makes_the_total_a_floor() {
+        // Two providers asked the same question, the first answer taken, the other future
+        // dropped. Without the second line this ledger reports one measured call and an
+        // exact total, having been billed for two.
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", measured()), Some(&book()));
+        ledger.record_cancelled("m");
+
+        assert_eq!(ledger.calls(), 2, "both requests were sent");
+        assert_eq!(ledger.unpriced(), 1);
+
+        let total = sum(&ledger);
+        assert!(!total.is_exact(), "{total}");
+        assert_eq!(
+            total.amount(),
+            Micros(40_000_000),
+            "the winner is still priced"
+        );
     }
 
     #[test]
