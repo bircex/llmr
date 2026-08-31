@@ -70,6 +70,17 @@ pub enum Error {
     #[error("transient: {0}")]
     Transient(String),
 
+    /// The call was not made, because it would have taken the run over its cap.
+    ///
+    /// Never a provider's answer. Nothing was sent and nothing was billed: this is
+    /// [`crate::Budget`] refusing before the money goes, which is the only place a cap can
+    /// be enforced rather than reported.
+    ///
+    /// Not retryable. The same request against the same spent budget is refused again, and
+    /// what has to change is the cap or the run.
+    #[error("over budget: {0}")]
+    OverBudget(String),
+
     /// The provider answered, and the answer could not be read.
     ///
     /// A successful status code with a body this crate cannot parse is a failure. Treating

@@ -12,6 +12,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod breaker;
+pub mod budget;
 pub mod chat;
 pub mod cost;
 
@@ -35,6 +37,8 @@ pub mod providers;
 #[cfg_attr(docsrs, doc(cfg(feature = "testkit")))]
 pub mod testkit;
 
+pub use breaker::Breaker;
+pub use budget::{Budget, Spending};
 pub use chat::{
     ChatRequest, ChatResponse, ContentBlock, Effort, Event, EventStream, Generation, ImageSource,
     Message, Needs, Role, StopReason, Thinking, ToolSchema, Transcript,
@@ -47,6 +51,6 @@ pub use model::{ModelCapabilities, ModelId, Reach};
 pub use provider::{Access, Provider};
 pub use registry::Registry;
 pub use retry::{Delay, Retry};
-pub use router::{Requirements, Route, Routed, Router};
+pub use router::{Order, Requirements, Route, Routed, Router};
 pub use secret::Secret;
 pub use transport::{HttpRequest, HttpResponse, HttpTransport, Method};

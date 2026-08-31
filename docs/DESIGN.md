@@ -627,6 +627,197 @@ accident, because a refusal arrives looking like any other error.
 `Routed::fell_through` carries what was tried first and why. A non empty list on a
 *successful* call is a provider degrading while nothing is failing.
 
+### A budget refuses before the money goes, and says what it cannot promise
+
+`Ledger` records what a run cost and nothing stopped it. `Router::within` is the cap, and
+three things decide whether it means anything.
+
+**It is checked before a request goes out.** A cap checked after the call is a report. What
+can actually be checked beforehand is two things, and both are real numbers rather than
+guesses: whether anything is left, and whether the reply alone could overrun what is left.
+The second needs `max_tokens`, and it is an upper bound, which is what makes it safe to
+refuse on: no reply is longer than the limit it was given.
+
+**The prompt is not priced, because that needs a token count.** Same decision as everywhere
+else: a tokeniser that is close produces numbers that look right and are not. So a budget is
+a cap on what a run may *start*, and the last call can carry it over by whatever the prompt
+cost. Said in the docs rather than implied, because a cap that quietly does not hold is worse
+than no cap.
+
+**An unpriced route is refused by default.** A route with no price book cannot be measured
+against a cap at all, and running it would break the one promise the budget makes without
+anything noticing. `Budget::allowing_unpriced` is how a caller says otherwise, out loud, and
+what comes back is a `Spending::unmeasured` count that makes `spent` read as the floor it is.
+
+**Another currency is refused, not converted.** `Ledger::total` already answers `None` for a
+mixed run, and for the same reason: an exchange rate has a date and a source exactly like a
+price, and inventing one produces a figure nobody can audit.
+
+**`Error::OverBudget` is its own variant.** Not the last provider error, because there is no
+provider error: nothing was sent and nothing was billed. It opens no circuit either, for the
+same reason. Adding it forced that decision, which is what the missing wildcard arm in
+`Breaker::opening_for` is for.
+
+**Two races are admitted rather than hidden.** Concurrent tasks can both see room for one
+call and both spend it, because holding a reservation across the call means holding a lock
+across an await. And a streamed call cannot be charged by the router at all, because its
+usage arrives in a `Transcript` the router never sees: `Router::stream` counts one as
+unmeasured, and `Router::charge` is how the caller settles it against the same book.
+
+---
+
+### A deadline bounds the whole attempt, and says so by its type
+
+A transport can have a timeout and a `Retry` policy can have delays, and nothing bounded the
+sum. Three routes and a policy of two attempts each is six timeouts plus the waits between
+them, so a caller waiting on an agent had no way to say "answer or fail within twenty
+seconds". `Router::within_deadline` is that bound.
+
+**Checked before every attempt and before every retry wait**, not only at the start. A
+`Retry` policy that says three attempts is a maximum rather than a promise, so when the two
+disagree the deadline wins: a wait that would run past it is not taken.
+
+**There is no minimum attempt length.** Any time left at all is enough to try again, because
+a minimum would be this crate guessing how long a call takes, and a guess that stopped an
+attempt which would have finished is worse than one attempt that overruns.
+
+**It cannot cut short a call already in flight.** Cancelling one needs a timer, which needs a
+runtime, and this crate does not pick yours. The deadline bounds when a new attempt starts
+and how long the router waits between attempts; the length of a single call is the
+transport's timeout, and both need setting.
+
+**The answer is `Error::Timeout`, not the last error from a route.** A call that gave up has
+to say whether everything failed or time ran out. One of those is a provider to look at and
+the other is a deadline to raise.
+
+`Routed::fell_through` is the obvious place for "the deadline was spent after two attempts"
+and it is the wrong one: a `Routed` only exists when a reply came back, and a spent deadline
+never produces one, so the entry would be written and never read. What was tried goes on the
+span instead, under the `tracing` feature.
+
+---
+
+### Selection can be more than list order, and an unpriced route is not a free one
+
+The only policy was the order you wrote, while the crate held `PriceBook`, `Rate`, `Micros`
+and `Ledger` and consulted none of them when choosing a route. `Order` is the axis, and
+`Order::AsListed` is still the default and still what the router always did.
+
+**The requirement check comes first, whatever the ordering says.** Cheapest among the routes
+that can serve the request, not cheapest full stop. Reordering past a capability would pay
+less for a reply that ignored half of what was sent.
+
+**`Order::Cheapest` claims something about the rate and says so.** It compares the sum of a
+route's published input and output price per million tokens. It is not a prediction of what
+a request will cost: cheapest per token is not cheapest per request, because a model with a
+low rate that thinks before answering can spend more output than a dearer one that does not.
+What bounds spend is a cap, not an ordering.
+
+**An unpriced route sorts last, never first.** `PriceBook::price` answers `None` for a model
+it does not list, and the obvious implementation reads `None` as zero and puts every unpriced
+provider at the front, which is precisely backwards and confidently so. The sort key leads
+with `rate.is_none()`, and `false` sorts before `true`. A route that carries a whole book
+with no row for its model is unpriced too, which is the same fact as having no book.
+
+Sorted last rather than refused. Refusing is a different decision and belongs to whatever
+sets a spending limit, because a cap is the thing that cannot be satisfied by a call nobody
+can price.
+
+**`Order::Healthiest` works without a breaker.** The consecutive failure count is kept
+whatever the policy, because incrementing an integer costs nothing and the count is what this
+sorts on. What a `Breaker` adds is skipping a bad route entirely for a while rather than
+merely putting it further down the list.
+
+**Every sort is stable**, so routes an ordering cannot tell apart keep the order they were
+written in, and a router where nothing has failed and nothing is priced behaves exactly like
+the one people already have.
+
+---
+
+### A router that does not learn is an ordered `try` list
+
+`Router::route` started at route 0 on every call, so a provider that had been answering 503
+for ten minutes was tried first, waited on, and fallen through, for every single request.
+`Router::breaking` gives the router a memory.
+
+**Atomics, not a lock.** `chat` takes `&self` so one router can be shared across as many
+tasks as a program has, and this crate denies holding a lock across an await crate wide. Two
+tasks racing to record a failure are recording the same fact, so the race does not matter.
+
+**Monotonic, not the wall clock.** A circuit needs two times compared. `Instant` is captured
+when the router is built and everything is measured from it, so a machine whose clock steps
+backwards cannot leave a route closed for a day.
+
+**One rule about which failures count: the circuit opens for a failure about the provider and
+stays shut for a failure about the request.** A refusal is the model answering about the
+work; an invalid request will be malformed on the next route too. Closing a circuit for
+either removes a working provider for something it had nothing to do with. `Breaker`'s table
+lists all nine variants, and there is no wildcard arm: a variant added later stops the crate
+compiling until somebody decides which side it falls on.
+
+`Error::Unreadable` is the one worth arguing about, and it does not open the circuit. The
+provider answered; a single reply this crate could not parse is as likely to be one odd body
+as a provider gone bad, and the call falls through to the next route either way.
+
+**The circuit is told once per request, not once per attempt.** A `Retry` policy asking three
+times against a provider that is down is one piece of evidence, not three.
+
+**Nothing reopens a circuit, because time does.** There is no half open state and nothing to
+call. A route whose wait has passed is simply tried, and answering clears both the timer and
+the count: leaving the count would make the next failure back off as though the run of
+successes in between had not happened.
+
+**A skipped route is never skipped silently.** It goes into `fell_through` with how much
+longer it is resting and how many requests it has failed, and `Router::resting()` answers the
+same without making a request. The wait is reported as a duration rather than a wall clock
+time because formatting one would mean a date dependency this crate does not have, and
+"another 4200ms" is the number somebody acts on anyway.
+
+**When every route that could serve a request is resting, the error is `Transient`, not
+`Unsupported`.** Nothing is wrong with the request, and the difference decides whether a
+person fixes their configuration or waits.
+
+**Handed in, never assumed**, exactly like `Retry`. Not trying a provider is a decision with
+consequences a library cannot weigh, and a router that quietly stopped trying something is
+one people work around by not using the router.
+
+**`preflight` feeds it.** It used to answer an `Access` per route and nothing read the
+answer, so a route that said `Denied` at startup was tried first in every request anyway.
+Now `Denied` rests the route for `Breaker::settled`, and `Unknown` does nothing at all: that
+variant exists so "could not be checked" never reads as "refused", and acting on one here
+would undo the entire reason there are three answers instead of two. `Ready` does nothing
+either, because there is nothing to clear at startup and a `Ready` is a claim about a moment
+rather than a promise about the next request.
+
+The route is still not dropped. It is rested, which is a thing that ends by itself, so a key
+fixed while the program is running is found rather than never tried again. `fell_through`
+says "denied at preflight" rather than reporting a failure count of zero, because a count of
+zero would send somebody looking for a failure that never happened.
+
+---
+
+### A streamed route is replaceable until the first event, and not after
+
+`Router::stream` follows every rule `Router::chat` follows and adds one that only makes sense
+here. Falling through is invisible to a caller who has not seen anything yet. It stops being
+invisible the moment a chunk has been handed over: continuing on a second model produces a
+sentence neither of them wrote, in one voice, with nothing downstream able to detect it.
+Silent corruption of the answer is worse than a failed call, and a failed call is what the
+caller gets instead.
+
+The seam is real rather than assumed. `HttpTransport::send_streaming` checks the status
+before handing over any bytes, so a 429 or a 503 is an `Err` from `Router::stream` itself and
+is fallen through. Anything after that is an `Err` item inside the stream, and
+`Transcript::drain` already keeps what arrived.
+
+`Router::stream` returns `(EventStream, Routed<()>)` rather than one value because `Routed`
+derives `Debug` and `Clone` and an `EventStream` can do neither. `Routed<T = ChatResponse>`
+is generic so that `Routed` still means what it always did.
+
+The two entry points share one body. The parts that would rot if copied are the ones that
+matter: a refusal stops everything rather than being asked of the next model, and every
+skipped route is reported. Only the method being called differs, so that is the argument.
+
 ---
 
 ## Hedging is the caller's, and the ledger has to survive it

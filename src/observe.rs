@@ -123,6 +123,48 @@ pub(crate) fn routed(
 ) {
 }
 
+/// Records how a routed stream turned out.
+///
+/// The same as [`routed`] without a usage coverage, because a stream has none yet: tokens
+/// arrive in the final frame and the span is recorded when the stream opens. Its own
+/// function rather than an `Option` argument, so neither call site has to decide what a
+/// missing coverage means.
+#[cfg(feature = "tracing")]
+pub(crate) fn routed_stream(span: &Span, route: &str, attempts: u32, fell: usize) {
+    span.record("route", route);
+    span.record("attempts", attempts);
+    span.record("fell_through", fell);
+    if fell > 0 {
+        tracing::warn!(
+            route,
+            fell_through = fell,
+            attempts,
+            "streaming, but not from the first route that was tried"
+        );
+    }
+}
+
+#[cfg(not(feature = "tracing"))]
+pub(crate) fn routed_stream(_span: &Span, _route: &str, _attempts: u32, _fell: usize) {}
+
+/// Says that a routed call ran out of time, and what it had tried.
+///
+/// A warning rather than a span field, because this is the end of the request and there is
+/// nothing left to attach a field to that anybody will read. `tried` is the route names and
+/// the reasons, which are safe to record: no argument here can hold a message.
+#[cfg(feature = "tracing")]
+pub(crate) fn gave_up(elapsed: std::time::Duration, attempts: u32, tried: &str) {
+    tracing::warn!(
+        elapsed_ms = elapsed.as_millis(),
+        attempts,
+        tried,
+        "the deadline was spent before anything answered"
+    );
+}
+
+#[cfg(not(feature = "tracing"))]
+pub(crate) fn gave_up(_elapsed: std::time::Duration, _attempts: u32, _tried: &str) {}
+
 /// Records how complete the usage on one provider call was.
 #[cfg(feature = "tracing")]
 pub(crate) fn measured(span: &Span, coverage: UsageCoverage) {
