@@ -11,6 +11,16 @@ use serde::{Deserialize, Serialize};
 pub enum UsageCoverage {
     /// Every field was reported.
     Exact,
+    /// The numbers were counted here rather than reported by the provider.
+    ///
+    /// Between [`UsageCoverage::Exact`] and [`UsageCoverage::Partial`] in this ordering,
+    /// and it is a different kind of wrong from either. A partial usage understates: the
+    /// bill is that much or more. An estimate can be wrong in **either** direction, so a
+    /// total containing one is not a floor and must not be reported as one.
+    ///
+    /// This variant exists so that a locally counted number can be added up without being
+    /// folded into `Exact`, which would destroy the one property this type is for.
+    Estimated,
     /// Some fields were reported and some were not.
     Partial,
     /// Nothing was reported. The call still happened and still cost something.
@@ -26,6 +36,7 @@ impl UsageCoverage {
     pub fn as_str(self) -> &'static str {
         match self {
             UsageCoverage::Exact => "exact",
+            UsageCoverage::Estimated => "estimated",
             UsageCoverage::Partial => "partial",
             UsageCoverage::Absent => "absent",
         }
@@ -61,6 +72,12 @@ pub struct Usage {
     /// Thinking tokens are billed whether or not they are shown, so they belong in the
     /// number you price.
     pub output_tokens: Option<u64>,
+    /// Whether these numbers were counted here rather than reported.
+    ///
+    /// A flag rather than a fifth optional field, because it is a fact about all four at
+    /// once. Set it with [`Usage::estimating`], read it through [`Usage::coverage`], and see
+    /// [`UsageCoverage::Estimated`] for why an estimate is not a floor.
+    pub estimated: bool,
 }
 
 impl Usage {
@@ -104,6 +121,38 @@ impl Usage {
         self
     }
 
+    /// Marks these numbers as counted here rather than reported by the provider.
+    ///
+    /// The case is a subscription command line tool: it answers, it was billed, and it says
+    /// nothing about tokens. A caller with a token counter can produce a number, and this is
+    /// how that number is kept apart from one a vendor reported.
+    ///
+    /// ```
+    /// # use llmr::{Usage, UsageCoverage};
+    /// let counted = Usage::absent()
+    ///     .with_input(1_200)
+    ///     .with_cache_read(0)
+    ///     .with_cache_write(0)
+    ///     .with_output(340)
+    ///     .estimating();
+    ///
+    /// assert_eq!(counted.coverage(), UsageCoverage::Estimated);
+    /// ```
+    ///
+    /// **This crate does not count tokens for you and will not.** A tokeniser has to match
+    /// the vendor's, per model, and one that is close produces numbers that look right and
+    /// are not, which is the failure every type in this module exists to prevent. Bring your
+    /// own count, or leave the call [`Usage::absent`].
+    ///
+    /// Estimating nothing is still nothing: this on an otherwise absent usage leaves the
+    /// coverage [`UsageCoverage::Absent`], because there is no estimate to be approximate
+    /// about.
+    #[must_use]
+    pub fn estimating(mut self) -> Self {
+        self.estimated = true;
+        self
+    }
+
     /// What an embedding call consumed, when the provider reported its prompt tokens.
     ///
     /// An embedding endpoint reports one number, because one number is all there is: text
@@ -125,6 +174,7 @@ impl Usage {
             cache_read_tokens: Some(0),
             cache_write_tokens: Some(0),
             output_tokens: Some(0),
+            estimated: false,
         }
     }
 
@@ -138,7 +188,13 @@ impl Usage {
         ];
         let present = fields.iter().filter(|f| f.is_some()).count();
         match present {
+            // Nothing to be approximate about, so the flag changes nothing here.
             0 => UsageCoverage::Absent,
+            // An estimate of three fields out of four is still an estimate, and `Estimated`
+            // already says the number can be wrong in either direction, which covers the
+            // field that was never counted. Reporting `Partial` instead would claim the
+            // total is a floor, and an estimate is not one.
+            _ if self.estimated => UsageCoverage::Estimated,
             n if n == fields.len() => UsageCoverage::Exact,
             _ => UsageCoverage::Partial,
         }
@@ -177,6 +233,10 @@ impl Usage {
             cache_read_tokens: add(self.cache_read_tokens, other.cache_read_tokens),
             cache_write_tokens: add(self.cache_write_tokens, other.cache_write_tokens),
             output_tokens: add(self.output_tokens, other.output_tokens),
+            // A measured call added to an estimated one is a number that is partly guessed,
+            // and the sum has to say so. Estimation spreads on merge, exactly as absence
+            // does not.
+            estimated: self.estimated || other.estimated,
         }
     }
 }
@@ -191,6 +251,7 @@ mod tests {
             cache_read_tokens: Some(900),
             cache_write_tokens: Some(50),
             output_tokens: Some(20),
+            estimated: false,
         }
     }
 
@@ -241,6 +302,53 @@ mod tests {
         let merged = full().merge(full());
         assert_eq!(merged.input_tokens, Some(200));
         assert_eq!(merged.output_tokens, Some(40));
+    }
+
+    #[test]
+    fn a_locally_counted_call_is_estimated_rather_than_exact() {
+        // Folding a count into `Exact` would destroy the one property this type is for. It
+        // is a different kind of wrong from `Partial` too: partial understates, an estimate
+        // can be wrong either way.
+        let counted = full().estimating();
+        assert_eq!(counted.coverage(), UsageCoverage::Estimated);
+        assert_eq!(counted.prompt_tokens(), Some(1_050), "still a number");
+    }
+
+    #[test]
+    fn an_estimate_of_some_fields_is_still_an_estimate_rather_than_partial() {
+        // `Partial` claims the figure is a floor, and an estimate is not one whether or not
+        // every field was counted.
+        let some = Usage::absent().with_output(20).estimating();
+        assert_eq!(some.coverage(), UsageCoverage::Estimated);
+    }
+
+    #[test]
+    fn estimating_nothing_is_still_nothing() {
+        // There is no estimate to be approximate about, so the flag changes no answer here.
+        assert_eq!(
+            Usage::absent().estimating().coverage(),
+            UsageCoverage::Absent
+        );
+    }
+
+    #[test]
+    fn a_measured_call_merged_with_an_estimated_one_is_estimated() {
+        // The sum is partly guessed and has to say so, or the guess disappears into the
+        // measurement the first time two calls are added up.
+        assert_eq!(
+            full().merge(full().estimating()).coverage(),
+            UsageCoverage::Estimated
+        );
+        assert_eq!(full().merge(full()).coverage(), UsageCoverage::Exact);
+    }
+
+    #[test]
+    fn the_coverages_are_ordered_best_first() {
+        // Read by anything comparing two calls. Exact beats an estimate, an estimate beats
+        // a figure that is short, and all three beat nothing.
+        assert!(UsageCoverage::Exact < UsageCoverage::Estimated);
+        assert!(UsageCoverage::Estimated < UsageCoverage::Partial);
+        assert!(UsageCoverage::Partial < UsageCoverage::Absent);
     }
 
     #[test]

@@ -341,6 +341,7 @@ mod tests {
             cache_read_tokens: Some(0),
             cache_write_tokens: Some(0),
             output_tokens: Some(1_000_000),
+            estimated: false,
         };
         let priced = book()
             .price(&"test-model".into(), &usage)

@@ -467,5 +467,7 @@ fn read_usage(value: Option<&Value>) -> Usage {
             (None, None) => None,
             (visible, thoughts) => Some(visible.unwrap_or(0) + thoughts.unwrap_or(0)),
         },
+        // Reported by the vendor, not counted here.
+        estimated: false,
     }
 }
