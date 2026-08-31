@@ -7,6 +7,10 @@ change is a minor bump.
 
 ### Added
 
+- `Ledger::record_cancelled`, for a call that went out and whose reply was never read. The
+  case is hedging: two providers asked the same question, the loser's future dropped. That
+  request was billed, no `ChatResponse` came back, so nothing called `Ledger::record` and the
+  ledger reported one measured call and an `Exact` total. (#48)
 - `Envelope::with_stop_reason`, so a command line preset can read why the model stopped when
   the tool prints it. A reason this crate has not seen stays `Other` rather than being mapped
   to the nearest one. (#46)
@@ -35,6 +39,8 @@ change is a minor bump.
   the colon in a Bedrock model id and what it does to a canonical URI, where the region comes
   from, and why rotating credentials belong in the transport. The wrapper is also a compiled
   doctest on `providers::bedrock`, so the half that touches this crate's API cannot rot. (#47)
+- `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
+  have cost, and the ledger debt it leaves. (#48)
 
 ## 0.1.0 — 2026-08-30
 

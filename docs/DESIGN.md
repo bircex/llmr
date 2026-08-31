@@ -638,6 +638,47 @@ accident, because a refusal arrives looking like any other error.
 
 ---
 
+## Hedging is the caller's, and the ledger has to survive it
+
+Racing two providers for the same question and taking whichever answers first is not this
+crate's job. Whether doubling the bill is worth the latency, which two to race, how long to
+wait before starting the second: those are policy over the caller's own system, the same
+reasoning the README gives for this crate not deciding what your work needs. A router that
+hedged would be one whose cost model its author chose for you.
+
+A caller can already do it, and needs nothing added here. `Provider` is `Send + Sync`, `chat`
+takes `&self`, so one `Arc<dyn Provider>` goes to two tasks and `tokio::select!` is the whole
+implementation.
+
+**What building it here would have cost.** A hedge needs a policy object (how many, after
+what delay, which routes), a way to cancel the losers, and a rule for what `Routed` means
+when two routes both ran. That last one is the expensive part: `Routed::route` names the one
+route that answered, and `fell_through` means "tried and did not serve". A hedged call fits
+neither, so either the type grows a third notion or it starts lying. That is a lot of surface
+for something `select!` already does.
+
+**The debt it leaves, which is real.** Drop the losing future and the request was still sent
+and will still be billed. No `ChatResponse` came back, so there is no usage, so
+`Ledger::record` is never called. The ledger then holds one line, that line was measured, and
+`total()` answers `Exact`. A confident, plausible, wrong number, opened by this crate's own
+design decision.
+
+`Ledger::record_cancelled` is the fix and it is one line:
+
+```rust
+// The losing call. It went, it was billed, its reply was never read.
+ledger.record_cancelled(model);
+```
+
+`calls()` becomes 2, `unpriced()` becomes 1, the total becomes `AtLeast`. Correct.
+
+It does exactly what `record_unpriced(model, Usage::absent())` does. It exists under its own
+name because nobody reading "for a reach with no price list" would think of a cancelled
+call, and a method whose documentation does not describe your situation is a method you do
+not call.
+
+---
+
 ## Tables carry their provenance
 
 `Registry` and `PriceBook` rows require a `source` and a `verified_at`, and parsing refuses a
