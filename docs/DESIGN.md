@@ -725,6 +725,37 @@ nothing in it.
 
 ---
 
+## A command line preset is four claims about somebody else's program
+
+What to run, where the answer is in the JSON, what the usage fields are called, and what the
+probe proves. `LocalCli` does the spawning, the deadline, the kill on drop, the prompt
+assembly and the envelope reading, so a preset is a small file. Three of the four things in
+it cannot be checked from here.
+
+**A fixture written to match a preset proves the preset matches itself.** So the envelopes in
+`tests/recorded/` came off a real tool, and `ProcessRunner` replays one: everything about the
+provider stays real except the program, which is the one part that cannot be in a repository.
+That is also what finally puts the presets through the contract suite, which they had never
+been in, because without a runner they could not run at all.
+
+**Guessing the usage names is not an option.** Whether a tool's prompt count is the whole
+prompt or the uncached remainder decides whether a number is right or merely looks right, and
+`Usage::input_tokens` means the remainder. The recorded Claude Code run settles it: 4,685
+input beside 20,208 written to cache is a remainder, and a total would have read 24,893 and
+looked entirely reasonable.
+
+**The recording also found a bug the documentation had talked us out of looking for.** The
+preset reported `StopReason::Other` for every reply, with a comment saying a command line tool
+does not say why it stopped. This one does. `Other` is not `is_complete`, so every caller
+asking whether an answer had finished was told "no", forever. `Envelope::with_stop_reason`
+reads it where a recording shows one, and a tool that says nothing is still `Other`, because
+a truncated reply must not look finished.
+
+**A preset with no recording is a preset whose field names nobody has checked**, and this
+repository says which those are rather than implying they are all equal.
+
+---
+
 ## A fixture cannot check a field name that was wrong from the start
 
 Every fixture in this repository was written here. That makes them good at one thing and

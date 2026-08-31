@@ -182,6 +182,31 @@ fixture in this repository rather than staying in your terminal. Commit that wit
 provider. The `Against a real endpoint` workflow does the same thing on a runner and is
 dispatched by hand, never on a push.
 
+### A command line preset needs a recorded run
+
+A preset is four claims about somebody else's program: what to run, where the answer is in
+the JSON, what the usage fields are called, and what the probe proves. `LocalCli` does the
+rest, so the file is small. Three of those four cannot be checked from here.
+
+So do not open one without a recording. Two commands on a machine with the tool:
+
+```sh
+echo "say ok" | your-tool --output-format json
+your-tool --version
+```
+
+Put the envelope in `tests/recorded/` and add a case to
+`tests/what_a_command_line_tool_prints.rs`, which drives the preset through a runner that
+replays it. Everything about the provider stays real except the program.
+
+**The one to get right is whether the tool's prompt count is the whole prompt or the uncached
+remainder.** `Usage::input_tokens` means the remainder. Get it backwards and the numbers
+arrive, they look plausible, and every cost report built on them is wrong with nothing
+downstream able to tell.
+
+`--version` establishes that the tool is installed and nothing about the login inside it. If
+your tool has a sign in command that answers for free, probe with that instead and say so.
+
 ## Model tables and prices
 
 Every row carries a `source` and a `verified_at`. A row without them is refused at parse
