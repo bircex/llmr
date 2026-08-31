@@ -813,6 +813,79 @@ nothing in it.
 
 ---
 
+<<<<<<< HEAD
+=======
+## A command line preset is four claims about somebody else's program
+
+What to run, where the answer is in the JSON, what the usage fields are called, and what the
+probe proves. `LocalCli` does the spawning, the deadline, the kill on drop, the prompt
+assembly and the envelope reading, so a preset is a small file. Three of the four things in
+it cannot be checked from here.
+
+**A fixture written to match a preset proves the preset matches itself.** So the envelopes in
+`tests/recorded/` came off a real tool, and `ProcessRunner` replays one: everything about the
+provider stays real except the program, which is the one part that cannot be in a repository.
+That is also what finally puts the presets through the contract suite, which they had never
+been in, because without a runner they could not run at all.
+
+**Guessing the usage names is not an option.** Whether a tool's prompt count is the whole
+prompt or the uncached remainder decides whether a number is right or merely looks right, and
+`Usage::input_tokens` means the remainder. The recorded Claude Code run settles it: 4,685
+input beside 20,208 written to cache is a remainder, and a total would have read 24,893 and
+looked entirely reasonable.
+
+**The recording also found a bug the documentation had talked us out of looking for.** The
+preset reported `StopReason::Other` for every reply, with a comment saying a command line tool
+does not say why it stopped. This one does. `Other` is not `is_complete`, so every caller
+asking whether an answer had finished was told "no", forever. `Envelope::with_stop_reason`
+reads it where a recording shows one, and a tool that says nothing is still `Other`, because
+a truncated reply must not look finished.
+
+**A preset with no recording is a preset whose field names nobody has checked**, and this
+repository says which those are rather than implying they are all equal.
+
+---
+
+## A fixture cannot check a field name that was wrong from the start
+
+Every fixture in this repository was written here. That makes them good at one thing and
+blind to another.
+
+They catch a **regression**: a translation that used to produce this and now produces that.
+They cannot catch a **mistake**, because a field name read wrong from a vendor's
+documentation is read the same wrong way into the fixture, and the two agree forever. Three
+hundred passing tests say nothing about it, and nothing inside the crate can.
+
+`tests/against_a_real_endpoint.rs` is the only thing that can. Every test in it is
+`#[ignore]`, so `cargo test` never runs one and CI never spends money, and a test whose key is
+missing skips itself rather than failing, so one key is enough to run the file.
+
+**What it asserts is not "it answered".** A fixture already proves the crate can read a reply
+it was handed. These are the four claims only a real endpoint settles:
+
+* **Usage is `Exact`, not `Partial`.** A `Partial` means a field this crate reads by name was
+  not there under that name. That is precisely the shape of the mistake, and every cost report
+  built on it is a floor nobody knows is a floor.
+* **The reply names a real model**, and it is printed, because what a vendor actually serves
+  for a given alias is a fact worth having in a commit.
+* **The stop reason mapped to something** rather than to a fallback. A provider that maps
+  every reason it does not recognise onto `EndTurn` reports a truncated answer as a complete
+  one.
+* **A streamed call and a whole one agree**, against the wire rather than against two
+  fixtures written the same afternoon.
+
+Gemini is exempted from the first of those and says why in the test: that API reports no cache
+write count at all, so its usage is `Partial` by design, and asserting `Exact` would be
+asserting that a documented decision is a bug.
+
+`LLMR_RECORD` writes what came back to a directory, because a reply that stayed in somebody's
+terminal is a call they made and a reply committed here is a call anybody can check. The
+`Against a real endpoint` workflow does the same on a runner, dispatched by hand behind a
+gated environment, never on a push.
+
+---
+
+>>>>>>> cbff257 (fix: a command line preset checked against what the tool really prints)
 ## Naming and prose
 
 Tests are named after the claim they make, not the function they call.

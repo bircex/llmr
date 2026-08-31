@@ -22,7 +22,30 @@ change is a minor bump.
   way, so a route added later cannot be recorded two different ways in two places. (#38)
 - `Ledger::summary`, the run in one sentence: what was measured, what was estimated, what has
   no figure at all, and what a plan covers. (#38)
-### Changed
+- `Ledger::record_cancelled`, for a call that went out and whose reply was never read. The
+  case is hedging: two providers asked the same question, the loser's future dropped. That
+  request was billed, no `ChatResponse` came back, so nothing called `Ledger::record` and the
+  ledger reported one measured call and an `Exact` total. (#48)
+- `Envelope::with_stop_reason`, so a command line preset can read why the model stopped when
+  the tool prints it. A reason this crate has not seen stays `Other` rather than being mapped
+  to the nearest one. (#46)
+
+### Fixed
+
+- The Claude Code preset reported `StopReason::Other` for every reply, on the grounds that a
+  command line tool does not say why it stopped. A recorded run shows it does: the envelope
+  carries `stop_reason`. `Other` is not `is_complete`, so a caller asking whether an answer
+  finished was told "no" for every call it ever made. `Envelope::with_stop_reason` reads it,
+  and a tool that says nothing is still `Other`. (#46)
+
+### Testing
+
+- `tests/what_a_command_line_tool_prints.rs`, which drives each command line preset through a
+  scripted runner replaying a real recorded envelope, and puts both presets through the
+  contract suite for the first time. `tests/recorded/claude-code.json` is the recording:
+  `claude 2.1.196`, 2026-08-31. It settles the question a fixture cannot, which is whether
+  the tool's `input_tokens` is the whole prompt or the uncached remainder. It is the
+  remainder, which is what this crate means, so those names were right. (#46)
 
 - **Breaking:** `Usage` has a new `estimated` field, `Line` a new `subscription` field, and
   `Total` a new `About` variant. A `match` on `Total` needs the arm; both structs are
