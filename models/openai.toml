@@ -1,0 +1,110 @@
+# The OpenAI models this release knows about.
+#
+# A starting point, not a source of truth. Every row was read off a vendor model page on the
+# date it carries, and vendors add and retire models on their own schedule. Supply your own
+# Registry when you need one that is current: `Registry::stale` and `Registry::unlisted`
+# compare this table against what the API says it serves.
+#
+# This table is for OpenAI's own endpoint. The `openai` provider in this crate speaks a shape
+# that a dozen vendors answer, and their models are not these. Build a Registry of your own
+# for a Groq or an Ollama, and give it the reach that is true of where it runs.
+#
+# `prompt_caching` and `thinking` on the mini and nano rows are not in the feature list on
+# their model pages. They are here because the pricing page publishes a cached input rate for
+# both, and the model pages carry "reasoning token support" in their details. That is
+# evidence read off a published page rather than an assumption, and it is written down here
+# so the next person can check the same two places.
+
+provider = "openai"
+reach    = "FirstPartyApi"
+
+[[model]]
+id                = "gpt-5.6-sol"
+context_window    = 1050000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page"
+verified_at       = "2026-08-31"
+
+[[model]]
+id                = "gpt-5.6-terra"
+context_window    = 1050000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page"
+verified_at       = "2026-08-31"
+
+[[model]]
+id                = "gpt-5.6-luna"
+context_window    = 1050000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page"
+verified_at       = "2026-08-31"
+
+[[model]]
+id                = "gpt-5.1"
+context_window    = 400000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page"
+verified_at       = "2026-08-31"
+
+[[model]]
+id                = "gpt-5"
+context_window    = 400000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page"
+verified_at       = "2026-08-31"
+
+[[model]]
+id                = "gpt-5-mini"
+context_window    = 400000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page and pricing page"
+verified_at       = "2026-08-31"
+
+[[model]]
+id                = "gpt-5-nano"
+context_window    = 400000
+max_output        = 128000
+tools             = true
+structured_output = true
+prompt_caching    = true
+thinking          = true
+images            = true
+streaming         = true
+source            = "vendor model page and pricing page"
+verified_at       = "2026-08-31"

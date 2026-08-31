@@ -39,7 +39,7 @@ pub use chat::{
     ChatRequest, ChatResponse, ContentBlock, Effort, Event, EventStream, Generation, ImageSource,
     Message, Needs, Role, StopReason, Thinking, ToolSchema, Transcript,
 };
-pub use cost::{Ledger, Micros, PriceBook, Priced, Rate, Usage, UsageCoverage};
+pub use cost::{Ledger, Micros, PriceBook, Priced, Rate, Recheck, Usage, UsageCoverage};
 #[cfg(feature = "embeddings")]
 pub use embed::{EmbedRequest, Embedder, Embedding, EmbeddingCapabilities, Embeddings, Purpose};
 pub use error::{Error, Result};
