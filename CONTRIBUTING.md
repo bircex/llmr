@@ -154,8 +154,6 @@ Three things the suite is checking, and they are the ones that are easy to get w
 
 Put your provider behind a feature and add it to the table in the README.
 
-<<<<<<< HEAD
-=======
 ### And then call it for real, once
 
 The contract suite and every fixture in this repository are written here, which means they
@@ -209,7 +207,6 @@ downstream able to tell.
 `--version` establishes that the tool is installed and nothing about the login inside it. If
 your tool has a sign in command that answers for free, probe with that instead and say so.
 
->>>>>>> cbff257 (fix: a command line preset checked against what the tool really prints)
 ## Model tables and prices
 
 Every row carries a `source` and a `verified_at`. A row without them is refused at parse
