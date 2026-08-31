@@ -18,6 +18,10 @@ change is a minor bump.
 - `PriceBook::expires_on`, for a book that already knows when its numbers stop being right:
   an introductory rate with a published end date, a contract that runs out. The shipped
   Gemini book carries one. (#39)
+- `Ledger::record_cancelled`, for a call that went out and whose reply was never read. The
+  case is hedging: two providers asked the same question, the loser's future dropped. That
+  request was billed, no `ChatResponse` came back, so nothing called `Ledger::record` and the
+  ledger reported one measured call and an `Exact` total. (#48)
 - `Envelope::with_stop_reason`, so a command line preset can read why the model stopped when
   the tool prints it. A reason this crate has not seen stays `Other` rather than being mapped
   to the nearest one. (#46)
@@ -48,6 +52,8 @@ change is a minor bump.
 
 - `docs/DESIGN.md` records what a shipped table claims, why a banded price is left out
   entirely, and why the tables are not behind a feature. (#39)
+- `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
+  have cost, and the ledger debt it leaves. (#48)
 
 ## 0.1.0 — 2026-08-30
 
