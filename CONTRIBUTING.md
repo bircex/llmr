@@ -154,6 +154,62 @@ Three things the suite is checking, and they are the ones that are easy to get w
 
 Put your provider behind a feature and add it to the table in the README.
 
+<<<<<<< HEAD
+=======
+### And then call it for real, once
+
+The contract suite and every fixture in this repository are written here, which means they
+catch a translation that changed and cannot catch a field name that was wrong from the
+beginning: the fixture has the same wrong name in it and the two agree.
+
+`tests/against_a_real_endpoint.rs` is the file that settles that. Add your provider to it,
+and run it once with a key:
+
+```sh
+YOUR_API_KEY=... cargo test --all-features --test against_a_real_endpoint -- --ignored --nocapture
+```
+
+Every test in it is `#[ignore]`, so nobody runs one by accident and CI never spends money.
+A test whose key is missing skips itself and says so.
+
+What it asserts is deliberately not "it answered", because a fixture already proves that.
+It asserts the things a fixture cannot: that usage came back `Exact` rather than `Partial`,
+which is the exact shape of a field name read wrong; that the reply named a real model; that
+the stop reason mapped to something rather than to a fallback; and that a streamed call and a
+whole call agree about what was consumed, against the wire rather than against two fixtures
+written the same afternoon.
+
+Set `LLMR_RECORD` to a directory and it writes what came back, so a real reply becomes a
+fixture in this repository rather than staying in your terminal. Commit that with the
+provider. The `Against a real endpoint` workflow does the same thing on a runner and is
+dispatched by hand, never on a push.
+
+### A command line preset needs a recorded run
+
+A preset is four claims about somebody else's program: what to run, where the answer is in
+the JSON, what the usage fields are called, and what the probe proves. `LocalCli` does the
+rest, so the file is small. Three of those four cannot be checked from here.
+
+So do not open one without a recording. Two commands on a machine with the tool:
+
+```sh
+echo "say ok" | your-tool --output-format json
+your-tool --version
+```
+
+Put the envelope in `tests/recorded/` and add a case to
+`tests/what_a_command_line_tool_prints.rs`, which drives the preset through a runner that
+replays it. Everything about the provider stays real except the program.
+
+**The one to get right is whether the tool's prompt count is the whole prompt or the uncached
+remainder.** `Usage::input_tokens` means the remainder. Get it backwards and the numbers
+arrive, they look plausible, and every cost report built on them is wrong with nothing
+downstream able to tell.
+
+`--version` establishes that the tool is installed and nothing about the login inside it. If
+your tool has a sign in command that answers for free, probe with that instead and say so.
+
+>>>>>>> cbff257 (fix: a command line preset checked against what the tool really prints)
 ## Model tables and prices
 
 Every row carries a `source` and a `verified_at`. A row without them is refused at parse
