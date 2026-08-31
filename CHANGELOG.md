@@ -50,10 +50,13 @@ change is a minor bump.
 - **Breaking:** `Usage` has a new `estimated` field, `Line` a new `subscription` field, and
   `Total` a new `About` variant. A `match` on `Total` needs the arm; both structs are
   `#[non_exhaustive]`, so only a struct literal inside this crate had to change. (#38)
+
 ### Documentation
 
 - `docs/DESIGN.md` records why a subscription call is out of scope rather than unknown, why
   an estimate outranks a floor, and why this crate will not ship a tokeniser. (#38)
+- `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
+  have cost, and the ledger debt it leaves. (#48)
 
 ## 0.1.0 — 2026-08-30
 
