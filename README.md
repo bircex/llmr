@@ -5,7 +5,7 @@ usage you can trust.
 
 ```toml
 [dependencies]
-llmr = { version = "0.1", features = ["reqwest"] }
+llmr = { version = "0.2", features = ["reqwest"] }
 ```
 
 ```rust,no_run
@@ -253,7 +253,7 @@ The first two are on by default. `reqwest` is not, because almost every program 
 an HTTP client and adding this crate should not add two hundred more.
 
 ```toml
-llmr = { version = "0.1", default-features = false, features = ["cli"] }
+llmr = { version = "0.2", default-features = false, features = ["cli"] }
 ```
 
 ## Adding a provider
@@ -307,7 +307,7 @@ Implement `Provider`, then check it against the contract suite:
 
 ```toml
 [dev-dependencies]
-llmr = { version = "0.1", features = ["testkit"] }
+llmr = { version = "0.2", features = ["testkit"] }
 ```
 
 ```rust,no_run
@@ -568,7 +568,9 @@ provider, and it says so.
 [CONTRIBUTING.md](CONTRIBUTING.md) has the rules the code is held to and how to add a
 provider. [docs/DESIGN.md](docs/DESIGN.md) says what was decided and why, which is worth
 reading before changing anything: several of the decisions look wrong until you know the
-reason. [ROADMAP.md](ROADMAP.md) is what is left before 0.1.
+reason. [docs/BEDROCK.md](docs/BEDROCK.md) is the one page you need to make a Bedrock call,
+since this crate deliberately ships no SigV4. [ROADMAP.md](ROADMAP.md) is what is left before
+0.1.
 
 ## License
 
