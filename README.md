@@ -568,7 +568,9 @@ provider, and it says so.
 [CONTRIBUTING.md](CONTRIBUTING.md) has the rules the code is held to and how to add a
 provider. [docs/DESIGN.md](docs/DESIGN.md) says what was decided and why, which is worth
 reading before changing anything: several of the decisions look wrong until you know the
-reason. [ROADMAP.md](ROADMAP.md) is what is left before 0.1.
+reason. [docs/BEDROCK.md](docs/BEDROCK.md) is the one page you need to make a Bedrock call,
+since this crate deliberately ships no SigV4. [ROADMAP.md](ROADMAP.md) is what is left before
+0.1.
 
 ## License
 
