@@ -51,6 +51,42 @@ change is a minor bump.
 - `Envelope::with_stop_reason`, so a command line preset can read why the model stopped when
   the tool prints it. A reason this crate has not seen stays `Other` rather than being mapped
   to the nearest one. (#46)
+- Shipped model tables and price books for OpenAI and Gemini, beside the Anthropic ones,
+  through `openai::api::shipped_registry` / `shipped_prices` and the same pair on `gemini`.
+  Both `from_env` constructors now hand out a real table instead of `Registry::empty`. Every
+  row was read off a vendor page on the date it carries, and models published in context
+  bands are absent rather than priced for short prompts. (#39)
+- `PriceBook::age`, `PriceBook::needs_rechecking` and `Recheck`, so a table that has aged can
+  be found out about rather than producing a confident bill six months after anybody looked.
+  `PriceBook::RECHECK_AFTER_DAYS` is the rule, and it is 90. (#39)
+- `PriceBook::expires_on`, for a book that already knows when its numbers stop being right:
+  an introductory rate with a published end date, a contract that runs out. The shipped
+  Gemini book carries one. (#39)
+- `UsageCoverage::Estimated` and `Usage::estimating`, so tokens counted locally can be added
+  up without being folded into `Exact`. An estimate is not a floor: it can run high, so
+  `Total::About` is a third answer and outranks `Total::AtLeast` when both apply.
+  `Ledger::estimated` keeps the guessed part of a bill findable after it has been summed.
+  This crate does not count the tokens and will not; bring your own. (#38)
+- `Ledger::record_subscription`, `Ledger::subscribed` and `Ledger::plans`, so a call covered
+  by a flat fee is out of scope rather than unknown. A run of a hundred command line calls
+  reported "at least 0.00" before this, which is true and useless on the crate's main path.
+  The total never contains the fee. (#38)
+- `Provider::subscription`, defaulting to `None`, and `LocalCli::billed_by` to set it.
+  Nothing guesses: the same tool signed in against an API key is metered. (#38)
+- `Ledger::record_from`, which reads `Provider::subscription` and records the call the right
+  way, so a route added later cannot be recorded two different ways in two places. (#38)
+- `Ledger::summary`, the run in one sentence: what was measured, what was estimated, what has
+  no figure at all, and what a plan covers. (#38)
+
+### Changed
+
+- **Breaking:** `Routed` is now `Routed<T = ChatResponse>`. Written as `Routed` it means what
+  it always did; `Router::stream` answers a `Routed<()>` beside the stream. (#41)
+- **Breaking:** `Usage` has a new `estimated` field, `Line` a new `subscription` field, and
+  `Total` a new `About` variant. A `match` on `Total` needs the arm; both structs are
+  `#[non_exhaustive]`, so only a struct literal inside this crate had to change. (#38)
+- **Breaking:** `PriceBook` has a new `expires_on` field. A book built with a struct literal
+  needs it; one parsed from TOML does not, and a file without the key reads as `None`. (#39)
 
 ### Fixed
 
@@ -59,8 +95,7 @@ change is a minor bump.
   carries `stop_reason`. `Other` is not `is_complete`, so a caller asking whether an answer
   finished was told "no" for every call it ever made. `Envelope::with_stop_reason` reads it,
   and a tool that says nothing is still `Other`. (#46)
-- **Breaking:** `Routed` is now `Routed<T = ChatResponse>`. Written as `Routed` it means what
-  it always did; `Router::stream` answers a `Routed<()>` beside the stream. (#41)
+
 ### Testing
 
 - `tests/what_a_command_line_tool_prints.rs`, which drives each command line preset through a
@@ -69,6 +104,14 @@ change is a minor bump.
   `claude 2.1.196`, 2026-08-31. It settles the question a fixture cannot, which is whether
   the tool's `input_tokens` is the whole prompt or the uncached remainder. It is the
   remainder, which is what this crate means, so those names were right. (#46)
+- `tests/against_a_real_endpoint.rs`, an opt-in suite that calls each shipped provider for
+  real. Every test is `#[ignore]` and a missing key skips rather than fails. It asserts the
+  things a fixture cannot: usage that came back `Exact` rather than `Partial`, a reply that
+  named a real model, a stop reason that mapped rather than fell back, and a streamed call
+  agreeing with a whole one against the wire. `LLMR_RECORD` writes what came back, so a real
+  reply can be committed as a fixture. (#37)
+- A manually dispatched `Against a real endpoint` workflow, gated behind an environment, so
+  the suite is runnable rather than theoretical and never runs on a push. (#37)
 
 ### Documentation
 
@@ -86,7 +129,15 @@ change is a minor bump.
   (#41)
 - `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
   have cost, and the ledger debt it leaves. (#48)
-
+- `docs/DESIGN.md` records why a subscription call is out of scope rather than unknown, why
+  an estimate outranks a floor, and why this crate will not ship a tokeniser. (#38)
+- `docs/DESIGN.md` records what a shipped table claims, why a banded price is left out
+  entirely, and why the tables are not behind a feature. (#39)
+- `docs/BEDROCK.md`, the worked example the signing decision needed: what SigV4 covers and in
+  what order to attach it, why the transport wrapper is the last thing to touch the request,
+  the colon in a Bedrock model id and what it does to a canonical URI, where the region comes
+  from, and why rotating credentials belong in the transport. The wrapper is also a compiled
+  doctest on `providers::bedrock`, so the half that touches this crate's API cannot rot. (#47)
 ## 0.1.0 — 2026-08-30
 
 First release.
