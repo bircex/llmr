@@ -1,6 +1,6 @@
 # Roadmap
 
-Where this crate is, what is left before 0.1.0, and what each phase needs. Written so
+Where this crate is, what shipped in each release, and what is left. Written so
 somebody picking this up cold can carry on without asking anybody anything.
 
 Read [docs/DESIGN.md](docs/DESIGN.md) first if you are about to change something. It says
@@ -9,17 +9,17 @@ reason.
 
 ## Where it stands
 
-As of the twelve issues filed after 0.1.0 was cut. See **After 0.1.0** below for what each
-of them was and where it got to.
+As of 0.2.0. See **After 0.1.0** below for what the twelve issues behind it were and where
+each got to.
 
 | | |
 |---|---:|
-| Source | 13,843 lines across 38 files |
+| Source | 13,852 lines across 38 files |
 | Tests | 400 passing, all features · 283 on the default set |
 | Public items | 6,854 all in, 1,440 hand written · **not re-measured since the second embedder** |
 | Dependency tree, default features | 35 crates |
-| Published | 0.1.0, on crates.io |
-| CI on GitHub | runs, and is green as of phase 4 |
+| Published | 0.1.0 on crates.io. 0.2.0 is on `main` and not yet tagged |
+| CI on GitHub | runs, and is green on `main` |
 
 The public item row is marked rather than updated, because re-running it needs a nightly
 toolchain and `cargo public-api`, and a number carried forward under a caption that does not
@@ -267,7 +267,7 @@ a red tick was read as the thing that was already known to be broken.
 
 ---
 
-## Phase 5: 0.1.0 · **next**
+## Phase 5: 0.1.0 · **done**
 
 ### The public surface
 
@@ -317,9 +317,9 @@ Not planned in detail, and roughly in this order.
 ## After 0.1.0: twelve issues, and where each got to
 
 Filed once 0.1.0 was cut, ordered by what an agentic layer that executes work and returns
-what it cost actually needs. Ten are finished. Two are finished as far as anything in this
-repository can take them, and both are blocked on the same thing: a machine with a key or a
-tool on it.
+what it cost actually needs. **Ten shipped in 0.2.0.** Two are finished as far as anything in
+this repository can take them, and both are blocked on the same thing: a machine with a key or
+a tool on it.
 
 | | State |
 |---|---|
@@ -362,6 +362,35 @@ carries `total_cost_usd`, a figure the tool worked out itself. Nothing reads it,
 there is nowhere in `ChatResponse` to put a cost that did not come from a `PriceBook`, and
 adding one is a larger decision than a preset: it would be a second source of truth for the
 one number this crate exists to get right.
+
+### What 0.2.0 also carried
+
+Two things that were not in the original twelve and were found on the way.
+
+**`#[non_exhaustive]` on the nine public types that can grow** (#70). The rule was written in
+`docs/DESIGN.md` before 0.1.0 and applied to only some of the crate, and 0.2.0 paid for it:
+`cargo-semver-checks` failed three lints, and the fix was a version bump rather than a change
+to the code. It had to land in this release or cost a major bump of its own in the next one.
+
+**Six stray conflict markers** that reached `main` in a botched branch split (#62), removed
+before they could ship.
+
+### The test debt, carried deliberately
+
+Five gaps found by auditing which public items no executable test ever touches. All labelled
+`test`, none of them blocking a release, all of them real:
+
+| | |
+|---|---|
+| #67 | `Breaker` and `Budget` are the only mutable state and `tests/concurrency.rs` ignores both |
+| #68 | Nothing notices when a shipped price table goes stale, including the one with an announced expiry |
+| #71 | `Spawning` is the only `ProcessRunner` anybody uses and the only one with no test |
+| #72 | `temperature` and `top_p` are written by three protocols and checked by no test |
+| #73 | The `Retry-After` header path is untested, half implemented, and copied twice |
+
+#72 and #73 are the two worth doing first. Both are the same shape as #46: a wrong key or an
+unparsed header does not fail, it quietly drops what the caller asked for, and the reply looks
+correct all the way down.
 
 ## Things known to be missing, said in the README
 

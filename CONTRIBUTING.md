@@ -98,9 +98,12 @@ The eight above, plus three you would not usually run by hand:
   there. Install it with `cargo install cargo-deny --locked` if you want to run it locally.
 - **`cargo publish --dry-run`** — what would actually ship. `exclude` in `Cargo.toml` keeps
   CI configuration, the roadmap, the design notes and `deny.toml` out of the package.
-- **`cargo-semver-checks`** — skipped, with a note saying so, until 0.1.0 is published;
-  there is no released API to compare against. After that it is the job that catches a break
-  nobody meant: everything public here is
+- **`cargo-semver-checks`** — live since 0.1.0 went to crates.io, and it earns its place. It
+  caught three breaks in 0.2.0 that nobody had noticed: a field added to `PriceBook`, a
+  variant added to `Total`, and a variant inserted into `UsageCoverage` that moved two
+  discriminants and changed a derived `PartialOrd`. Under 1.0 the fix is a minor bump, which
+  is what the changelog has always said. It is the job that catches a break nobody meant:
+  most of what is public here is
   `#[non_exhaustive]`, which is exactly the arrangement where somebody assumes every change
   is additive. Adding a required method to `Provider` is breaking. Narrowing a return type
   is breaking. Neither looks like it in a diff.
