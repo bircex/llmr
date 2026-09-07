@@ -219,6 +219,32 @@ pub trait Provider: Send + Sync {
     async fn validate(&self, _model: &ModelId) -> Access {
         Access::unknown(format!("{} has no free way to be asked", self.id()))
     }
+
+    /// The plan that covers this provider's calls, when they are not billed per call.
+    ///
+    /// `None` by default, and `None` for every provider in this crate until a caller says
+    /// otherwise. A subscription command line tool is the case: it reports no usage and has
+    /// no price row, so every call it makes is an unknown cost, and a bot making a hundred
+    /// of them is told its run cost "at least 0.00" — true, and useless, on the path it
+    /// spends most of its life.
+    ///
+    /// Answering here moves those calls out of the unknown column. See
+    /// [`crate::Ledger::record_subscription`] for what the ledger then says, and
+    /// [`crate::Ledger::record_from`] for the version that reads this for you.
+    ///
+    /// # Why no provider here answers it
+    ///
+    /// Nothing about a tool says how the account behind it is billed. The same program
+    /// signed in one way is a flat fee and signed in another is metered per token, and this
+    /// crate has no way to find out which. A preset that guessed would write a metered call
+    /// down as covered, which is the zero [`crate::Usage::absent`] exists to prevent wearing
+    /// a better name.
+    ///
+    /// So it is set by the person who knows. `LocalCli::billed_by` is where, under the `cli`
+    /// feature; a provider of your own overrides this method.
+    fn subscription(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A finished reply, as the stream that would have produced it.

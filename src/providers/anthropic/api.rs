@@ -519,6 +519,7 @@ pub fn shipped_prices() -> crate::cost::PriceBook {
             effective_from: String::new(),
             source: String::new(),
             verified_at: String::new(),
+            expires_on: None,
             currency: "USD".into(),
             rates: Default::default(),
         })

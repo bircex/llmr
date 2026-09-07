@@ -8,6 +8,12 @@ use llmr::providers::anthropic;
 use llmr::{ChatRequest, Message, Provider, UsageCoverage};
 use std::time::Duration;
 
+/// The day this is being run, as `YYYY-MM-DD`.
+///
+/// Hard coded because an example should not pull a date library to make one point. A real
+/// program has a clock and knows what today is.
+const TODAY: &str = "2026-08-31";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let claude = anthropic::api::from_env(Duration::from_secs(60))?;
@@ -27,6 +33,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("usage:          {:?}", reply.usage.coverage());
 
     let prices = anthropic::api::shipped_prices();
+
+    // Before anything is presented as a bill. A shipped table is a convenience and not a
+    // contract: it was right on the day somebody read the page, and a price that is quietly
+    // six months old produces a confident figure that is wrong by whatever the vendor
+    // changed, with nothing downstream able to tell.
+    //
+    // The date is passed in rather than read from a clock, because this crate does not hold
+    // one. Whatever your program already uses to know what day it is, use that.
+    if let Some(why) = prices.needs_rechecking(TODAY) {
+        println!("price table:    {why}\n");
+    }
+
     match prices.price(&reply.model, &reply.usage) {
         Some(priced) => {
             println!("cost:           {} {}", priced.amount, prices.currency);

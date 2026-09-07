@@ -145,6 +145,53 @@ looks like a receipt.
 
 ---
 
+## A run of subscription calls is out of scope, not unknown
+
+`Usage::absent` says a call was not measured, and a `Ledger::total` containing one is a
+floor. Both are right, and together they made the crate useless on its own main path: a bot
+running a hundred `Reach::LocalCli` calls was told the run cost "at least 0.00". A layer
+whose promise is the cost cannot answer "I don't know" for everything it does.
+
+Three things fix it and none of them is a zero.
+
+**Read what the tool reports.** Some print token counts in their JSON envelope. `Envelope`
+already reads them and both shipped presets do. The trap is `UsageNames`: whether a tool's
+prompt count is the whole prompt or the uncached remainder is the difference between a number
+that is right and one that looks right, and `providers/openai/cli.rs` carries a comment
+saying which Codex reports for exactly that reason.
+
+**A counted token is not a reported one.** `UsageCoverage::Estimated` exists so a locally
+counted number can be added up without being folded into `Exact`, which would destroy the one
+property the type is for. It is not `Partial` either: partial understates, so a partial total
+is a floor, while an estimate can be wrong in **either** direction. That is why `Total::About`
+outranks `Total::AtLeast` when both apply. A lower bound that can be false is worse than an
+honest approximation, and `Ledger::estimated` keeps the guessed part findable after it has
+been added to the measured part.
+
+**This crate does not count the tokens.** A tokeniser has to match the vendor's, per model,
+and one that is close produces numbers that look right and are not. `Usage::estimating` takes
+a count the caller produced. Bringing a tokeniser in would be this crate manufacturing
+exactly the confident wrong number every type in `cost` exists to prevent.
+
+**A flat fee is out of scope rather than unknown.** A call on a subscription added nothing to
+a per-call bill. `Ledger::record_subscription` records that, `unpriced()` stops counting it,
+and the total stops being a floor on account of it. The total never contains the fee: there
+is no division of a subscription into calls that means anything, so `subscribed()` and
+`plans()` go beside the figure and the person reading knows what they pay.
+
+**Nothing guesses that a tool is on a subscription.** The same program signed in one way is a
+flat fee and signed in another is metered against an API key, and no preset can tell which.
+`Provider::subscription` answers `None` everywhere in this crate until a caller says
+otherwise through `LocalCli::billed_by`. Getting it wrong writes a metered call down as
+costing nothing, which is the zero `Usage::absent` exists to prevent wearing a better name.
+The protection is that it cannot happen by accident: it takes typing a plan name.
+
+`Ledger::summary` is the sentence with all of it in: what was measured, what was estimated,
+what has no figure, and what a plan covers. It exists because every program that assembled
+that from the four accessors would leave one out.
+
+---
+
 ## A reply that cannot be read is an error, never an empty answer
 
 A 200 with a body this crate cannot parse returns `Error::Unreadable`.
@@ -884,6 +931,55 @@ recomputed**. Re-pricing the past when a price changes destroys the record.
 `Registry::stale` and `Registry::unlisted` compare a table against what a provider says it
 serves. Neither prunes: a row that vanished because a vendor retired a model is a decision
 somebody should make.
+
+### Shipped tables, and the staleness that comes with them
+
+Anthropic, OpenAI and Gemini each ship a model table and a price book, read off the vendor's
+own published pages on the date each row carries. A caller who adds this crate to find out
+what something cost gets a number, rather than `None` for every model until they write and
+date a table themselves.
+
+**Nothing is invented.** A row is there because a person read a published page on a stated
+date and wrote it down. Where a page does not say, the row does not claim: `Entry::new`
+starts with every capability off for exactly this reason. Where a fact came from two pages,
+the row's `source` says so, and the file says which two.
+
+**A rate that cannot be expressed is left out.** Several models are published in context
+bands, one price up to a token threshold and a higher one above. A `Rate` is a flat number
+per million and cannot say that. Those models have no row, so they price as unpriced, which
+this crate already reports honestly. The tempting alternative is the low band, which is right
+until somebody sends a long prompt and then understates every call after that without
+anything being able to tell.
+
+**Silent staleness is the failure mode, so a book can be asked.** `PriceBook::age(today)`
+gives days since `verified_at`, and `PriceBook::needs_rechecking(today)` applies the rule:
+`RECHECK_AFTER_DAYS`, which is 90, and is arbitrary in the way any such number is. What makes
+it useful is that it is written down, it is one number, and the crate applies it for you.
+
+`today` is an argument rather than a clock. Every date in a table is already `YYYY-MM-DD`
+text, so the comparison is between two things of the same kind, and a test can ask what a
+book looks like in 2027 without waiting.
+
+`Recheck` is three variants rather than a boolean, for the same reason `Access` is:
+
+* `Expired` when the book named a date its numbers stop being right and it has passed. Some
+  rates are published as introductory with an end date already announced, and a book that
+  knows it becomes wrong should say when.
+* `Aged` when nobody has checked in longer than the rule allows. A judgement call, and
+  reported as one.
+* `Undatable` when a date on the book cannot be read. The quiet one: a `verified_at` of
+  `"recently"` parses as TOML and would make a book permanently fresh, which is the single
+  answer that can never be checked.
+
+Expiry is reported ahead of age when both are true. Ageing says somebody should look; expiry
+says the numbers have already changed.
+
+**Why the tables are not behind a `tables` feature.** They were going to be. A feature that
+only removes a few kilobytes of static text is a feature nobody sets, and the cost of having
+it is worse than that: `from_env` would return a provider with a model table under one
+feature set and without one under another, so the same line of code would route differently
+depending on how the crate was compiled. Features here exist so a build compiles what it
+uses, and this one would have made a build mean something different instead.
 
 ---
 

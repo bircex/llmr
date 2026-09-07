@@ -4,7 +4,7 @@
 //! is the easy half. The hard half is that a run almost always contains a call nobody
 //! measured, and a number that quietly leaves it out is worse than no number at all.
 //!
-//! # Four rules, and only one of them is about adding
+//! # The rules, and only one of them is about adding
 //!
 //! **A total containing an unpriced call is a lower bound.** [`Total`] says which it is, so
 //! a report can print "at least" rather than a figure somebody will read as the bill.
@@ -23,6 +23,22 @@
 //! calls [`Ledger::record`] and the ledger says the run was one measured call. Say
 //! [`Ledger::record_cancelled`] instead. This is the rule that is easiest to miss, because
 //! nothing in the code that dropped the future looks like a cost.
+//!
+//! **An unknown cost and a covered one are different facts.** A call on a plan billed by a
+//! flat fee added nothing to a per-call bill; a call nobody could price might have cost
+//! anything. Recording both as unpriced is what made a run of a hundred command line calls
+//! report "at least 0.00" — true, and useless, on an agentic layer's main path. Say
+//! [`Ledger::record_subscription`] for the first, and the total stops being a floor on
+//! account of it. **The total never contains the fee**: there is no division of a
+//! subscription into calls that means anything, so what a report carries is
+//! [`Ledger::subscribed`] and [`Ledger::plans`] beside the figure.
+//!
+//! **A counted token is not a reported one.** A number this crate worked out cannot be added
+//! to a number a vendor measured and come out as a measurement.
+//! [`crate::UsageCoverage::Estimated`] keeps them apart and [`Total::About`] carries it
+//! through, so a report can say "4.10, of which 3.80 estimated" rather than either lying
+//! about the whole figure or shrugging at it. An estimate is **not** a floor: it can run
+//! high, so `About` outranks `AtLeast` whenever both apply.
 //!
 //! **A sum needs one currency.** [`Micros`] is an integer, and two of them add whether or not
 //! they are the same money. So [`Ledger::total`] answers `None` when the run was priced in
@@ -68,6 +84,16 @@ pub enum Total {
     /// Something in the run was not priced, or was priced from usage the provider only
     /// partly reported. The real figure is this or more, never less.
     AtLeast(Micros),
+    /// Roughly this much.
+    ///
+    /// Part of the run was priced from tokens counted locally rather than reported, so the
+    /// figure can be wrong in **either** direction. Not a floor, which is why it is not
+    /// [`Total::AtLeast`]: presenting an estimate as a lower bound is a claim nobody
+    /// checked, and the first time an estimate runs high the bound is simply false.
+    ///
+    /// [`Ledger::estimated`] says how much of the figure this covers, so a report can say
+    /// "4.10, of which 3.80 estimated" rather than shrugging at the whole number.
+    About(Micros),
 }
 
 impl Total {
@@ -76,7 +102,7 @@ impl Total {
     /// Read [`Total::is_exact`] before you present it as a bill.
     pub fn amount(self) -> Micros {
         match self {
-            Total::Exact(amount) | Total::AtLeast(amount) => amount,
+            Total::Exact(amount) | Total::AtLeast(amount) | Total::About(amount) => amount,
         }
     }
 
@@ -91,6 +117,7 @@ impl std::fmt::Display for Total {
         match self {
             Total::Exact(amount) => write!(f, "{amount}"),
             Total::AtLeast(amount) => write!(f, "at least {amount}"),
+            Total::About(amount) => write!(f, "about {amount}"),
         }
     }
 }
@@ -108,6 +135,17 @@ pub struct Line {
     /// `None` means the call happened and its cost is not known: no price row, or usage the
     /// provider never reported. It is deliberately not `Some(zero)`.
     pub cost: Option<Priced>,
+    /// The plan this call was covered by, when it was not billed per call.
+    ///
+    /// `Some` means the caller said out loud that this route is paid for by a flat fee, so
+    /// the call added nothing to a per-call bill. That is a different fact from an unknown
+    /// cost and the ledger keeps them apart: an unknown cost makes a total a floor, a
+    /// covered one does not.
+    ///
+    /// **The total never includes the fee.** A subscription is not a per-call cost and
+    /// there is no way to divide one into calls that means anything, so what a report says
+    /// is the number of calls and which plan, and the person reading it knows what they pay.
+    pub subscription: Option<String>,
 }
 
 /// Every call in a run, and what they came to.
@@ -141,6 +179,7 @@ impl Ledger {
             model: reply.model.clone(),
             usage: reply.usage,
             cost,
+            subscription: None,
         });
     }
 
@@ -157,6 +196,54 @@ impl Ledger {
             model: model.into(),
             usage,
             cost: None,
+            subscription: None,
+        });
+    }
+
+    /// Records a call covered by a flat fee rather than billed per call.
+    ///
+    /// The case is a subscription command line tool. It reports no usage and has no price
+    /// row, so [`Ledger::record_unpriced`] is what it gets today, and a bot making a hundred
+    /// of them is told its run cost "at least 0.00": true, and useless, on the path it spends
+    /// most of its life.
+    ///
+    /// Saying `record_subscription` instead moves the call out of the unknown column and
+    /// into a named one. [`Ledger::total`] stops being a floor on account of it,
+    /// [`Ledger::subscribed`] counts it, and [`Ledger::plans`] names what covers it.
+    ///
+    /// ```
+    /// use llmr::cost::ledger::Ledger;
+    /// # use llmr::Usage;
+    /// let mut ledger = Ledger::new();
+    /// ledger.record_subscription("claude-sonnet-5", "claude-max", Usage::absent());
+    ///
+    /// assert_eq!(ledger.calls(), 1);
+    /// assert_eq!(ledger.unpriced(), 0, "covered is not unknown");
+    /// assert_eq!(ledger.subscribed(), 1);
+    /// assert_eq!(ledger.plans(), vec!["claude-max"]);
+    /// ```
+    ///
+    /// # This is a claim, and only the caller can make it
+    ///
+    /// Nothing about a command line tool says how the account behind it is billed. The same
+    /// program signed in one way is a flat fee and signed in another is metered per token,
+    /// and this crate cannot tell which. So no preset sets it, [`crate::Provider`] answers
+    /// `None` until somebody says otherwise, and calling this is that somebody saying so.
+    ///
+    /// Getting it wrong writes a metered call down as covered, which is the zero this whole
+    /// module exists to prevent, wearing a better name. The protection is that it cannot
+    /// happen by accident: nothing reaches this method without a plan name being typed.
+    pub fn record_subscription(
+        &mut self,
+        model: impl Into<ModelId>,
+        plan: impl Into<String>,
+        usage: Usage,
+    ) {
+        self.lines.push(Line {
+            model: model.into(),
+            usage,
+            cost: None,
+            subscription: Some(plan.into()),
         });
     }
 
@@ -190,6 +277,27 @@ impl Ledger {
         self.record_unpriced(model, Usage::absent());
     }
 
+    /// Records a reply, asking the provider how it is billed.
+    ///
+    /// The version of [`Ledger::record`] for a program holding an `Arc<dyn Provider>` and a
+    /// mixture of metered and covered routes. A provider that answers
+    /// [`crate::Provider::subscription`] gets its call recorded as covered; every other one
+    /// is priced against the book exactly as [`Ledger::record`] would.
+    ///
+    /// One call site rather than a `match` at each of them, so a route added later cannot be
+    /// recorded the wrong way in one place and the right way in another.
+    pub fn record_from(
+        &mut self,
+        provider: &dyn crate::provider::Provider,
+        reply: &ChatResponse,
+        book: Option<&PriceBook>,
+    ) {
+        match provider.subscription() {
+            Some(plan) => self.record_subscription(reply.model.clone(), plan, reply.usage),
+            None => self.record(reply, book),
+        }
+    }
+
     /// Takes everything from another ledger.
     pub fn absorb(&mut self, other: Ledger) {
         self.lines.extend(other.lines);
@@ -205,12 +313,67 @@ impl Ledger {
         self.lines.len()
     }
 
-    /// How many of them have no cost.
+    /// How many of them have no cost, and nothing said why.
     ///
     /// The number that decides whether [`Ledger::total`] is a total or a floor, and the one
     /// worth printing beside it.
+    ///
+    /// A call covered by a subscription is **not** here. Its cost is not unknown, it is out
+    /// of scope, and folding the two together is what makes a whole run of command line
+    /// calls report as "at least 0.00". [`Ledger::subscribed`] counts those instead.
     pub fn unpriced(&self) -> usize {
-        self.lines.iter().filter(|line| line.cost.is_none()).count()
+        self.lines
+            .iter()
+            .filter(|line| line.cost.is_none() && line.subscription.is_none())
+            .count()
+    }
+
+    /// How many calls were covered by a flat fee rather than billed per call.
+    ///
+    /// Belongs beside [`Ledger::total`] in any report. A total of nothing over forty covered
+    /// calls is a correct sentence; the same total with no count beside it is a bill nobody
+    /// should believe.
+    pub fn subscribed(&self) -> usize {
+        self.lines
+            .iter()
+            .filter(|line| line.subscription.is_some())
+            .count()
+    }
+
+    /// Which plans covered the calls in here. In name order, without repeats.
+    pub fn plans(&self) -> Vec<&str> {
+        let mut seen: Vec<&str> = self
+            .lines
+            .iter()
+            .filter_map(|line| line.subscription.as_deref())
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen
+    }
+
+    /// How much of a total rests on tokens counted here rather than reported.
+    ///
+    /// One figure per currency, in code order, so a report can say "4.10, of which 3.80
+    /// estimated". Empty when nothing in the run was estimated.
+    ///
+    /// This is the whole reason [`crate::UsageCoverage::Estimated`] is a variant rather than
+    /// a fold into `Exact`: without it the estimated part of a bill is unfindable once it
+    /// has been added to the measured part.
+    pub fn estimated(&self) -> Vec<(String, Micros)> {
+        let mut sums: BTreeMap<&str, Micros> = BTreeMap::new();
+        for priced in self
+            .lines
+            .iter()
+            .filter_map(|line| line.cost.as_ref())
+            .filter(|priced| priced.coverage == UsageCoverage::Estimated)
+        {
+            let entry = sums.entry(priced.currency.as_str()).or_insert(Micros(0));
+            *entry = *entry + priced.amount;
+        }
+        sums.into_iter()
+            .map(|(currency, amount)| (currency.to_string(), amount))
+            .collect()
     }
 
     /// Which price book editions produced the costs in here.
@@ -257,13 +420,27 @@ impl Ledger {
 
     /// What the run cost.
     ///
-    /// [`Total::Exact`] only when every call was priced and every price came from usage the
-    /// provider reported in full. Anything else is [`Total::AtLeast`]: one unmeasured call
-    /// makes the whole figure a floor, and saying otherwise is how an unknown cost becomes a
-    /// free one.
+    /// [`Total::Exact`] only when every call was priced from usage the provider reported in
+    /// full, or covered by a plan the caller named. Otherwise:
+    ///
+    /// | In the run | Total |
+    /// |---|---|
+    /// | anything estimated | [`Total::About`] |
+    /// | anything unpriced, or priced from partial usage | [`Total::AtLeast`] |
+    /// | neither | [`Total::Exact`] |
+    ///
+    /// **An estimate outranks a floor when both are true**, and that is not the obvious
+    /// order. A floor claims the real figure is this or more. An estimate can run high, so
+    /// one estimate anywhere in the run makes that claim unsafe, and a lower bound that can
+    /// be false is worse than an honest approximation. `About` says less and is true.
+    ///
+    /// It says less about the unpriced calls too, which is why [`Ledger::unpriced`],
+    /// [`Ledger::estimated`] and [`Ledger::subscribed`] belong beside it in any report. One
+    /// enum cannot carry three facts, and [`Ledger::summary`] is the version that says them
+    /// all in a sentence.
     ///
     /// `None` when the priced calls are in more than one currency. There is no exchange rate
-    /// in this crate and there should not be one — a rate has a date and a source, exactly
+    /// in this crate and there should not be one: a rate has a date and a source, exactly
     /// like a price, and inventing one to make this method return a number would produce a
     /// figure nobody could audit. Ask [`Ledger::totals`] instead.
     pub fn total(&self) -> Option<Total> {
@@ -272,25 +449,45 @@ impl Ledger {
         }
 
         let mut amount = Micros(0);
-        let mut whole = true;
+        for priced in self.lines.iter().filter_map(|line| line.cost.as_ref()) {
+            amount = amount + priced.amount;
+        }
+        Some(self.kind(
+            amount,
+            self.unpriced() > 0,
+            self.lines.iter().filter_map(|l| l.cost.as_ref()),
+        ))
+    }
 
-        for line in &self.lines {
-            match &line.cost {
-                Some(priced) => {
-                    amount = amount + priced.amount;
-                    if priced.coverage != UsageCoverage::Exact {
-                        whole = false;
-                    }
-                }
-                None => whole = false,
+    /// Which of the three a figure is, given what went into it.
+    ///
+    /// One place, so [`Ledger::total`] and [`Ledger::totals`] cannot come to different
+    /// conclusions about the same run.
+    fn kind<'a>(
+        &self,
+        amount: Micros,
+        any_unpriced: bool,
+        priced: impl Iterator<Item = &'a Priced>,
+    ) -> Total {
+        let mut estimated = false;
+        let mut understated = any_unpriced;
+        for cost in priced {
+            match cost.coverage {
+                UsageCoverage::Estimated => estimated = true,
+                UsageCoverage::Exact => {}
+                // Absent never prices, so this is Partial: some of what was billed was
+                // never reported, and the figure is short by whatever it was.
+                _ => understated = true,
             }
         }
 
-        Some(if whole {
-            Total::Exact(amount)
-        } else {
+        if estimated {
+            Total::About(amount)
+        } else if understated {
             Total::AtLeast(amount)
-        })
+        } else {
+            Total::Exact(amount)
+        }
     }
 
     /// What the run cost, one figure per currency, in code order.
@@ -304,30 +501,86 @@ impl Ledger {
     /// report — an empty list is not a run that cost nothing.
     pub fn totals(&self) -> Vec<(String, Total)> {
         let any_unpriced = self.unpriced() > 0;
-        let mut sums: BTreeMap<&str, (Micros, bool)> = BTreeMap::new();
+        let mut sums: BTreeMap<&str, Micros> = BTreeMap::new();
 
         for priced in self.lines.iter().filter_map(|line| line.cost.as_ref()) {
-            let entry = sums
-                .entry(priced.currency.as_str())
-                .or_insert((Micros(0), !any_unpriced));
-            entry.0 = entry.0 + priced.amount;
-            if priced.coverage != UsageCoverage::Exact {
-                entry.1 = false;
-            }
+            let entry = sums.entry(priced.currency.as_str()).or_insert(Micros(0));
+            *entry = *entry + priced.amount;
         }
 
         sums.into_iter()
-            .map(|(currency, (amount, whole))| {
-                (
-                    currency.to_string(),
-                    if whole {
-                        Total::Exact(amount)
-                    } else {
-                        Total::AtLeast(amount)
-                    },
-                )
+            .map(|(currency, amount)| {
+                let here = self
+                    .lines
+                    .iter()
+                    .filter_map(|line| line.cost.as_ref())
+                    .filter(|priced| priced.currency == currency);
+                (currency.to_string(), self.kind(amount, any_unpriced, here))
             })
             .collect()
+    }
+
+    /// The run in one sentence, with nothing left out.
+    ///
+    /// The answer to "what did that cost", written so that the parts a person has to act on
+    /// differently are named separately: what was measured, what was estimated, what nobody
+    /// could price, and what a flat fee covers.
+    ///
+    /// ```
+    /// use llmr::cost::ledger::Ledger;
+    /// # use llmr::Usage;
+    /// let mut ledger = Ledger::new();
+    /// ledger.record_subscription("claude-sonnet-5", "claude-max", Usage::absent());
+    /// ledger.record_subscription("claude-sonnet-5", "claude-max", Usage::absent());
+    ///
+    /// assert_eq!(
+    ///     ledger.summary(),
+    ///     "2 calls, nothing billed per call, 2 covered by claude-max"
+    /// );
+    /// ```
+    ///
+    /// A sentence rather than a struct because this is the thing a person reads, and every
+    /// program that assembled it from [`Ledger::total`], [`Ledger::unpriced`] and the rest
+    /// would leave one of them out. The pieces are all still there for a program that wants
+    /// to render its own.
+    pub fn summary(&self) -> String {
+        if self.lines.is_empty() {
+            return "no calls".into();
+        }
+
+        let mut out = format!("{} calls", self.calls());
+
+        let totals = self.totals();
+        if totals.is_empty() {
+            out.push_str(", nothing billed per call");
+        } else {
+            let figures: Vec<String> = totals
+                .iter()
+                .map(|(currency, total)| format!("{total} {currency}"))
+                .collect();
+            out.push_str(&format!(", {}", figures.join(" + ")));
+
+            let estimated: Vec<String> = self
+                .estimated()
+                .into_iter()
+                .map(|(currency, amount)| format!("{amount} {currency}"))
+                .collect();
+            if !estimated.is_empty() {
+                out.push_str(&format!(", of which {} estimated", estimated.join(" + ")));
+            }
+        }
+
+        if self.unpriced() > 0 {
+            out.push_str(&format!(", {} with no figure at all", self.unpriced()));
+        }
+        if self.subscribed() > 0 {
+            out.push_str(&format!(
+                ", {} covered by {}",
+                self.subscribed(),
+                self.plans().join(" and ")
+            ));
+        }
+        out
     }
 }
 
@@ -416,6 +669,129 @@ output = "30.00"
         assert_eq!(ledger.unpriced(), 0);
         // Two calls of 10 in and 30 out, per million, on a million each.
         assert_eq!(total.amount(), Micros(80_000_000));
+    }
+
+    /// The same numbers, counted here rather than reported.
+    fn counted() -> Usage {
+        measured().estimating()
+    }
+
+    #[test]
+    fn a_run_of_covered_calls_is_out_of_scope_rather_than_unknown() {
+        // The failure this fixes. A hundred command line calls used to report "at least
+        // 0.00", which is true, useless, and the crate's main path.
+        let mut ledger = Ledger::new();
+        for _ in 0..3 {
+            ledger.record_subscription("claude-sonnet-5", "claude-max", Usage::absent());
+        }
+
+        assert_eq!(ledger.calls(), 3);
+        assert_eq!(ledger.unpriced(), 0, "covered is not unknown");
+        assert_eq!(ledger.subscribed(), 3);
+        assert_eq!(ledger.plans(), vec!["claude-max"]);
+        assert_eq!(
+            ledger.summary(),
+            "3 calls, nothing billed per call, 3 covered by claude-max"
+        );
+    }
+
+    #[test]
+    fn a_covered_call_does_not_turn_a_measured_run_into_a_floor() {
+        // A bot that calls an API and a subscription tool in the same run. The API half is
+        // measured and priced, and the covered half adds nothing to a per-call bill, so
+        // there is nothing about the total that is unknown.
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", measured()), Some(&book()));
+        ledger.record_subscription("claude-sonnet-5", "claude-max", Usage::absent());
+
+        let total = sum(&ledger);
+        assert!(total.is_exact(), "{total}");
+        assert_eq!(total.amount(), Micros(40_000_000));
+    }
+
+    #[test]
+    fn a_covered_call_never_adds_a_fee_to_the_total() {
+        // The subscription is not divided into calls, because there is no division of it
+        // that means anything. What a report says is the count and the plan.
+        let mut ledger = Ledger::new();
+        ledger.record_subscription("m", "claude-max", Usage::absent());
+        assert_eq!(sum(&ledger).amount(), Micros(0));
+        assert!(
+            ledger.summary().contains("covered by claude-max"),
+            "{}",
+            ledger.summary()
+        );
+    }
+
+    #[test]
+    fn an_estimated_call_is_about_rather_than_exact() {
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", counted()), Some(&book()));
+
+        let total = sum(&ledger);
+        assert!(!total.is_exact(), "{total}");
+        assert_eq!(total, Total::About(Micros(40_000_000)));
+        assert!(total.to_string().starts_with("about"), "{total}");
+        assert_eq!(ledger.unpriced(), 0, "an estimate is a figure, not a gap");
+    }
+
+    #[test]
+    fn an_estimate_outranks_a_floor_when_both_are_true() {
+        // Not the obvious order, and the reason is that a floor can be false. An estimate
+        // can run high, so "at least 40.00" is a claim nobody checked the moment one
+        // estimated line is in the sum. `About` says less and is true.
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", counted()), Some(&book()));
+        ledger.record_unpriced("m", Usage::absent());
+
+        assert!(matches!(sum(&ledger), Total::About(_)), "{}", sum(&ledger));
+        assert_eq!(
+            ledger.unpriced(),
+            1,
+            "and the call with no figure is still findable"
+        );
+    }
+
+    #[test]
+    fn how_much_of_a_bill_was_estimated_stays_findable_after_it_is_added_up() {
+        // The whole reason `Estimated` is a variant rather than a fold into `Exact`.
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", measured()), Some(&book()));
+        ledger.record(&reply("m", counted()), Some(&book()));
+
+        assert_eq!(sum(&ledger).amount(), Micros(80_000_000));
+        assert_eq!(
+            ledger.estimated(),
+            vec![("USD".into(), Micros(40_000_000))],
+            "half of it was counted here rather than reported"
+        );
+        assert_eq!(
+            ledger.summary(),
+            "2 calls, about 80.000000 USD, of which 40.000000 USD estimated"
+        );
+    }
+
+    #[test]
+    fn a_run_that_is_all_three_says_all_three() {
+        // What an agentic run actually looks like: a measured API call, a locally counted
+        // one, a call nobody could price, and a covered command line call. One sentence has
+        // to carry every part, because a person acts differently on each.
+        let mut ledger = Ledger::new();
+        ledger.record(&reply("m", measured()), Some(&book()));
+        ledger.record(&reply("m", counted()), Some(&book()));
+        ledger.record_unpriced("m", Usage::absent());
+        ledger.record_subscription("m", "claude-max", Usage::absent());
+
+        assert_eq!(
+            ledger.summary(),
+            "4 calls, about 80.000000 USD, of which 40.000000 USD estimated, \
+             1 with no figure at all, 1 covered by claude-max"
+        );
+    }
+
+    #[test]
+    fn an_empty_ledger_says_so_rather_than_reporting_nothing() {
+        assert_eq!(Ledger::new().summary(), "no calls");
     }
 
     #[test]

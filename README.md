@@ -5,7 +5,7 @@ usage you can trust.
 
 ```toml
 [dependencies]
-llmr = { version = "0.1", features = ["reqwest"] }
+llmr = { version = "0.2", features = ["reqwest"] }
 ```
 
 ```rust,no_run
@@ -253,7 +253,7 @@ The first two are on by default. `reqwest` is not, because almost every program 
 an HTTP client and adding this crate should not add two hundred more.
 
 ```toml
-llmr = { version = "0.1", default-features = false, features = ["cli"] }
+llmr = { version = "0.2", default-features = false, features = ["cli"] }
 ```
 
 ## Adding a provider
@@ -307,7 +307,7 @@ Implement `Provider`, then check it against the contract suite:
 
 ```toml
 [dev-dependencies]
-llmr = { version = "0.1", features = ["testkit"] }
+llmr = { version = "0.2", features = ["testkit"] }
 ```
 
 ```rust,no_run
