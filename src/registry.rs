@@ -125,6 +125,7 @@ impl Entry {
 /// ways is two sets of capabilities. A vendor CLI usually cannot take a tool schema even
 /// when the model behind it can.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Registry {
     /// Which vendor these models belong to.
     pub provider: String,

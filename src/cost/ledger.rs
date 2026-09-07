@@ -76,6 +76,7 @@ use std::collections::BTreeMap;
 /// Two variants rather than a number and a flag, because a flag is something a caller can
 /// forget to read and a variant is something they have to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Total {
     /// Every call was priced, from usage the provider reported in full.
     Exact(Micros),

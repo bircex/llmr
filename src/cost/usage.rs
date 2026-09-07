@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// look the same once they are added up. A total built from partial usage is a total that
 /// understates the bill, and nothing downstream can tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum UsageCoverage {
     /// Every field was reported.
     Exact,

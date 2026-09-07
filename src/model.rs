@@ -47,6 +47,7 @@ impl std::fmt::Display for ModelId {
 /// every prompt to the vendor. Code that treats "local credential" as "local data" will send
 /// a customer record to a third party and log it as private.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Reach {
     /// The vendor's own hosted API.
     FirstPartyApi,
