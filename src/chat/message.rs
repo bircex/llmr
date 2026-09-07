@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Who said something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Role {
     /// You, or your user.
     User,

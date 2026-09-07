@@ -48,6 +48,7 @@ impl ToolSchema {
 /// makes the top two unreachable. A provider whose model stops at three maps the last two
 /// onto its own highest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Effort {
     /// Barely any.
     Low,
@@ -72,6 +73,7 @@ pub enum Effort {
 /// says what you want, a capability says what is possible, and one enum carrying both would
 /// be two answers to two questions in one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Thinking {
     /// No opinion. Whatever the model does by default.
     #[default]

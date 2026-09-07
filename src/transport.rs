@@ -24,6 +24,7 @@ pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Vec<u8>>> + Send + 'stati
 /// GET, and a transport that assumed one of them would make the other work by accident on
 /// some servers and fail on others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Method {
     /// Read.
     Get,

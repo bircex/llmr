@@ -124,6 +124,7 @@ pub struct Rate {
 /// Prices change on the vendor's schedule. A table with no date on it is a table nobody can
 /// audit, so every book carries when it took effect and when a person last checked it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct PriceBook {
     /// A name for this edition, recorded beside anything it priced.
     pub id: String,

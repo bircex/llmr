@@ -1020,6 +1020,39 @@ would have noticed.
 
 If you add a struct outside code must build, give it a constructor in the same commit.
 
+### What was not marked, and what that cost
+
+The rule was written down and then not applied to everything. `PriceBook`, `Registry`,
+`UsageCoverage`, `Total`, `Reach`, `Role`, `Effort`, `Thinking` and `Method` were all
+exhaustively constructible or exhaustively matchable from outside, and 0.2.0 paid for it:
+`cargo-semver-checks` failed three lints across two pull requests, and the fix was a version
+bump rather than a change to the code.
+
+| Type | What broke |
+|---|---|
+| `PriceBook` | gained `expires_on` |
+| `UsageCoverage` | gained `Estimated`, which also moved two discriminants and changed the derived `PartialOrd` |
+| `Total` | gained `About` |
+
+All nine are marked now. Doing it in 0.2.0 cost nothing, because 0.2.0 was already a breaking
+release; every release after this one it would have cost a major bump of its own.
+
+**Two kinds of type are deliberately left alone.**
+
+`Micros` is a newtype whose whole purpose is transparent construction. `Micros(5)` is the
+API, and taking it away would buy nothing: a newtype cannot grow a second field without
+becoming a different type anyway.
+
+A struct whose fields are all private is already unbuildable from outside, so marking it adds
+nothing. `Budget` is the example: its three fields are private and it has `Budget::of` and
+accessors.
+
+**Enums are the half that is easy to forget.** `#[non_exhaustive]` on an enum is not about
+construction, it is about `match`: outside code must carry a `_` arm, which is what lets a
+variant be added later. Inside this crate the attribute does nothing, which is why
+`Breaker::opening_for` can still match `Error` exhaustively and refuse to compile when a
+variant appears. That is the pattern to copy, not to work around.
+
 ---
 
 ## The contract suite is applied to the crate's own providers

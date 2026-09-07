@@ -80,6 +80,13 @@ change is a minor bump.
 
 ### Changed
 
+- **Breaking:** `PriceBook`, `Registry`, `UsageCoverage`, `Total`, `Reach`, `Role`, `Effort`,
+  `Thinking` and `Method` are now `#[non_exhaustive]`. Outside code can no longer build them
+  with a literal or match them without a `_` arm, which is the point: the next field or
+  variant any of them gains is a minor bump rather than a major one. Three of them grew in
+  this release and cost one. `Micros` is deliberately left alone, and so is any struct whose
+  fields are already private. (#70)
+
 - **Breaking:** `Routed` is now `Routed<T = ChatResponse>`. Written as `Routed` it means what
   it always did; `Router::stream` answers a `Routed<()>` beside the stream. (#41)
 - **Breaking:** `Usage` has a new `estimated` field, `Line` a new `subscription` field, and
