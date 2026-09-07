@@ -145,6 +145,53 @@ looks like a receipt.
 
 ---
 
+## A run of subscription calls is out of scope, not unknown
+
+`Usage::absent` says a call was not measured, and a `Ledger::total` containing one is a
+floor. Both are right, and together they made the crate useless on its own main path: a bot
+running a hundred `Reach::LocalCli` calls was told the run cost "at least 0.00". A layer
+whose promise is the cost cannot answer "I don't know" for everything it does.
+
+Three things fix it and none of them is a zero.
+
+**Read what the tool reports.** Some print token counts in their JSON envelope. `Envelope`
+already reads them and both shipped presets do. The trap is `UsageNames`: whether a tool's
+prompt count is the whole prompt or the uncached remainder is the difference between a number
+that is right and one that looks right, and `providers/openai/cli.rs` carries a comment
+saying which Codex reports for exactly that reason.
+
+**A counted token is not a reported one.** `UsageCoverage::Estimated` exists so a locally
+counted number can be added up without being folded into `Exact`, which would destroy the one
+property the type is for. It is not `Partial` either: partial understates, so a partial total
+is a floor, while an estimate can be wrong in **either** direction. That is why `Total::About`
+outranks `Total::AtLeast` when both apply. A lower bound that can be false is worse than an
+honest approximation, and `Ledger::estimated` keeps the guessed part findable after it has
+been added to the measured part.
+
+**This crate does not count the tokens.** A tokeniser has to match the vendor's, per model,
+and one that is close produces numbers that look right and are not. `Usage::estimating` takes
+a count the caller produced. Bringing a tokeniser in would be this crate manufacturing
+exactly the confident wrong number every type in `cost` exists to prevent.
+
+**A flat fee is out of scope rather than unknown.** A call on a subscription added nothing to
+a per-call bill. `Ledger::record_subscription` records that, `unpriced()` stops counting it,
+and the total stops being a floor on account of it. The total never contains the fee: there
+is no division of a subscription into calls that means anything, so `subscribed()` and
+`plans()` go beside the figure and the person reading knows what they pay.
+
+**Nothing guesses that a tool is on a subscription.** The same program signed in one way is a
+flat fee and signed in another is metered against an API key, and no preset can tell which.
+`Provider::subscription` answers `None` everywhere in this crate until a caller says
+otherwise through `LocalCli::billed_by`. Getting it wrong writes a metered call down as
+costing nothing, which is the zero `Usage::absent` exists to prevent wearing a better name.
+The protection is that it cannot happen by accident: it takes typing a plan name.
+
+`Ledger::summary` is the sentence with all of it in: what was measured, what was estimated,
+what has no figure, and what a plan covers. It exists because every program that assembled
+that from the four accessors would leave one out.
+
+---
+
 ## A reply that cannot be read is an error, never an empty answer
 
 A 200 with a body this crate cannot parse returns `Error::Unreadable`.
