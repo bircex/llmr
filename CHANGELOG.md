@@ -7,21 +7,43 @@ change is a minor bump.
 
 ### Added
 
-- `UsageCoverage::Estimated` and `Usage::estimating`, so tokens counted locally can be added
-  up without being folded into `Exact`. An estimate is not a floor: it can run high, so
-  `Total::About` is a third answer and outranks `Total::AtLeast` when both apply.
-  `Ledger::estimated` keeps the guessed part of a bill findable after it has been summed.
-  This crate does not count the tokens and will not; bring your own. (#38)
-- `Ledger::record_subscription`, `Ledger::subscribed` and `Ledger::plans`, so a call covered
-  by a flat fee is out of scope rather than unknown. A run of a hundred command line calls
-  reported "at least 0.00" before this, which is true and useless on the crate's main path.
-  The total never contains the fee. (#38)
-- `Provider::subscription`, defaulting to `None`, and `LocalCli::billed_by` to set it.
-  Nothing guesses: the same tool signed in against an API key is metered. (#38)
-- `Ledger::record_from`, which reads `Provider::subscription` and records the call the right
-  way, so a route added later cannot be recorded two different ways in two places. (#38)
-- `Ledger::summary`, the run in one sentence: what was measured, what was estimated, what has
-  no figure at all, and what a plan covers. (#38)
+- `Budget`, `Router::within`, `Router::spending` and `Router::charge`, so a run has a cap
+  that refuses before the money goes rather than a report afterwards. A route nobody can
+  price is refused rather than run blind, a route in another currency is refused rather than
+  converted, and what a budget cannot promise is written down: the prompt is not priced
+  before it is sent, concurrent calls can overshoot, and a streamed call has to be settled by
+  the caller. (#40)
+- `Error::OverBudget`, for a call that was never made because it would have taken the run
+  over its cap. Nothing was sent, nothing was billed, and it opens no circuit. (#40)
+- `Router::within_deadline`, a bound over the whole routed attempt. Checked before every
+  attempt and before every retry wait, so a `Retry` policy's attempt count is a maximum
+  rather than a promise. It answers `Error::Timeout` rather than the last error from a route,
+  because giving up on time and giving up on failures need different fixes. It cannot cut
+  short a call already in flight; that is your transport's timeout. (#45)
+- `Order` and `Router::ordering`, so selection can be something other than the order you
+  wrote: `Cheapest` by published rate, or `Healthiest` by fewest consecutive failures. A
+  route with no price sorts **last**, never first, because reading a missing price as zero
+  would put every unpriced provider at the front and look deliberate. The requirement check
+  still comes first, and every sort is stable. (#44)
+- `Route::priced_by` and `Route::rate`, which is where `Order::Cheapest` gets its numbers.
+  (#44)
+- `Breaker` and `Router::breaking`, so a route that has been failing is skipped for a while
+  instead of being tried first, waited on and fallen through in every request. It opens for a
+  failure about the provider and never for one about the request, honours a `Retry-After`
+  exactly, leaves a rejected credential alone for a long time, and reopens on its own because
+  time does it rather than anything having to be called. Off unless you ask, like `Retry`.
+  (#42)
+- `Router::preflight` now feeds the breaker when there is one: a route that answered
+  `Access::Denied` at startup rests for `Breaker::settled` instead of being tried first in
+  every request. `Access::Unknown` still does nothing, which is what the third variant is
+  for. The route is rested rather than dropped, so a key fixed while the program runs is
+  found. (#43)
+- `Router::resting`, which routes are currently being skipped and for how long, so the same
+  fact is readable without making a request. (#42)
+- `Router::stream`, so the crate routes a streamed call and not only a whole one. It falls
+  through a provider that fails while the stream is opening and never after the first event
+  has reached the caller: continuing a half written answer on a second model produces text
+  nobody wrote, in one voice, with nothing downstream able to detect it. (#41)
 - `Ledger::record_cancelled`, for a call that went out and whose reply was never read. The
   case is hedging: two providers asked the same question, the loser's future dropped. That
   request was billed, no `ChatResponse` came back, so nothing called `Ledger::record` and the
@@ -37,7 +59,8 @@ change is a minor bump.
   carries `stop_reason`. `Other` is not `is_complete`, so a caller asking whether an answer
   finished was told "no" for every call it ever made. `Envelope::with_stop_reason` reads it,
   and a tool that says nothing is still `Other`. (#46)
-
+- **Breaking:** `Routed` is now `Routed<T = ChatResponse>`. Written as `Routed` it means what
+  it always did; `Router::stream` answers a `Routed<()>` beside the stream. (#41)
 ### Testing
 
 - `tests/what_a_command_line_tool_prints.rs`, which drives each command line preset through a
@@ -47,16 +70,20 @@ change is a minor bump.
   the tool's `input_tokens` is the whole prompt or the uncached remainder. It is the
   remainder, which is what this crate means, so those names were right. (#46)
 
-### Changed
-
-- **Breaking:** `Usage` has a new `estimated` field, `Line` a new `subscription` field, and
-  `Total` a new `About` variant. A `match` on `Total` needs the arm; both structs are
-  `#[non_exhaustive]`, so only a struct literal inside this crate had to change. (#38)
-
 ### Documentation
 
-- `docs/DESIGN.md` records why a subscription call is out of scope rather than unknown, why
-  an estimate outranks a floor, and why this crate will not ship a tokeniser. (#38)
+- `docs/DESIGN.md` records what a budget checks before a call, what it cannot check, and the
+  two races it admits rather than hides. (#40)
+- `docs/DESIGN.md` records what a deadline bounds, what it cannot bound, and why the reason
+  is the error's type rather than an entry in `fell_through`. (#45)
+- `docs/DESIGN.md` records what `Order::Cheapest` is claiming, and why an unpriced route
+  sorts last rather than first. (#44)
+- `docs/DESIGN.md` records what `preflight` now changes, and why `Unknown` still changes
+  nothing. (#43)
+- `docs/DESIGN.md` records why the circuit uses atomics and a monotonic clock, which failures
+  open it, and why nothing has to reopen one. (#42)
+- `docs/DESIGN.md` records why a streamed route stops being replaceable at the first event.
+  (#41)
 - `docs/DESIGN.md` records that hedging is the caller's to build, what building it here would
   have cost, and the ledger debt it leaves. (#48)
 
