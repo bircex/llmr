@@ -18,7 +18,7 @@ of them was and where it got to.
 | Tests | 400 passing, all features · 283 on the default set |
 | Public items | 6,854 all in, 1,440 hand written · **not re-measured since the second embedder** |
 | Dependency tree, default features | 35 crates |
-| Published | no |
+| Published | 0.1.0, on crates.io |
 | CI on GitHub | runs, and is green as of phase 4 |
 
 The public item row is marked rather than updated, because re-running it needs a nightly
