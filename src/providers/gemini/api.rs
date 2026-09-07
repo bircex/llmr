@@ -86,8 +86,45 @@ pub fn from_env(timeout: std::time::Duration) -> Result<Gemini> {
     Ok(with(
         Arc::new(crate::transport::Reqwest::new(timeout)?),
         Secret::from_env("gemini-api-key", "GEMINI_API_KEY")?,
-        Arc::new(Registry::empty("gemini", Reach::FirstPartyApi)),
+        Arc::new(shipped_registry()),
     ))
+}
+
+/// The Gemini models this release knows about.
+///
+/// A starting point, not a source of truth. Every row carries where its facts came from and
+/// when a person last checked them. Supply your own [`Registry`] when you need one that is
+/// current.
+pub fn shipped_registry() -> Registry {
+    Registry::parse(include_str!("../../../models/gemini.toml"))
+        .unwrap_or_else(|_| Registry::empty("gemini", Reach::FirstPartyApi))
+}
+
+/// What this release believes the Gemini API charges, on the standard paid tier.
+///
+/// **This book expires and says so.** One of its rows is an introductory rate with a
+/// published end date, so [`crate::PriceBook::expires_on`] carries that date and
+/// [`crate::PriceBook::needs_rechecking`] answers [`crate::Recheck::Expired`] past it. Ask it
+/// before you present a total as a bill.
+///
+/// The batch, flex and priority tiers are published at different rates. Which tier a call is
+/// billed at is a property of the request rather than of the model, so a table keyed by model
+/// can only carry one of them, and this is the one you get by asking for nothing.
+///
+/// Models published in context bands are not in it, for the same reason as elsewhere: a
+/// [`crate::Rate`] is a flat number per million and cannot express a threshold.
+pub fn shipped_prices() -> crate::cost::PriceBook {
+    crate::cost::PriceBook::parse(include_str!("../../../models/gemini-prices.toml"))
+        .unwrap_or_else(|_| crate::cost::PriceBook {
+            id: "unavailable".into(),
+            provider: "gemini".into(),
+            effective_from: String::new(),
+            source: String::new(),
+            verified_at: String::new(),
+            expires_on: None,
+            currency: "USD".into(),
+            rates: Default::default(),
+        })
 }
 
 impl Protocol for GenerateContent {

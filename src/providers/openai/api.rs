@@ -91,10 +91,47 @@ pub fn from_env(timeout: std::time::Duration) -> Result<OpenAiCompatible> {
         Arc::new(crate::transport::Reqwest::new(timeout)?),
         Secret::from_env("openai-api-key", "OPENAI_API_KEY")?,
         Reach::FirstPartyApi,
-        // No shipped table. Writing rows nobody verified would invent exactly the
-        // provenance the registry exists to record. Ask the endpoint, or supply one.
-        Arc::new(Registry::empty("openai", Reach::FirstPartyApi)),
+        Arc::new(shipped_registry()),
     ))
+}
+
+/// The OpenAI models this release knows about.
+///
+/// A starting point, not a source of truth. Every row carries where its facts came from and
+/// when a person last checked them, and rows are only here because somebody read a published
+/// page on a stated date. Supply your own [`Registry`] when you need one that is current.
+///
+/// **This table is OpenAI's own endpoint, and only that.** A dozen vendors answer this same
+/// request shape and none of them serve these models. Build a [`Registry`] of your own for a
+/// Groq or an Ollama and give it the [`Reach`] that is true of where it runs, because the
+/// reach is the difference between a hosted API and a model on your laptop.
+pub fn shipped_registry() -> Registry {
+    Registry::parse(include_str!("../../../models/openai.toml"))
+        .unwrap_or_else(|_| Registry::empty("openai", Reach::FirstPartyApi))
+}
+
+/// What this release believes OpenAI charges.
+///
+/// Dated, for the same reason. Ask [`crate::PriceBook::needs_rechecking`] before you present
+/// a total as a bill: a shipped table is a convenience and not a contract, and a price that
+/// is quietly six months old produces a confident figure that is wrong by whatever the
+/// vendor changed.
+///
+/// Models published in context bands are not in it. A [`crate::Rate`] is a flat number per
+/// million and cannot say "this much under 272K tokens and more above", so those models have
+/// no row and price as unpriced rather than as right-for-short-prompts.
+pub fn shipped_prices() -> crate::cost::PriceBook {
+    crate::cost::PriceBook::parse(include_str!("../../../models/openai-prices.toml"))
+        .unwrap_or_else(|_| crate::cost::PriceBook {
+            id: "unavailable".into(),
+            provider: "openai".into(),
+            effective_from: String::new(),
+            source: String::new(),
+            verified_at: String::new(),
+            expires_on: None,
+            currency: "USD".into(),
+            rates: Default::default(),
+        })
 }
 
 impl Protocol for ChatCompletions {

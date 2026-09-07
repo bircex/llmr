@@ -9,5 +9,5 @@ pub mod pricing;
 pub mod usage;
 
 pub use ledger::{Ledger, Line, Total};
-pub use pricing::{Micros, PriceBook, Priced, Rate};
+pub use pricing::{Micros, PriceBook, Priced, Rate, Recheck};
 pub use usage::{Usage, UsageCoverage};

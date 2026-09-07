@@ -1,0 +1,52 @@
+# What Google charges for the Gemini API, as dated data.
+#
+# The standard paid tier. The pricing page also publishes batch, flex and priority tiers at
+# different rates, and which one a call is billed at is a property of the request rather than
+# of the model, so a table keyed by model can only carry one of them. Standard is the one you
+# get by asking for nothing.
+#
+# **This book expires, and says so.** The rates for `gemini-3.7-flash` are published as
+# introductory: lower through 31 December 2026 and higher from 1 January 2027. `expires_on`
+# carries that date for the whole book, because one row going wrong is enough to make the
+# edition wrong. `PriceBook::needs_rechecking` reads it.
+#
+# **Models priced in context bands are left out.** `gemini-2.5-pro` and `gemini-3.1-pro` are
+# published at one rate up to 200k prompt tokens and a higher one above. A Rate here is a
+# flat number per million and cannot say that, so they have no row rather than a row that is
+# right for short prompts and quietly wrong for long ones.
+#
+# There is no cache write charge on the published page, so `cache_write` is absent and reads
+# as zero.
+
+id             = "gemini-2026-08"
+provider       = "gemini"
+effective_from = "2026-08-01"
+expires_on     = "2026-12-31"
+source         = "vendor pricing page, standard paid tier"
+verified_at    = "2026-08-31"
+currency       = "USD"
+
+# Per million tokens.
+[[price]]
+model      = "gemini-3.7-flash"
+input      = "0.75"
+output     = "3.75"
+cache_read = "0.075"
+
+[[price]]
+model      = "gemini-3.5-flash"
+input      = "1.50"
+output     = "9.00"
+cache_read = "0.15"
+
+[[price]]
+model      = "gemini-3.5-flash-lite"
+input      = "0.30"
+output     = "2.50"
+cache_read = "0.03"
+
+[[price]]
+model      = "gemini-2.5-flash"
+input      = "0.30"
+output     = "2.50"
+cache_read = "0.03"
