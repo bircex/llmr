@@ -3,6 +3,29 @@
 This project follows [semantic versioning](https://semver.org). Before 1.0, a breaking
 change is a minor bump.
 
+## Unreleased
+
+### Added
+
+- The gateway: an `llmr` binary behind the new `server` feature, and a Docker image built
+  from it. It serves the OpenAI chat completions shape (`/v1/chat/completions`, whole and
+  streamed, and `/v1/models`) over the router, so any project reaches every configured
+  provider through one base URL and one key. Routes, fallbacks, ordering, retries, breakers,
+  deadlines and the on-device floor are set per name in one TOML file; provider keys come
+  from the environment and a missing one stops startup.
+- `llmr check`, which builds every provider, reports routes that can never be chosen and
+  preflights the rest without a billable call, and `llmr healthcheck` for the image.
+- `/llmr/routes`, and `x-llmr-route`, `x-llmr-attempts` and `x-llmr-fell-through` on every
+  reply, so which provider answered and what failed first is visible to the client.
+- A workflow publishing the image to GitHub's container registry for amd64 and arm64.
+
+### Changed
+
+- The README describes the gateway. What it said about the crate is in `LIBRARY.md`, which
+  is also what docs.rs shows.
+- `Cargo.lock` is committed, because the repository now builds a binary and an image that
+  have to be reproducible.
+
 ## 0.2.0 — 2026-09-07
 
 ### Added

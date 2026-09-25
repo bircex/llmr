@@ -78,6 +78,26 @@ cannot see one that is broken.
 
 ---
 
+## The gateway · **first cut, unreleased**
+
+The direction changed: llmr is now primarily a container projects point an OpenAI client at,
+with the crate as the engine underneath. `src/bin/llmr/` is the server (behind the `server`
+feature), `Dockerfile` and `docker-compose.yml` run it, and `.github/workflows/docker.yml`
+publishes `ghcr.io/<owner>/llmr`. README.md describes it; LIBRARY.md is the old crate README.
+
+Next, roughly in order of how much a user would notice:
+
+1. Per key budgets and rate limits. The engine's `Budget` is per process lifetime, which a
+   long running server cannot use as is.
+2. An Anthropic Messages endpoint beside the OpenAI one, so prompt caching and thinking
+   signatures can cross the gateway.
+3. Bedrock (needs a SigV4 signing transport) and an embeddings endpoint.
+4. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
+   the gateway therefore refuses.
+5. Metrics (Prometheus) beside the structured logs.
+
+---
+
 ## Phase 1: structure and the dependency floor · **done**
 
 Two things that are cheap before publish and breaking after it.

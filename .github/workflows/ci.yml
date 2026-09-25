@@ -95,6 +95,8 @@ jobs:
       - run: cargo build --no-default-features --features testkit
       - run: cargo build --no-default-features --features retry
       - run: cargo build --no-default-features --features tracing
+      # The gateway binary, on its own, as the Docker image builds it.
+      - run: cargo build --no-default-features --features server --bin llmr
 
   msrv:
     name: minimum supported rust version

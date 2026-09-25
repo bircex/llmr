@@ -1165,6 +1165,43 @@ gated environment, never on a push.
 
 ---
 
+## The gateway speaks the OpenAI shape, and refuses what it cannot carry
+
+The binary behind the `server` feature is how most projects use this crate: one container,
+one base URL, one key, and the routes decided in a file nobody's application code reads.
+
+**Why the OpenAI shape and not the crate's own.** Every SDK, framework and editor already
+speaks it, so adopting the gateway is a base URL change. The cost is that the shape has no
+place for a thinking signature, a cache breakpoint or an opaque block, so those do not cross
+it. An Anthropic Messages endpoint beside it is the way to carry them, and is listed as a
+gap rather than approximated.
+
+**A field that cannot be honoured is a 400, not ignored.** `n = 3`, stop sequences, a
+forced `tool_choice`, `json_object`: each would be sent without the thing asked for and
+billed anyway. That is the crate's `Needs::unmet_by` rule applied at the edge. Fields that
+cannot change what a client is owed (`user`, `seed`, `parallel_tool_calls`) pass.
+
+**A refusal is a 200 with `content_filter`**, which is how the shape writes one. As an
+error status it would send every client's retry logic asking the same question again, the
+thing the router's refusal rule exists to stop.
+
+**A vendor rejecting the gateway's key is a 502, not a 401.** The client's key was fine; a
+401 would send somebody checking the wrong credential.
+
+**Startup refuses rather than degrades.** A provider key that is missing, a `LLMR_API_KEYS`
+that is empty without `auth = "none"`, an `openai-compatible` endpoint with no stated reach:
+each stops the process with a message naming it. A gateway that started anyway would fail on
+the first request, far from the deploy that caused it.
+
+**Route names use the operator's provider ids.** The crate's providers name themselves after
+their protocol, so two Anthropic accounts would both log as `anthropic`. A thin wrapper puts
+the configured id in front and delegates everything else.
+
+**Direct `provider/model` routers are cached only for models the provider knows**, so their
+breakers remember between requests and a client cannot grow the cache by inventing names.
+
+---
+
 ## Naming and prose
 
 Tests are named after the claim they make, not the function they call.
