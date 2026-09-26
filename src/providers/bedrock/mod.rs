@@ -70,5 +70,4 @@
 //! it, so a fix to one is a fix to both. Another family means another constructor beside it.
 
 #[cfg(feature = "bedrock")]
-#[cfg_attr(docsrs, doc(cfg(feature = "bedrock")))]
 pub mod api;

@@ -260,7 +260,6 @@ pub async fn assert_a_bad_credential_is_denied(provider: &impl Provider, model: 
 /// Panics with a message naming the promise that was broken. It is a test helper, so
 /// failing loudly is the job.
 #[cfg(feature = "embeddings")]
-#[cfg_attr(docsrs, doc(cfg(feature = "embeddings")))]
 pub async fn assert_embedder_contract(embedder: &impl Embedder, known_model: &str) {
     let id = embedder.id().to_string();
     assert!(!id.trim().is_empty(), "an embedder with no id");

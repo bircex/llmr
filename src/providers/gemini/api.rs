@@ -81,7 +81,6 @@ pub fn with(transport: Arc<dyn HttpTransport>, key: Secret, registry: Arc<Regist
 /// [`Error::Auth`] when the variable is unset or blank, and [`Error::Transient`] when the
 /// HTTP client cannot be built.
 #[cfg(feature = "reqwest")]
-#[cfg_attr(docsrs, doc(cfg(feature = "reqwest")))]
 pub fn from_env(timeout: std::time::Duration) -> Result<Gemini> {
     Ok(with(
         Arc::new(crate::transport::Reqwest::new(timeout)?),

@@ -21,9 +21,7 @@
 //! answer for you.
 
 #[cfg(feature = "anthropic")]
-#[cfg_attr(docsrs, doc(cfg(feature = "anthropic")))]
 pub mod api;
 
 #[cfg(feature = "cli")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cli")))]
 pub mod cli;

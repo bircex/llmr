@@ -8,48 +8,54 @@ Security tab. Please do not open a public issue for something exploitable.
 Tell us what you found, how to reproduce it, and what an attacker gets. We will confirm we
 have it, and we will tell you when a fix is released.
 
-## What this crate handles
+## What the gateway holds
 
-An API key, and whatever you put in a prompt. Both are worth thinking about.
+Two kinds of key, and whatever your projects put in a prompt.
 
-**Keys.** `Secret` masks in `Debug` and `Display`, does not implement `Serialize`, and
-overwrites its buffer on drop. That makes the common accidents into unreadable output and
-compile errors rather than a key in a log file. It does not defeat a memory dump taken while
-the process is running.
+**Provider keys** are read from environment variables at startup and never from the
+configuration file, so `llmr.toml` can be committed and mounted read only. Inside the process
+they are held as `Secret`, which masks in `Debug` and `Display`, does not implement
+`Serialize`, and overwrites its buffer on drop. That turns the common accidents into
+unreadable output and compile errors rather than a key in a log line. It does not defeat a
+memory dump taken while the process runs.
 
-Reading a key is `expose()` or `expose_str()`, named that way so a review and a search both
-find every place it happens.
+**Client keys** (`LLMR_API_KEYS`) are what your projects present. They are compared in time
+that does not depend on where they differ. The gateway refuses to start with none unless
+`auth = "none"` is set, and anybody who can reach the port of a gateway with `auth = "none"`
+can spend every configured provider's money.
 
-**Prompts.** Where they go is what `Reach` is for, and getting it wrong is the likeliest
-security problem in a program using this crate:
+**Prompts and replies are never logged.** A request is logged as the name asked for, the
+route that answered, attempts, token counts and the stop reason, and the logging code has no
+path to a message body.
 
-```rust
-use llmr::Reach;
+## Where prompts go
 
-assert!(Reach::LocalCli.uses_local_credential());
-assert!(!Reach::LocalCli.is_on_device());
-```
+That is what `reach` in the configuration and `on_device` on a model are for, and getting it
+wrong is the likeliest security problem in a deployment.
 
-A vendor command line tool signs in on your machine and still sends every prompt to the
-vendor. If your code treats "the credential is local" as "the data stays here", it will send
-something private to a third party and record it as safe. Only `Reach::SelfHosted` keeps the
-data.
+A name marked `on_device = true` is only ever served by a `self-hosted` route, even when every
+local route is down; a fallback does not relax it, and a client header can tighten it but not
+loosen it. The reach of an `openai-compatible` provider is whatever you write: a model on
+your own hardware and a hosted API answer the same request shape, and the gateway cannot tell
+them apart. Setting it wrong is silent.
 
-The reach of an OpenAI compatible endpoint is given by you, not guessed. A model on your
-laptop and a hosted API answer the same request shape, and this crate cannot tell them apart.
-Setting it wrong is silent.
+## What the gateway does not do
 
-## What this crate does not do
+**It does not terminate TLS.** It serves plain HTTP. Keep it on a private network, or put a
+reverse proxy with TLS in front of it before exposing it beyond the host: client keys travel
+in a header.
 
-It does not validate model output. Anything a model returns is text somebody else produced,
-including any tool call arguments in it. Treat it as data, never as instruction, and never
-pass it to a shell, a query, or a file path without checking it yourself.
+**It does not validate model output.** Anything a model returns is text somebody else
+produced, tool call arguments included. Treat it as data, never as instruction.
 
-It does not retry for you. `Error::is_retryable` is a hint that the failure was not your
-fault and not permanent. It does not say the call is safe to repeat, which is a question
-about your request. A timeout is retryable and may still leave you paying for two answers.
+**It does not rate limit or cap spending per client yet.** Every valid key can use every
+configured name. Hand out keys accordingly.
+
+**Retries are configured, not free.** A route retries a rate limit or a transient failure up
+to `retry_attempts` times. A timeout is not retried, because the provider may have finished
+the work and billed for it, and asking again would pay for a second answer.
 
 ## Supported versions
 
-The latest published release. This crate is pre 1.0, so fixes go into a new minor version
-rather than being backported.
+The latest release: the newest `v*` tag, its image and its binaries. The project is pre 1.0,
+so fixes go into a new release rather than being backported.

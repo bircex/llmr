@@ -1,24 +1,29 @@
 # Contributing
 
-Thanks for looking. This is a small crate with a narrow job, and the rules below exist to
-keep it that way.
+Thanks for looking. llmr is an LLM router that runs as a container: an OpenAI-compatible
+gateway (`src/bin/llmr/`) over a routing engine (the rest of `src/`). It has a narrow job, and
+the rules below exist to keep it that way.
+
+It is distributed as a Docker image and release binaries. It is not published as a crate, so
+the engine's Rust types are internal and can change whenever the gateway needs them to.
 
 ## Read this first
 
-[docs/DESIGN.md](docs/DESIGN.md) is the reasoning behind the decisions in this crate. A good
+[docs/DESIGN.md](docs/DESIGN.md) is the reasoning behind the decisions in this project. A good
 number of them look like something to tidy away until you know what breaks without them, and
-the tidying is the failure mode this crate is most exposed to.
+the tidying is the failure mode this project is most exposed to.
 
-[ROADMAP.md](ROADMAP.md) is what is left before 0.1 and what each phase needs.
+[ROADMAP.md](ROADMAP.md) is what shipped and what is next.
 
 ## What belongs here
 
 One question: how do I reach this model, and what did it cost.
 
-Adding a provider, fixing a translation, correcting a model table or a price: yes.
+Adding a provider, fixing a translation, correcting a model table or a price, carrying a
+field the gateway currently refuses: yes.
 
 A tool loop, memory, orchestration, or choosing a model for a task: no. Those are decisions
-about your system, and a library that made them would be one you had to fight.
+about your system, and a router that made them would be one you had to fight.
 
 ## Before you open a pull request
 
@@ -91,22 +96,14 @@ organised.
 
 ## What CI will run
 
-The eight above, plus three you would not usually run by hand:
+The eight above, plus two you would not usually run by hand:
 
 - **`cargo deny check`** — licences against an allowlist, advisories denied, sources limited
   to crates.io, duplicate versions warned. `deny.toml` says why each allowed licence is
   there. Install it with `cargo install cargo-deny --locked` if you want to run it locally.
-- **`cargo publish --dry-run`** — what would actually ship. `exclude` in `Cargo.toml` keeps
-  CI configuration, the roadmap, the design notes and `deny.toml` out of the package.
-- **`cargo-semver-checks`** — live since 0.1.0 went to crates.io, and it earns its place. It
-  caught three breaks in 0.2.0 that nobody had noticed: a field added to `PriceBook`, a
-  variant added to `Total`, and a variant inserted into `UsageCoverage` that moved two
-  discriminants and changed a derived `PartialOrd`. Under 1.0 the fix is a minor bump, which
-  is what the changelog has always said. It is the job that catches a break nobody meant:
-  most of what is public here is
-  `#[non_exhaustive]`, which is exactly the arrangement where somebody assumes every change
-  is additive. Adding a required method to `Provider` is breaking. Narrowing a return type
-  is breaking. Neither looks like it in a diff.
+- **The Docker image** — built on every pull request, then started to prove it runs and that
+  it refuses to start without the provider keys its configuration names. `docker build .`
+  reproduces it locally.
 
 ## Writing a provider
 
@@ -155,7 +152,9 @@ Three things the suite is checking, and they are the ones that are easy to get w
 3. Usage the provider did not report is `Usage::absent()`, not zeros. An unknown cost
    written as zero becomes a free call in every report that adds it up.
 
-Put your provider behind a feature and add it to the table in the README.
+Put your provider behind a feature, add it to the table in `LIBRARY.md`, and give it a
+`kind` in the gateway's configuration (`src/bin/llmr/config.rs` and `gateway.rs`) with a
+row in `llmr.example.toml` and the README.
 
 ### And then call it for real, once
 
@@ -229,9 +228,16 @@ person to see it will be deciding whether to delete it.
 
 ## Commits and versions
 
-The crate follows semantic versioning. Before 1.0, a breaking change is a minor bump.
+Versions follow semantic versioning, applied to what users of the gateway depend on: the
+HTTP API, the response headers, the configuration file and the command line. Before 1.0, a
+breaking change to any of those is a minor bump and gets a line in `CHANGELOG.md`. A
+configuration key that is renamed or removed is breaking, because a file that worked
+yesterday is refused at startup today.
 
-Adding a field to a struct marked `#[non_exhaustive]` is not breaking. Removing one is.
-Most public structs are marked that way for exactly this reason, which also means callers
-build them through constructors rather than literals. If you add a struct that outside code
-must be able to build, give it a constructor in the same commit.
+The engine's Rust types are not part of that promise. Most of them are `#[non_exhaustive]`
+and built through constructors, which keeps changes to them local; if you add a struct the
+gateway must build, give it a constructor in the same commit.
+
+A release is a tag, `vX.Y.Z`, matching the version in `Cargo.toml` and a section in
+`CHANGELOG.md`. The tag publishes the Docker image and the GitHub release with its binaries;
+nothing is published from a laptop.

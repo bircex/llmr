@@ -1,0 +1,11 @@
+target
+.git
+.github
+docs
+tests
+*.md
+!README.md
+!LIBRARY.md
+llmr.toml
+.env
+rust-toolchain.toml

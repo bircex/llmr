@@ -206,7 +206,6 @@ impl Stream for Whole {
 /// Holds one client, which `reqwest` documents as cheap to clone and safe to share. There
 /// is no lock in here, so any number of calls can be in flight at once.
 #[cfg(feature = "reqwest")]
-#[cfg_attr(docsrs, doc(cfg(feature = "reqwest")))]
 #[derive(Debug, Clone)]
 pub struct Reqwest {
     client: reqwest::Client,

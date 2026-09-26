@@ -7,14 +7,16 @@ body:
       value: |
         Two things make a report here quick to act on: which **reach** you were using, and
         what you expected instead. The second matters more than it sounds — several of this
-        crate's decisions look like bugs until you know the reason, and `docs/DESIGN.md`
+        project's decisions look like bugs until you know the reason, and `docs/DESIGN.md`
         says which.
 
   - type: textarea
     id: what-happened
     attributes:
       label: What happened
-      description: What you called, and what came back.
+      description: >
+        The request you sent (or the call you made), what came back, and the x-llmr-route and
+        x-llmr-fell-through headers if it went through the gateway. Leave out prompts and keys.
     validations:
       required: true
 
@@ -47,16 +49,16 @@ body:
     id: provider
     attributes:
       label: Which provider and model
-      placeholder: providers::anthropic::api, claude-sonnet-5
+      placeholder: "anthropic/claude-sonnet-5, or the [[provider]] block from llmr.toml without keys"
 
   - type: input
-    id: features
+    id: running
     attributes:
-      label: Which features were on
-      placeholder: default, or "anthropic, reqwest, retry"
+      label: How you run it
+      placeholder: "ghcr.io/bircex/llmr:0.3.0, a release binary, or built from source"
 
   - type: input
     id: version
     attributes:
       label: Version
-      placeholder: 0.1.0, or a commit
+      placeholder: "llmr --version, an image tag, or a commit"

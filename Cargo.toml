@@ -4,16 +4,12 @@ version       = "0.2.0"
 edition       = "2021"
 rust-version  = "1.90"
 license       = "MIT"
-description   = "Reach language models across providers, with capabilities you can read before you ask and usage you can trust."
+description   = "An LLM router you run as a container: one OpenAI-compatible endpoint in front of Anthropic, OpenAI, Gemini and anything OpenAI-compatible."
 repository    = "https://github.com/bircex/llmr"
-documentation = "https://docs.rs/llmr"
-readme        = "README.md"
-keywords      = ["llm", "anthropic", "openai", "ai", "provider"]
-categories    = ["api-bindings", "asynchronous"]
-# `rust-toolchain.toml` is how this repository is built, not how the crate must be. Shipping
-# it would be a library telling a consumer which compiler to use. `deny.toml` is the same
-# kind of thing: it is how this repository is audited, not something a consumer builds with.
-exclude       = ["/.github", "/docs", "/ROADMAP.md", "/rust-toolchain.toml", "/deny.toml"]
+# Distributed as a Docker image and release binaries, not as a crate. The engine under
+# `src/` is how the gateway is built, not an API anybody downstream depends on, so nothing
+# here can be published by accident.
+publish       = false
 
 [features]
 # Both protocols, and no HTTP client. You supply a transport, which almost every program
@@ -58,6 +54,27 @@ retry = ["dep:tokio", "tokio/time"]
 # does no work.
 tracing = ["dep:tracing"]
 
+# The router as a service: an HTTP server speaking the OpenAI chat completions shape, so any
+# project reaches every configured provider through one base URL and one key. This is what
+# the Docker image runs. It pulls a web server, a runtime and a log formatter, which is why
+# it is a feature rather than something every build pays for.
+server = [
+    "anthropic",
+    "openai",
+    "gemini",
+    "reqwest",
+    "retry",
+    "tracing",
+    "dep:axum",
+    "dep:tracing-subscriber",
+    "tokio/rt-multi-thread",
+    "tokio/macros",
+    "tokio/net",
+    "tokio/signal",
+    "tokio/sync",
+    "tokio/io-util",
+]
+
 [dependencies]
 async-trait = "0.1"
 base64      = { version = "0.22", optional = true, default-features = false, features = ["alloc"] }
@@ -72,10 +89,19 @@ toml        = "1.1"
 reqwest     = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio       = { version = "1", optional = true, default-features = false }
 tracing     = { version = "0.1", optional = true, default-features = false, features = ["std"] }
+axum        = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
+tracing-subscriber = { version = "0.3", optional = true, default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json"] }
 
 [dev-dependencies]
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }
 async-trait = "0.1"
+tower       = { version = "0.5", default-features = false, features = ["util"] }
+
+# The gateway. `cargo run --features server -- --config llmr.toml`, or the Docker image.
+[[bin]]
+name              = "llmr"
+path              = "src/bin/llmr/main.rs"
+required-features = ["server"]
 
 # An example that needs a provider is not built when that provider is off. Cargo's own
 # mechanism rather than a cfg attribute inside the file, so `cargo run --example` also
@@ -104,10 +130,6 @@ required-features = ["openai", "reqwest"]
 [[example]]
 name              = "nearest"
 required-features = ["openai", "embeddings", "reqwest"]
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
 
 # Only the lints that should hold in tests as well as in the library live here.
 # The rest are inner attributes in lib.rs, so a test may still call `expect`.

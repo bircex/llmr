@@ -1,0 +1,32 @@
+# The gateway, and the one line a project needs to use it:
+#
+#   OPENAI_BASE_URL=http://localhost:8080/v1   OPENAI_API_KEY=<one of LLMR_API_KEYS>
+#
+#   cp llmr.example.toml llmr.toml && cp .env.example .env   # then fill both in
+#   docker compose up -d
+#
+# Another compose project reaches it at http://llmr:8080/v1 by joining the `llmr` network:
+#
+#   networks:
+#     llmr:
+#       external: true
+
+services:
+  llmr:
+    image: ghcr.io/bircex/llmr:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - ./llmr.toml:/etc/llmr/llmr.toml:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - llmr
+
+networks:
+  llmr:
+    name: llmr

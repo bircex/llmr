@@ -60,7 +60,8 @@ wildcards = "deny"
 deny = []
 
 [sources]
-# Only crates.io. A git dependency in a published crate is one nobody downstream can build
-# reproducibly, and `cargo publish` refuses it anyway — this fails earlier and says why.
+# Dependencies come from the crates.io registry and nowhere else. A git dependency is one a
+# release build cannot reproduce from Cargo.lock alone, and one nobody audits through the
+# advisory database above.
 unknown-registry = "deny"
 unknown-git = "deny"

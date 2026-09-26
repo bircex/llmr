@@ -1,5 +1,5 @@
 name: Add a provider
-description: A vendor, an endpoint or a command line tool this crate cannot reach yet.
+description: A vendor, an endpoint or a command line tool llmr cannot reach yet.
 labels: ["provider"]
 body:
   - type: markdown
@@ -38,7 +38,7 @@ body:
   - type: dropdown
     id: shape
     attributes:
-      label: Does it already speak a shape this crate has
+      label: Does it already speak a shape llmr has
       description: >
         If it answers at /v1/chat/completions with the OpenAI envelope, it may need no code
         at all — `providers::openai::api` takes a base URL and a reach.

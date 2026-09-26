@@ -521,51 +521,30 @@ its users' text.
 
 ---
 
-## Four crates are part of the public API, and a major bump of any is a breaking change
+## The engine is not published, on purpose
 
-Found by reading the surface rather than the manifest (#19). These types appear in signatures
-callers write, so they are promises even though nothing says so at the call site:
+Until the gateway, this was a crate on crates.io, and two sections here were about keeping
+that promise: which dependencies leaked into its public API (`serde_json`, `serde`,
+`futures-core`, `reqwest`), and how its public surface was counted with
+`cargo public-api`. CI ran `cargo-semver-checks` and a `cargo publish --dry-run` on every
+pull request.
 
-| Crate | Where it shows | What a major bump costs |
-|---|---|---|
-| `serde_json` | `Value` in `ToolSchema::parameters`, `ContentBlock::ToolUse::input` and `Opaque::raw`, and across `Protocol` | A caller's `Value` stops being this crate's `Value` |
-| `serde` | `Serialize`/`Deserialize` on most public types | The same, for anything that round trips a request |
-| `futures-core` | `Stream` inside `EventStream` | Every `stream` implementation |
-| `reqwest` | `Client` in `Reqwest::with_client`, behind the `reqwest` feature | Only callers who build their own client |
+All of that is gone, because the promise is gone. llmr ships as a Docker image and release
+binaries, `Cargo.toml` says `publish = false`, and the engine's Rust types are how the
+gateway is built rather than an API somebody downstream compiles against. What users depend
+on now is the HTTP API, the response headers, the configuration file and the command line,
+and that is what `CONTRIBUTING.md` holds to semantic versioning.
 
-Three of the four are unavoidable and worth it: a JSON value has to be a JSON value somebody
-else can build, and a stream has to be a `Stream` other code can consume. Hiding them behind
-newtypes would mean converting at every boundary and would not remove the coupling, only
-disguise it.
+**Why not keep publishing both.** Two products with two compatibility promises is twice the
+release work for a project with one maintainer, and every engine change would have to be
+weighed against callers nobody can see. A Rust program that wants the router in-process can
+still depend on this repository by git and pin a commit; it just gets no promise between
+commits.
 
-**What this means in practice** is that a `serde_json` 2.0 is a minor bump of this crate
-before 1.0 and a major one after, and that is a decision somebody should make deliberately
-rather than discover from a bug report. It is written down here because nothing in the
-manifest distinguishes a dependency that is an implementation detail from one that is part
-of the promise.
-
----
-
-## How the public surface is counted
-
-The roadmap said 180 in one place and 189 in another, and neither said what it counted. Both
-were wrong in the way that matters: an unmethodical number cannot be compared to a later one,
-so it cannot tell you the surface grew.
-
-The method is now stated, and it is a command:
-
-```sh
-cargo +nightly public-api --all-features
-```
-
-That prints every public item including the trait implementations `derive` writes, which is
-the honest total and is dominated by them. What a reader of the docs meets is smaller, and
-the useful figure is whichever one you pick — as long as the next person picks the same one.
-The roadmap records both and the command that produced them.
-
-After 0.1.0 the same tool answers a better question than "how many": `cargo public-api
---diff` against the published version says what *changed*, which is what
-`cargo-semver-checks` is in CI to enforce.
+**What stays.** The engine keeps `#[non_exhaustive]` and constructors on its types, and keeps
+its rustdoc and doctests under `-D warnings`. Those were never only about outside callers:
+they are what makes a change to a type local, and what keeps the documentation that
+contributors read from pointing at things that no longer exist.
 
 ---
 
@@ -1162,6 +1141,43 @@ asserting that a documented decision is a bug.
 terminal is a call they made and a reply committed here is a call anybody can check. The
 `Against a real endpoint` workflow does the same on a runner, dispatched by hand behind a
 gated environment, never on a push.
+
+---
+
+## The gateway speaks the OpenAI shape, and refuses what it cannot carry
+
+The binary behind the `server` feature is how most projects use this crate: one container,
+one base URL, one key, and the routes decided in a file nobody's application code reads.
+
+**Why the OpenAI shape and not the crate's own.** Every SDK, framework and editor already
+speaks it, so adopting the gateway is a base URL change. The cost is that the shape has no
+place for a thinking signature, a cache breakpoint or an opaque block, so those do not cross
+it. An Anthropic Messages endpoint beside it is the way to carry them, and is listed as a
+gap rather than approximated.
+
+**A field that cannot be honoured is a 400, not ignored.** `n = 3`, stop sequences, a
+forced `tool_choice`, `json_object`: each would be sent without the thing asked for and
+billed anyway. That is the crate's `Needs::unmet_by` rule applied at the edge. Fields that
+cannot change what a client is owed (`user`, `seed`, `parallel_tool_calls`) pass.
+
+**A refusal is a 200 with `content_filter`**, which is how the shape writes one. As an
+error status it would send every client's retry logic asking the same question again, the
+thing the router's refusal rule exists to stop.
+
+**A vendor rejecting the gateway's key is a 502, not a 401.** The client's key was fine; a
+401 would send somebody checking the wrong credential.
+
+**Startup refuses rather than degrades.** A provider key that is missing, a `LLMR_API_KEYS`
+that is empty without `auth = "none"`, an `openai-compatible` endpoint with no stated reach:
+each stops the process with a message naming it. A gateway that started anyway would fail on
+the first request, far from the deploy that caused it.
+
+**Route names use the operator's provider ids.** The crate's providers name themselves after
+their protocol, so two Anthropic accounts would both log as `anthropic`. A thin wrapper puts
+the configured id in front and delegates everything else.
+
+**Direct `provider/model` routers are cached only for models the provider knows**, so their
+breakers remember between requests and a client cannot grow the cache by inventing names.
 
 ---
 

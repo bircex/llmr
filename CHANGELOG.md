@@ -3,6 +3,45 @@
 This project follows [semantic versioning](https://semver.org). Before 1.0, a breaking
 change is a minor bump.
 
+## Unreleased
+
+### Added
+
+- The gateway: an `llmr` binary behind the new `server` feature, and a Docker image built
+  from it. It serves the OpenAI chat completions shape (`/v1/chat/completions`, whole and
+  streamed, and `/v1/models`) over the router, so any project reaches every configured
+  provider through one base URL and one key. Routes, fallbacks, ordering, retries, breakers,
+  deadlines and the on-device floor are set per name in one TOML file; provider keys come
+  from the environment and a missing one stops startup.
+- `llmr check`, which builds every provider, reports routes that can never be chosen and
+  preflights the rest without a billable call, and `llmr healthcheck` for the image.
+- `/llmr/routes`, and `x-llmr-route`, `x-llmr-attempts` and `x-llmr-fell-through` on every
+  reply, so which provider answered and what failed first is visible to the client.
+- A workflow publishing the image to GitHub's container registry for amd64 and arm64.
+
+### Changed
+
+- The README describes the gateway. What it said about the crate is in `LIBRARY.md`, which
+  is now the engine's internal documentation.
+- `Cargo.lock` is committed, because the repository now builds a binary and an image that
+  have to be reproducible.
+- A `v*` tag now builds Linux (x86_64, arm64) and macOS (arm64) binaries and creates a GitHub
+  release with them and this changelog's section as notes. The image for the tag comes from
+  the Docker workflow.
+- Semantic versioning now applies to the HTTP API, the response headers, the configuration
+  file and the command line, not to the engine's Rust types.
+
+### Removed
+
+- Publishing to crates.io. `Cargo.toml` says `publish = false`, the release workflow no longer
+  runs `cargo publish`, and the `crates-io` environment and `CARGO_REGISTRY_TOKEN` secret it
+  used are no longer read. 0.1.0 stays on crates.io; nothing newer will be published there.
+- The pull request jobs that guarded the crate's public API: `cargo package` /
+  `cargo publish --dry-run` and `cargo-semver-checks`.
+- The docs.rs configuration: `[package.metadata.docs.rs]`, the `docsrs` feature-badge
+  attributes in the source, and the crates.io metadata (`documentation`, `keywords`,
+  `categories`, `exclude`).
+
 ## 0.2.0 — 2026-09-07
 
 ### Added

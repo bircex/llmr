@@ -57,21 +57,16 @@
 pub mod api;
 
 #[cfg(feature = "cli")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cli")))]
 pub mod cli;
 
 #[cfg(any(feature = "anthropic", feature = "cli"))]
-#[cfg_attr(docsrs, doc(cfg(any(feature = "anthropic", feature = "cli"))))]
 pub mod anthropic;
 
 #[cfg(feature = "bedrock")]
-#[cfg_attr(docsrs, doc(cfg(feature = "bedrock")))]
 pub mod bedrock;
 
 #[cfg(feature = "gemini")]
-#[cfg_attr(docsrs, doc(cfg(feature = "gemini")))]
 pub mod gemini;
 
 #[cfg(any(feature = "openai", feature = "cli"))]
-#[cfg_attr(docsrs, doc(cfg(any(feature = "openai", feature = "cli"))))]
 pub mod openai;
