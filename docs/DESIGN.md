@@ -8,14 +8,21 @@ with the reason rather than the rule.
 
 ---
 
-## What this crate is
+## What llmr is
 
-One question: **how do I reach this model, and what did it cost.**
+A gateway (`src/bin/llmr/`) in front of an engine (the rest of `src/`). The gateway is what
+people run: an HTTP server in the OpenAI shape, one configuration file, one container. The
+engine is how it reaches providers and chooses between them. Most sections below are engine
+decisions, because that is where most of the decisions are; the gateway's own are collected
+near the end, in the section on the OpenAI shape.
+
+Both answer one question: **how do I reach this model, and what did it cost.**
 
 It is not an agent framework. No tool loop, no memory, no orchestration. It does not decide
 what your work needs either: the router picks a provider that meets a set of requirements,
 and deciding that a code review needs reasoning while a commit message does not is policy
-over your own system.
+over your own system. In the gateway, that policy is the operator's: which names exist and
+which routes serve each.
 
 That line is what keeps it useful to more than one program. A router that knew what a
 security review was would be one only its author could use.
@@ -82,7 +89,7 @@ It cannot fail. Every way of failing to find out is `Access::Unknown`.
 
 The alternative has two channels carrying the same meaning: an `Err(Transient)` and an
 `Unknown { why }` both say nobody knows, and a caller then has to handle both, so it will
-handle one. Deciding which failures are "could not check" and which are "no" is this crate's
+handle one. Deciding which failures are "could not check" and which are "no" is the engine's
 job, because it is the crate that knows a 401 is settled and a 503 is not.
 
 The mapping therefore lives in one place. A rejected credential, a missing program and a model
@@ -168,9 +175,9 @@ outranks `Total::AtLeast` when both apply. A lower bound that can be false is wo
 honest approximation, and `Ledger::estimated` keeps the guessed part findable after it has
 been added to the measured part.
 
-**This crate does not count the tokens.** A tokeniser has to match the vendor's, per model,
+**The engine does not count the tokens.** A tokeniser has to match the vendor's, per model,
 and one that is close produces numbers that look right and are not. `Usage::estimating` takes
-a count the caller produced. Bringing a tokeniser in would be this crate manufacturing
+a count the caller produced. Bringing a tokeniser in would be the engine manufacturing
 exactly the confident wrong number every type in `cost` exists to prevent.
 
 **A flat fee is out of scope rather than unknown.** A call on a subscription added nothing to
@@ -181,7 +188,7 @@ is no division of a subscription into calls that means anything, so `subscribed(
 
 **Nothing guesses that a tool is on a subscription.** The same program signed in one way is a
 flat fee and signed in another is metered against an API key, and no preset can tell which.
-`Provider::subscription` answers `None` everywhere in this crate until a caller says
+`Provider::subscription` answers `None` everywhere in the engine until a caller says
 otherwise through `LocalCli::billed_by`. Getting it wrong writes a metered call down as
 costing nothing, which is the zero `Usage::absent` exists to prevent wearing a better name.
 The protection is that it cannot happen by accident: it takes typing a plan name.
@@ -194,7 +201,7 @@ that from the four accessors would leave one out.
 
 ## A reply that cannot be read is an error, never an empty answer
 
-A 200 with a body this crate cannot parse returns `Error::Unreadable`.
+A 200 with a body the engine cannot parse returns `Error::Unreadable`.
 
 **If it returned an empty message instead**, a caller would carry on with nothing and call it
 a success. A caller cannot tell an empty answer from a failure, and one of those means keep
@@ -205,7 +212,7 @@ the same body.
 
 ---
 
-## Content blocks this crate does not model are kept verbatim
+## Content blocks the engine does not model are kept verbatim
 
 `ContentBlock::Opaque { kind, raw }` holds anything unrecognised and sends it back byte for
 byte.
@@ -328,7 +335,7 @@ prompt still goes to Anthropic.
 Claude on Bedrock will look under `anthropic` first, and option 2 is where they would find
 it. It is rejected because it makes `anthropic::api` and `anthropic::bedrock` read as two
 routes to the same place, and they are not: different endpoint, different credential,
-different company holding your prompt. This crate exists to keep that distinction legible,
+different company holding your prompt. The engine exists to keep that distinction legible,
 and burying it one level down in the directory that says "Anthropic" is exactly the
 collapse `Reach` was separated from `Provider` to prevent. It would also mean one `Protocol`
 impl copied into several vendor directories, or re-exported from them, which is the same
@@ -345,7 +352,7 @@ where the person is already looking.
 
 **If option 2 were adopted later**, nothing would fail to compile and the first prompt sent
 to AWS by somebody who thought they were talking to Anthropic would not fail either. It
-would simply be wrong, in the direction this crate exists to catch, and no test could see
+would simply be wrong, in the direction the engine exists to catch, and no test could see
 it.
 
 ---
@@ -356,7 +363,7 @@ Embeddings are a different question from chat: different request, different repl
 usage shape, no messages, no stop reason, no reasoning, no tools. Almost nothing in `chat/`
 applies (#26).
 
-**They belong in this crate, as their own trait, behind a feature.** Not as a method on
+**They belong in the engine, as their own trait, behind a feature.** Not as a method on
 `Provider`: adding `embed` there would make every chat-only provider implement a refusal,
 which is a worse tax than the one being avoided.
 
@@ -387,7 +394,7 @@ models occupy unrelated spaces; cosine similarity computes happily and returns a
 number between -1 and 1 that means nothing at all. Every operation anybody performs on the
 result — clustering, a nearest neighbour index, a relevance threshold — works perfectly and
 is wrong. **The failures worth designing against are the ones that produce a plausible answer
-rather than an error**, and this crate now has two of them written down.
+rather than an error**, and the engine now has two of them written down.
 
 ### The reply is index for index with the request
 
@@ -487,7 +494,7 @@ default and `repeating_timeouts()` turns it on.
 
 **A wait the provider named is used exactly**: no jitter, no doubling, no ceiling. Capping it
 would be a local timer firing before the limit clears, which earns a second 429 and a longer
-wait. Waits this crate computes itself are jittered, because two callers that failed together
+wait. Waits the engine computes itself are jittered, because two callers that failed together
 coming back together is how a provider recovering from a fault gets knocked over again.
 
 **Jitter without `rand`.** A dependency on `rand` to spread retries apart would cost more
@@ -502,8 +509,8 @@ double a bill, and the line that did it would not appear in any diff.
 
 ## Spans carry facts, and structurally cannot carry content
 
-Behind the `tracing` feature, off by default, because a library that emits whether you asked
-or not is one people work around. With it off there is no dependency and no work.
+Behind the `tracing` feature. The gateway turns it on and writes the spans to stdout; with it
+off, as in a build of the engine alone, there is no dependency and no work.
 
 The rule is that a span never holds a prompt or a credential. That is not enforced by review:
 every function in `observe` takes a `ModelId`, a `Reach`, a `UsageCoverage`, a count or a
@@ -551,7 +558,7 @@ contributors read from pointing at things that no longer exist.
 ## Signing is a transport concern, not a protocol one
 
 Bedrock authenticates with SigV4 rather than a bearer token, and #22 asked where that
-belongs. It belongs in [`HttpTransport`], and this crate ships no implementation of it.
+belongs. It belongs in [`HttpTransport`], and the engine ships no implementation of it.
 
 **A signature covers what a protocol cannot see.** SigV4 signs the method, the path, the
 query, a set of headers and a hash of the body. A `Protocol` writes JSON and has no idea what
@@ -568,7 +575,7 @@ you supply, and the protocol's `headers` deliberately attaches none — a bearer
 signature is at best ignored and at worst a request Bedrock rejects.
 
 **Why no SigV4 here.** Writing one would mean a crypto dependency and an implementation
-nobody could test against the real thing from inside this crate. `aws-sigv4` exists, most
+nobody could test against the real thing from inside the engine. `aws-sigv4` exists, most
 programs reaching Bedrock already have `aws-config` for credentials, and wrapping a transport
 is ten lines. The crate already makes this bargain for HTTP itself: `reqwest` is a feature,
 not a requirement.
@@ -584,7 +591,7 @@ while this one did not have one. Enabling `bedrock` gave you a translation and a
 the last thing to touch the request, what the colon in a Bedrock model id does to a canonical
 URI, where the region comes from, and why credentials that rotate belong in the transport.
 The wrapper itself is a compiled doctest on `providers::bedrock`, over a `Signer` trait the
-reader implements, so the half that touches this crate's API cannot rot while the half that
+reader implements, so the half that touches the engine's API cannot rot while the half that
 touches AWS's stays prose.
 
 ---
@@ -628,7 +635,7 @@ with no explanation.
 
 ---
 
-## The library may not panic
+## Nothing panics, in the engine or the gateway
 
 ```rust
 #![deny(clippy::unwrap_used)]
@@ -640,8 +647,9 @@ lifted inside `#[cfg(test)]`, because a test that cannot panic cannot assert.
 
 `unsafe_code` is forbidden, not denied.
 
-A library that decides to stop the process has taken a decision that belonged to the program
-using it.
+A process that dies on one malformed reply takes every other request in flight down with
+it. The same lints are denied in the gateway binary, so a bad body from one provider is an
+error for one request rather than an outage for all of them.
 
 ---
 
@@ -713,11 +721,11 @@ seconds". `Router::within_deadline` is that bound.
 disagree the deadline wins: a wait that would run past it is not taken.
 
 **There is no minimum attempt length.** Any time left at all is enough to try again, because
-a minimum would be this crate guessing how long a call takes, and a guess that stopped an
+a minimum would be the engine guessing how long a call takes, and a guess that stopped an
 attempt which would have finished is worse than one attempt that overruns.
 
 **It cannot cut short a call already in flight.** Cancelling one needs a timer, which needs a
-runtime, and this crate does not pick yours. The deadline bounds when a new attempt starts
+runtime, and the engine does not pick yours. The deadline bounds when a new attempt starts
 and how long the router waits between attempts; the length of a single call is the
 transport's timeout, and both need setting.
 
@@ -776,7 +784,7 @@ for ten minutes was tried first, waited on, and fallen through, for every single
 `Router::breaking` gives the router a memory.
 
 **Atomics, not a lock.** `chat` takes `&self` so one router can be shared across as many
-tasks as a program has, and this crate denies holding a lock across an await crate wide. Two
+tasks as a program has, and the engine denies holding a lock across an await crate wide. Two
 tasks racing to record a failure are recording the same fact, so the race does not matter.
 
 **Monotonic, not the wall clock.** A circuit needs two times compared. `Instant` is captured
@@ -791,7 +799,7 @@ lists all nine variants, and there is no wildcard arm: a variant added later sto
 compiling until somebody decides which side it falls on.
 
 `Error::Unreadable` is the one worth arguing about, and it does not open the circuit. The
-provider answered; a single reply this crate could not parse is as likely to be one odd body
+provider answered; a single reply the engine could not parse is as likely to be one odd body
 as a provider gone bad, and the call falls through to the next route either way.
 
 **The circuit is told once per request, not once per attempt.** A `Retry` policy asking three
@@ -805,7 +813,7 @@ successes in between had not happened.
 **A skipped route is never skipped silently.** It goes into `fell_through` with how much
 longer it is resting and how many requests it has failed, and `Router::resting()` answers the
 same without making a request. The wait is reported as a duration rather than a wall clock
-time because formatting one would mean a date dependency this crate does not have, and
+time because formatting one would mean a date dependency the engine does not have, and
 "another 4200ms" is the number somebody acts on anyway.
 
 **When every route that could serve a request is resting, the error is `Transient`, not
@@ -813,7 +821,7 @@ time because formatting one would mean a date dependency this crate does not hav
 person fixes their configuration or waits.
 
 **Handed in, never assumed**, exactly like `Retry`. Not trying a provider is a decision with
-consequences a library cannot weigh, and a router that quietly stopped trying something is
+consequences the engine cannot weigh on its own, and a router that quietly stopped trying something is
 one people work around by not using the router.
 
 **`preflight` feeds it.** It used to answer an `Access` per route and nothing read the
@@ -860,7 +868,7 @@ skipped route is reported. Only the method being called differs, so that is the 
 Racing two providers for the same question and taking whichever answers first is not this
 crate's job. Whether doubling the bill is worth the latency, which two to race, how long to
 wait before starting the second: those are policy over the caller's own system, the same
-reasoning the README gives for this crate not deciding what your work needs. A router that
+reasoning `docs/ENGINE.md` gives for the engine not deciding what your work needs. A router that
 hedged would be one whose cost model its author chose for you.
 
 A caller can already do it, and needs nothing added here. `Provider` is `Send + Sync`, `chat`
@@ -877,7 +885,7 @@ for something `select!` already does.
 **The debt it leaves, which is real.** Drop the losing future and the request was still sent
 and will still be billed. No `ChatResponse` came back, so there is no usage, so
 `Ledger::record` is never called. The ledger then holds one line, that line was measured, and
-`total()` answers `Exact`. A confident, plausible, wrong number, opened by this crate's own
+`total()` answers `Exact`. A confident, plausible, wrong number, opened by the engine's own
 design decision.
 
 `Ledger::record_cancelled` is the fix and it is one line:
@@ -914,7 +922,7 @@ somebody should make.
 ### Shipped tables, and the staleness that comes with them
 
 Anthropic, OpenAI and Gemini each ship a model table and a price book, read off the vendor's
-own published pages on the date each row carries. A caller who adds this crate to find out
+own published pages on the date each row carries. A gateway that wants to know
 what something cost gets a number, rather than `None` for every model until they write and
 date a table themselves.
 
@@ -926,7 +934,7 @@ the row's `source` says so, and the file says which two.
 **A rate that cannot be expressed is left out.** Several models are published in context
 bands, one price up to a token threshold and a higher one above. A `Rate` is a flat number
 per million and cannot say that. Those models have no row, so they price as unpriced, which
-this crate already reports honestly. The tempting alternative is the low band, which is right
+the engine already reports honestly. The tempting alternative is the low band, which is right
 until somebody sends a long prompt and then understates every call after that without
 anything being able to tell.
 
@@ -980,7 +988,7 @@ not the two amounts are in the same currency, so `Priced` carries the code from 
 produced it, `Ledger::total` answers `None` when a run mixes them, and `Ledger::totals` gives
 one figure per currency instead.
 
-There is no exchange rate in this crate, and adding one would be the same mistake the rest of
+There is no exchange rate in the engine, and adding one would be the same mistake the rest of
 this section avoids: a rate has a date and a source exactly like a price does, and one
 invented so that a method could return a single number would produce a figure nobody could
 audit. A caller who wants one total across currencies has to say which rate, as of when.
@@ -1028,7 +1036,7 @@ accessors.
 
 **Enums are the half that is easy to forget.** `#[non_exhaustive]` on an enum is not about
 construction, it is about `match`: outside code must carry a `_` arm, which is what lets a
-variant be added later. Inside this crate the attribute does nothing, which is why
+variant be added later. Inside the engine the attribute does nothing, which is why
 `Breaker::opening_for` can still match `Error` exhaustively and refuse to compile when a
 variant appears. That is the pattern to copy, not to work around.
 
@@ -1060,8 +1068,9 @@ that never surfaces.
 | `+ reqwest` | 105 | And a bundled client, with `from_env` |
 | `cli` alone | 30 | A local tool as a subprocess, no network code |
 
-The first two are on by default and `reqwest` is not. Almost every program already has an HTTP
-client, and adding this crate should not add a hundred more.
+The first two are on by default and `reqwest` is not, so a build that reaches nothing
+compiles no network stack. The gateway's `server` feature turns on what it needs, and CI
+builds every feature alone so one that only compiles beside another is caught.
 
 **Count distinct crates, not lines of `cargo tree`.** These read 52, 250 and 53 for a while.
 Those were `cargo tree | wc -l`, which prints a crate once per dependent that reaches it, so
@@ -1122,7 +1131,7 @@ missing skips itself rather than failing, so one key is enough to run the file.
 **What it asserts is not "it answered".** A fixture already proves the crate can read a reply
 it was handed. These are the four claims only a real endpoint settles:
 
-* **Usage is `Exact`, not `Partial`.** A `Partial` means a field this crate reads by name was
+* **Usage is `Exact`, not `Partial`.** A `Partial` means a field the engine reads by name was
   not there under that name. That is precisely the shape of the mistake, and every cost report
   built on it is a floor nobody knows is a floor.
 * **The reply names a real model**, and it is printed, because what a vendor actually serves
@@ -1146,7 +1155,7 @@ gated environment, never on a push.
 
 ## The gateway speaks the OpenAI shape, and refuses what it cannot carry
 
-The binary behind the `server` feature is how most projects use this crate: one container,
+The binary behind the `server` feature is how every project uses llmr: one container,
 one base URL, one key, and the routes decided in a file nobody's application code reads.
 
 **Why the OpenAI shape and not the crate's own.** Every SDK, framework and editor already

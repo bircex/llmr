@@ -20,8 +20,8 @@ publishing, docs.rs or a public API, that is what the project did then, not what
 
 | | |
 |---|---:|
-| Source | 17,026 lines across 44 files, the gateway included |
-| Tests | 440 passing, all features · 283 on the default set |
+| Source | 17,044 lines across 44 files, the gateway included |
+| Tests | 441 passing, all features · 283 on the default set |
 | Distributed as | Docker image for amd64 and arm64, and binaries for Linux (x86_64, arm64) and macOS (arm64), from a `v*` tag |
 | CI on GitHub | runs on every pull request, the image build included |
 
@@ -57,14 +57,19 @@ cannot see one that is broken.
 
 ---
 
-## The gateway · **first cut, unreleased**
+## The gateway · **on `main`, not yet tagged**
 
-The direction changed: llmr is a container projects point an OpenAI client at, with the
-engine underneath and no crate published. `src/bin/llmr/` is the server (behind the `server`
+The direction changed in #76: llmr is a container projects point an OpenAI client at, with
+the engine underneath and no crate published. `src/bin/llmr/` is the server (behind the `server`
 feature), `Dockerfile` and `docker-compose.yml` run it, and `.github/workflows/docker.yml`
 publishes `ghcr.io/<owner>/llmr`, and `.github/workflows/release.yml` turns a `v*` tag into a
-GitHub release with binaries. README.md describes the gateway; LIBRARY.md describes the
-engine.
+GitHub release with binaries. README.md is the quick start; `docs/CONFIGURATION.md`,
+`docs/API.md` and `docs/DEPLOYMENT.md` are the reference for running it, and
+`docs/ENGINE.md` describes the engine.
+
+Before the first tag: bump `version` in `Cargo.toml`, turn the changelog's Unreleased section
+into that version's, and tag. The release workflow and the image's `X.Y.Z` tags have not run
+yet, so watch the first one.
 
 Next, roughly in order of how much a user would notice:
 

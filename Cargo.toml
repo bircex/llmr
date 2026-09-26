@@ -12,8 +12,8 @@ repository    = "https://github.com/bircex/llmr"
 publish       = false
 
 [features]
-# Both protocols, and no HTTP client. You supply a transport, which almost every program
-# already has: adding this crate should not add 200 more.
+# Both protocols, and no HTTP client: a build of the engine that reaches nothing compiles no
+# network stack. The gateway's `server` feature below turns on everything it needs.
 default = ["anthropic", "openai"]
 
 # Protocol translations. These are pure functions over JSON. The one thing they cannot do

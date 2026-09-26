@@ -427,6 +427,24 @@ on_device = true
     }
 
     #[test]
+    fn the_example_in_the_configuration_reference_reads() {
+        // The reference is where people copy from, so its example is held to the parser.
+        let page = include_str!("../../../docs/CONFIGURATION.md");
+        let example = page
+            .split("## A complete example")
+            .nth(1)
+            .and_then(|rest| rest.split("```toml").nth(1))
+            .and_then(|rest| rest.split("```").next())
+            .expect("the page has a complete example");
+        let config = Config::parse(example).expect("the documented example parses");
+        assert_eq!(config.models.len(), 3);
+        assert_eq!(
+            split_route(&config.models[0].routes[2]),
+            Some(("openrouter", "meta-llama/llama-3.1-70b-instruct"))
+        );
+    }
+
+    #[test]
     fn a_complete_file_reads() {
         let config = Config::parse(GOOD).expect("parses");
         assert_eq!(config.server.listen, "127.0.0.1:9000");

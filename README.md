@@ -40,7 +40,9 @@ docker run --rm -v "$PWD/llmr.toml:/etc/llmr/llmr.toml:ro" --env-file .env \
 ```
 
 The image is distroless, runs as a non root user, has a built in healthcheck, and stops
-cleanly on `docker stop`, finishing requests already in flight.
+cleanly on `docker stop`, finishing requests already in flight. It serves plain HTTP: before
+exposing it beyond the host, put TLS in front. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers
+that, binaries without Docker, key rotation and logs.
 
 ## Connect a project
 
@@ -117,28 +119,11 @@ variables, never from the file, and a missing one stops the gateway at startup r
 on the first request. The vendor kinds ship a dated table of the models this release knows
 and what each can do; an `openai-compatible` endpoint lists its own.
 
-**Models** are the names clients ask for. Each is an ordered list of `provider/model`
-routes and a policy:
+**Models** are the names clients ask for: an ordered list of `provider/model` routes, and a
+policy for them (`order`, `on_device`, `retry_attempts`, `breaker`, `deadline_secs`).
 
-| Key | Default | Meaning |
-|---|---|---|
-| `routes` | | Tried in order until one answers |
-| `order` | `as-listed` | Or `cheapest` (published rate, unpriced last) or `healthiest` (fewest recent failures) |
-| `on_device` | `false` | Only `self-hosted` routes may serve it. A floor: no fallback relaxes it |
-| `retry_attempts` | `2` | Attempts per route for a failure worth repeating; a rate limit's own wait is honoured |
-| `breaker` | `true` | A route that keeps failing is skipped for a while instead of waited on in every request |
-| `deadline_secs` | none | Give up on the whole request after this long. Set it for anything a person waits on: a rate limit's `retry-after` is honoured in full, and without a deadline that wait is the client's too |
-
-With `allow_direct = true` (the default) a client may also ask for `provider/model`, such
-as `anthropic/claude-haiku-4-5`, for a model the provider knows.
-
-| Environment | Meaning |
-|---|---|
-| `LLMR_CONFIG` | Configuration path. `/etc/llmr/llmr.toml` in the image |
-| `LLMR_LISTEN` | Overrides `server.listen` |
-| `LLMR_API_KEYS` | Keys clients may present, comma separated. Add a new key, move clients, remove the old one |
-| `RUST_LOG` | Log filter, `info` by default |
-| `LLMR_LOG_FORMAT` | `json` for one object per line |
+Every key, default and environment variable is in
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## How it routes
 
@@ -154,35 +139,30 @@ The client gets a normal reply with `finish_reason: "content_filter"`.
 the stream and no `[DONE]` follows, rather than a second model continuing half a sentence it
 did not write.
 
-Every reply says what happened on the way:
+Every reply says what happened on the way: `x-llmr-route` is the `provider/model` that
+answered, and a non zero `x-llmr-fell-through` on a successful call is a provider degrading
+while nothing is failing.
 
-| Header | |
+A field the gateway cannot carry to every provider (`n` above 1, `stop`, a forced
+`tool_choice`, `json_object`, ...) is a `400` naming it, never silently ignored, because a
+reply that ignored half the request is still billed. Usage a provider did not report is left
+out rather than written as zero.
+
+[docs/API.md](docs/API.md) has the endpoints, every accepted and refused field, streaming,
+and the error codes.
+
+## Documentation
+
+| | |
 |---|---|
-| `x-llmr-route` | The `provider/model` that answered |
-| `x-llmr-attempts` | Calls made, retries included |
-| `x-llmr-fell-through` | Routes skipped or failed before it. Non zero on a successful call is a provider degrading while nothing is failing |
-
-A client can tighten the privacy floor for one request with `x-llmr-on-device: true`. It
-cannot loosen one.
-
-## Endpoints
-
-| | | |
-|---|---|---|
-| `POST` | `/v1/chat/completions` | Whole or streamed (`stream: true`, `stream_options.include_usage`) |
-| `GET` | `/v1/models` | The names from `llmr.toml` |
-| `GET` | `/llmr/routes` | Every name, its routes, what each can do, and which are resting |
-| `GET` | `/healthz` | Liveness, no key needed |
-
-## What is refused rather than dropped
-
-A field the gateway cannot carry to every provider is a `400` naming it, never silently
-ignored, because a reply that ignored half the request is still billed: `n` above 1, `stop`,
-non zero penalties, `logprobs`, `logit_bias`, `tool_choice` other than `auto`,
-`response_format: json_object` (send `json_schema`), audio, and an image link whose type
-cannot be read from its extension (send a data URL).
-
-Usage a provider did not report is left out of the reply rather than written as zero.
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every configuration key, with defaults and a complete example |
+| [docs/API.md](docs/API.md) | The HTTP API: endpoints, fields, streaming, headers, errors |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Compose, plain Docker, binaries and systemd, TLS in front, keys, logs |
+| [SECURITY.md](SECURITY.md) | What the gateway holds, where prompts go, and how to report a problem |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How the code is laid out and the checks a pull request passes |
+| [docs/ENGINE.md](docs/ENGINE.md) | The routing engine inside the gateway |
+| [docs/DESIGN.md](docs/DESIGN.md) | What was decided and why |
+| [ROADMAP.md](ROADMAP.md) · [CHANGELOG.md](CHANGELOG.md) | What is next, and what changed |
 
 ## Known gaps
 
@@ -213,13 +193,11 @@ the HTTP API, the response headers, the configuration file and the command line.
 ## Build from source
 
 ```sh
-cargo run --features server -- --config llmr.toml
+cargo run --release --features server -- --config llmr.toml
 docker build -t llmr .
 ```
 
-[LIBRARY.md](LIBRARY.md) documents the routing engine inside the gateway, and
-[docs/DESIGN.md](docs/DESIGN.md) records why it is shaped the way it is.
-[CONTRIBUTING.md](CONTRIBUTING.md) lists the checks a pull request has to pass.
+Contributions are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) is the place to start.
 
 ## License
 
