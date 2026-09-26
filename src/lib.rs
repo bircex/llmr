@@ -1,4 +1,4 @@
-#![doc = include_str!("../LIBRARY.md")]
+#![doc = include_str!("../docs/ENGINE.md")]
 #![deny(missing_docs)]
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]

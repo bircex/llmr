@@ -5,7 +5,8 @@ docs
 tests
 *.md
 !README.md
-!LIBRARY.md
 llmr.toml
 .env
 rust-toolchain.toml
+# lib.rs reads it at compile time, so the build needs it even though docs/ is excluded.
+!docs/ENGINE.md

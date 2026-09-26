@@ -41,8 +41,8 @@ cargo test
 All eight must be clean, and warnings count. Three of them look redundant and are not: a
 clippy lint can fire under one feature set and not another, a doc link to a feature gated
 item resolves under `--all-features` and nowhere else, and so does a *doctest* naming one.
-The last line is there because two README examples had been failing on the default feature
-set for as long as this list ended one line earlier.
+The last line is there because two examples in what is now `docs/ENGINE.md` had been failing
+on the default feature set for as long as this list ended one line earlier.
 
 Run them on the toolchain in `rust-toolchain.toml` rather than whatever your machine has.
 That file exists because these commands once passed on a laptop running 1.97 and failed on
@@ -51,9 +51,9 @@ if you are in the repository.
 
 ## The rules the code is held to
 
-**No panicking in the library.** `unwrap`, `expect`, `panic!`, `todo!` and `unimplemented!`
-are denied. A library that decides to stop the process has taken a decision that belonged to
-the program using it. Tests may panic; that is their job.
+**No panicking.** `unwrap`, `expect`, `panic!`, `todo!` and `unimplemented!` are denied, in
+the engine and in the gateway binary alike. A server that dies on one odd reply takes every
+request in flight down with it. Tests may panic; that is their job.
 
 **No lock held across an await.** `await_holding_lock` and `await_holding_refcell_ref` are
 denied. A provider holds nothing mutable, so a call needs no lock at all. If you find
@@ -61,38 +61,85 @@ yourself wanting one, that is worth discussing in an issue first.
 
 **No unsafe.** Forbidden, not denied.
 
-**Every public item is documented.** `missing_docs` is denied. Say what it is for, not what
-it is. "Returns the model id" is not documentation.
+**Every public item in the engine is documented.** `missing_docs` is denied. Say what it is
+for, not what it is. "Returns the model id" is not documentation.
+
+**Nothing the gateway logs can hold a prompt, a reply or a key.** Log the name asked for, the
+route, counts and the stop reason. A request body in a log line is a leak in every
+deployment that upgrades.
 
 ## Where things live
 
 ```
 src/
-  chat/          what a call is made of: message, request, response
-  cost/          what it consumed and what that is worth: usage, pricing
+  bin/llmr/      the gateway
+    main.rs        command line, startup, shutdown, logging, `check` and `healthcheck`
+    config.rs      the TOML file, and everything checked before anything starts
+    gateway.rs     providers and routers built from the configuration
+    openai.rs      the OpenAI request and reply shape, both directions
+    server.rs      the HTTP endpoints, authentication, streaming
+    error.rs       failures as OpenAI error bodies and status codes
+  chat/          the engine: what a call is made of: message, request, response, stream
+  cost/          what it consumed and what that is worth: usage, pricing, ledger
   providers/
     api/         the shared machinery for reaching over the network: ApiProvider + Protocol
     cli/         the shared machinery for a subprocess: LocalCli + Envelope
     anthropic/   api.rs the Messages protocol, cli.rs the Claude Code preset
-    openai/      api.rs the chat completions shape, cli.rs the Codex preset
+    openai/      api.rs the chat completions shape, cli.rs the Codex preset, embed.rs
+    gemini/      api.rs generateContent, embed.rs
+    bedrock/     api.rs InvokeModel, reusing the Messages translation
   model.rs       Reach, ModelId, ModelCapabilities
   registry.rs    what a provider serves and what it can do
   provider.rs    the one trait
-  router.rs      which provider a request goes to
+  router.rs      which provider a request goes to; breaker.rs, retry.rs, budget.rs beside it
   transport.rs   the HTTP boundary, and a reqwest implementation of it
-  error.rs secret.rs testkit.rs
+  error.rs secret.rs observe.rs testkit.rs
+models/          the shipped model tables and price books, dated
+docs/            CONFIGURATION, API, DEPLOYMENT for people running it; ENGINE, DESIGN, BEDROCK
+                 for people changing it
+Dockerfile, docker-compose.yml, llmr.example.toml, .env.example
+.github/workflows/
+  ci.yml         every pull request: the eight checks, each feature alone, MSRV, cargo deny
+  docker.yml     the image: built on pull requests, published from main and from tags
+  release.yml    a v* tag: checks, binaries, the GitHub release
+  live.yml       calls real providers, by hand only
 ```
 
-Two groupings, doing two jobs. **What is shared follows the reach**, because reach is what
-decides how a model is spoken to: everything an API provider does apart from writing JSON is
-identical, and so is everything a subprocess does apart from its arguments. **What is chosen
-follows the vendor**, because that is what a caller picks, and the same models turn up behind
-more than one reach.
+Two groupings in the engine, doing two jobs. **What is shared follows the reach**, because
+reach is what decides how a model is spoken to: everything an API provider does apart from
+writing JSON is identical, and so is everything a subprocess does apart from its arguments.
+**What is chosen follows the vendor**, because that is what a caller picks, and the same
+models turn up behind more than one reach.
 
-So `anthropic/api.rs` and `anthropic/cli.rs` are short. The engine is not in them.
+So `anthropic/api.rs` and `anthropic/cli.rs` are short. The machinery is not in them.
 
 Everything else stays flat. A directory holding one file is a directory that exists to look
 organised.
+
+## Changing the gateway
+
+Most changes a user would notice land in `src/bin/llmr/`. Three habits keep it honest:
+
+- **A field is carried or refused, never dropped.** If the OpenAI shape has a field the
+  engine cannot carry, `openai.rs` answers `400` naming it. Carrying one means adding it to
+  `ChatRequest` and to every protocol, not only to the parser.
+- **A configuration key is a promise.** Add it to `config.rs` with a default, to
+  `docs/CONFIGURATION.md`, and to `llmr.example.toml` if most people will want it. Renaming
+  or removing one breaks a file that worked yesterday, so it needs a changelog line.
+  `deny_unknown_fields` means a misspelt key fails at startup; keep it that way.
+- **Test through HTTP.** `server.rs` has tests that send real requests to the router with a
+  fake provider behind it. A behaviour a client can see gets a test there, not only a unit
+  test of the function underneath.
+
+Both `llmr.example.toml` and the complete example in `docs/CONFIGURATION.md` are parsed by
+tests, so a documented configuration that stops working fails CI.
+
+To see a change for real, build the image and run it:
+
+```sh
+docker build -t llmr:dev .
+docker run --rm -p 8080:8080 -e LLMR_API_KEYS=dev -v "$PWD/llmr.toml:/etc/llmr/llmr.toml:ro" llmr:dev
+```
 
 ## What CI will run
 
@@ -152,9 +199,10 @@ Three things the suite is checking, and they are the ones that are easy to get w
 3. Usage the provider did not report is `Usage::absent()`, not zeros. An unknown cost
    written as zero becomes a free call in every report that adds it up.
 
-Put your provider behind a feature, add it to the table in `LIBRARY.md`, and give it a
-`kind` in the gateway's configuration (`src/bin/llmr/config.rs` and `gateway.rs`) with a
-row in `llmr.example.toml` and the README.
+Put your provider behind a feature, add it to the table in `docs/ENGINE.md`, and give it a
+`kind` in the gateway (`src/bin/llmr/config.rs` and `gateway.rs`), documented in
+`docs/CONFIGURATION.md` and shown in `llmr.example.toml`. A provider the gateway cannot
+configure is a provider nobody running llmr can use.
 
 ### And then call it for real, once
 

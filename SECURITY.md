@@ -43,7 +43,7 @@ them apart. Setting it wrong is silent.
 
 **It does not terminate TLS.** It serves plain HTTP. Keep it on a private network, or put a
 reverse proxy with TLS in front of it before exposing it beyond the host: client keys travel
-in a header.
+in a header. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) has an example.
 
 **It does not validate model output.** Anything a model returns is text somebody else
 produced, tool call arguments included. Treat it as data, never as instruction.

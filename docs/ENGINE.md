@@ -1,23 +1,42 @@
-# llmr, the engine
+# The engine
 
-The routing engine inside the [`llmr` gateway](https://github.com/bircex/llmr): providers,
-capabilities, usage, the router. This page is its documentation, and the examples in it run
-as tests.
+llmr is two things in one repository: the **gateway** (`src/bin/llmr/`), an HTTP server that
+speaks the OpenAI shape, and the **engine** (the rest of `src/`), which reaches providers,
+knows what each can do, counts what each call consumed, and routes between them. This page
+documents the engine. Its examples run as tests.
 
-It is **not published to crates.io**. llmr ships as a Docker image and release binaries, and
-these types are how the gateway is built rather than a stable API. A Rust program that
-really wants the router in-process can depend on the repository by git and pin a commit,
-with no compatibility promise between commits:
+Read it if you are changing how a provider is spoken to, how a request is routed, or how
+usage is counted. To run llmr, read the [README](../README.md) and
+[CONFIGURATION.md](CONFIGURATION.md) instead.
 
-```toml
-[dependencies]
-llmr = { git = "https://github.com/bircex/llmr", rev = "<commit>", features = ["reqwest"] }
-```
+## How the gateway uses it
 
-Everybody else should run the gateway and point an OpenAI client at it.
+Every key in the configuration file becomes one engine value:
+
+| Configuration | Engine |
+|---|---|
+| `[[provider]]` with `kind = "anthropic"`, `"openai"`, `"gemini"`, `"openai-compatible"` | `providers::anthropic::api`, `providers::openai::api`, `providers::gemini::api`, each an `ApiProvider` over a `Reqwest` transport |
+| `reach` | `Reach`, carried on every `ModelCapabilities` |
+| `[[provider.model]]` rows, over the shipped tables | `Registry` |
+| the vendors' published rates | `PriceBook`, attached with `Route::priced_by` |
+| `[[model]]` and its `routes` | a `Router` over `Route`s |
+| `order` | `Order` |
+| `retry_attempts` | `Retry` |
+| `breaker` | `Breaker` |
+| `deadline_secs` | `Router::within_deadline` |
+| `on_device`, `x-llmr-on-device` | `Requirements::on_device` |
+| `preflight`, `llmr check` | `Router::preflight` and `Router::unusable` |
+| an OpenAI request | a `ChatRequest`; its `needs()` become `Requirements` |
+| a streamed reply | an `EventStream`, folded by a `Transcript` |
+
+The engine is not published as a crate and has no compatibility promise of its own: its types
+change whenever the gateway needs them to. (A Rust program that wants the router in-process
+can still depend on this repository by git and pin a commit.)
+
+## What it is for
 
 Reach language models across providers, with capabilities you can read before you ask and
-usage you can trust.
+usage you can trust. One provider on its own:
 
 ```rust,no_run
 use llmr::providers::anthropic;
@@ -39,16 +58,16 @@ println!("{}", reply.text());
 # }
 ```
 
-The `reqwest` feature is the bundled HTTP client. Without it you get both protocols and
-supply your own transport, which costs 31 crates instead of 105.
+The `reqwest` feature is the bundled HTTP client, which the gateway uses. Without it the
+engine has the protocols and no network code, and a transport is supplied from outside.
 
-## What this is for
+### Why not a common subset
 
 Most libraries that put many providers behind one interface do it by finding the subset they
 all share. That subset does not include prompt caching, reasoning blocks, or the difference
 between a prompt token and a cached one, and those are where the money and the quality are.
 
-This crate keeps the rich shape and asks each provider to say what it could not carry.
+The engine keeps the rich shape and asks each provider to say what it could not carry.
 
 Three ideas hold it together.
 
@@ -254,17 +273,20 @@ not the same place for your data to go.
 | `cli` alone | 30 | A local tool as a subprocess, no network code |
 | `embeddings` | 30 | Text as vectors, its own trait |
 | `testkit` | 30 | The contract suite for your own providers |
+| `server` | | The gateway binary: everything above it needs, plus a web server and a log formatter |
 
 Counted as distinct crates compiled — `cargo tree` output with duplicate nodes collapsed.
 These read 52 and 250 until somebody checked: those were `cargo tree | wc -l`, which counts
 a crate once for every dependent that reaches it. The ratio was about right and every figure
 was not.
 
-The first two are on by default. `reqwest` is not, because almost every program already has
-an HTTP client and adding this crate should not add two hundred more.
+The first two are on by default and `reqwest` is not, which keeps the network stack out of
+a build that does not reach anything. CI builds every feature on its own, so a module that
+only compiles alongside another is found on the pull request:
 
-```toml
-llmr = { version = "0.2", default-features = false, features = ["cli"] }
+```sh
+cargo build --no-default-features --features cli
+cargo build --features server --bin llmr
 ```
 
 ## Adding a provider
@@ -314,12 +336,8 @@ you share must be immutable after construction or behind an atomic.
 
 ## Writing your own provider
 
-Implement `Provider`, then check it against the contract suite:
-
-```toml
-[dev-dependencies]
-llmr = { version = "0.2", features = ["testkit"] }
-```
+Implement `Provider`, then check it against the contract suite, which is behind the
+`testkit` feature (`cargo test --features testkit`):
 
 ```rust,no_run
 # #[cfg(feature = "testkit")]
@@ -330,10 +348,12 @@ assert_provider_contract(mine, "the-model-you-serve").await;
 # }
 ```
 
-Every provider in this crate passes the same suite. A suite only one implementation can pass
+Every provider in the engine passes the same suite. A suite only one implementation can pass
 has stopped being a specification.
 
 ## Examples
+
+Small programs that use the engine directly, without the gateway:
 
 ```sh
 ANTHROPIC_API_KEY=... cargo run --example ask -- "what is a monad"
@@ -392,7 +412,7 @@ separate answers rather than one guess.
 
 Nothing retries unless you say so. `Error::is_retryable` says a failure was not your fault
 and not permanent; whether the *request* is safe to repeat is a question about your request,
-and this crate cannot answer it.
+and the engine cannot answer it.
 
 ```rust,no_run
 use llmr::retry::Retry;
@@ -413,7 +433,7 @@ have. A second attempt can leave you billed for two answers to one question, so
 
 **A wait the provider named is used exactly.** No jitter, no doubling, no ceiling applied to
 it. The provider is telling you when the limit clears, and a local timer that fires sooner
-turns one rate limit into two. Waits this crate computes for itself are jittered, so two
+turns one rate limit into two. Waits the engine computes for itself are jittered, so two
 callers that failed together do not come back together.
 
 `Routed::attempts` says how many calls a reply actually cost, and each retry leaves a line in
@@ -421,9 +441,8 @@ callers that failed together do not come back together.
 
 ## Spans
 
-Behind the `tracing` feature, off by default. With it off the crate gains no dependency and
-does no work on the path a request takes; a library that emitted whether you asked or not is
-one people work around.
+Behind the `tracing` feature, which the gateway turns on and writes to stdout. With it off
+the engine gains no dependency and does no work on the path a request takes.
 
 A span carries which provider, which model, which reach, how complete the usage was, which
 route answered, and how many attempts it took. **Never the prompt and never a credential** —
@@ -435,7 +454,7 @@ Nothing failed, and something is going wrong.
 ## Images
 
 `ContentBlock::Image` carries bytes or a URL, with the media type you give it — sniffing it
-here would be this crate deciding something you already know, and a provider told the wrong
+here would be the engine deciding something you already know, and a provider told the wrong
 type either rejects the request or decodes it wrongly.
 
 A reach that speaks only text cannot carry one at all, and that is the point: it is a
@@ -546,7 +565,7 @@ are the same money, so `Priced` carries the code its book was written in, `total
 exchange rate in here: a rate has a date and a source exactly like a price does, and one
 invented to make a method return a number would produce a figure nobody could audit.
 
-## What this crate does not do
+## What the engine does not do
 
 It does not decide what your work needs. `Router` picks a provider that meets a set of
 requirements; deciding that a code review needs reasoning and a commit message does not is
@@ -574,14 +593,13 @@ and establishes that it is installed. No vendor tool answers "is this login stil
 without doing work, so a `Ready` from that reach is a weaker claim than one from an API
 provider, and it says so.
 
-## Contributing
+## Further reading
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the rules the code is held to and how to add a
-provider. [docs/DESIGN.md](docs/DESIGN.md) says what was decided and why, which is worth
-reading before changing anything: several of the decisions look wrong until you know the
-reason. [docs/BEDROCK.md](docs/BEDROCK.md) is the one page you need to make a Bedrock call,
-since this crate deliberately ships no SigV4. [ROADMAP.md](ROADMAP.md) is what is left before
-0.1.
+[CONTRIBUTING.md](../CONTRIBUTING.md) has the rules the code is held to and how to add a
+provider. [DESIGN.md](DESIGN.md) says what was decided and why, which is worth reading before
+changing anything: several of the decisions look wrong until you know the reason.
+[BEDROCK.md](BEDROCK.md) is how to make a Bedrock call through the engine, which ships no
+SigV4 of its own. [ROADMAP.md](../ROADMAP.md) is what shipped and what is next.
 
 ## License
 

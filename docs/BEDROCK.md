@@ -1,12 +1,18 @@
 # Calling Bedrock
 
+> **Not available in the gateway yet.** There is no `kind = "bedrock"` in the configuration,
+> because the gateway would need a signing transport, and that is exactly what this page
+> describes building. Until then this page is for engine work: the design of that transport,
+> and how to call Bedrock from Rust code that uses the engine directly. The
+> [ROADMAP](../ROADMAP.md) tracks it.
+
 `providers::bedrock` ships a translation and no way to authenticate one, on purpose:
 `docs/DESIGN.md` has the argument, and the short version is that SigV4 signs the whole HTTP
 request and needs a clock, a region and rotating credentials, none of which a pure `Protocol`
 may hold. Signing is the transport's job.
 
 That reasoning does not help anybody who enabled the feature and hit a wall. This page is the
-worked example beside it. Follow it and you can make a call, without this crate taking on a
+worked example beside it. Follow it and you can make a call, without the engine taking on a
 signing implementation it should not own.
 
 ---
@@ -15,7 +21,7 @@ signing implementation it should not own.
 
 Three pieces:
 
-1. **The provider**, from this crate. It builds the URL, writes the body and reads the reply.
+1. **The provider**, from the engine. It builds the URL, writes the body and reads the reply.
 2. **A signing transport**, which you write. Twenty lines around whatever HTTP client you
    already have.
 3. **A credentials source**, which you almost certainly already have if you are on AWS.
@@ -163,7 +169,7 @@ cache, and usually an HTTP call of its own.
 That is the argument for signing living in the transport rather than in `Protocol`. Every
 `Protocol` method here is a pure function, which is what makes one instance safe to share
 across any number of concurrent calls. A protocol that held a credential store with a
-refresh timer inside it would end that for every protocol in the crate, to serve one.
+refresh timer inside it would end that for every protocol in the engine, to serve one.
 
 A transport has no such constraint. It already holds a connection pool. So:
 
@@ -194,9 +200,9 @@ hour the token expires.
   and SSO, and caches them with their expiry.
 * `aws-credential-types` is the credential type the two agree on.
 
-This crate depends on none of them, and should not. Writing a SigV4 here would mean a crypto
+The engine depends on none of them, and should not. Writing a SigV4 here would mean a crypto
 dependency and an implementation nobody could test against the real thing from inside this
-repository. The crate already makes this bargain for HTTP itself: `reqwest` is a feature, not
+repository. The engine already makes this bargain for HTTP itself: `reqwest` is a feature, not
 a requirement.
 
 ---

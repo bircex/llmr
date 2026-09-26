@@ -21,8 +21,13 @@ change is a minor bump.
 
 ### Changed
 
-- The README describes the gateway. What it said about the crate is in `LIBRARY.md`, which
-  is now the engine's internal documentation.
+- The README is the gateway's quick start. The reference for running it is
+  `docs/CONFIGURATION.md` (every key and default, with a complete example that CI parses),
+  `docs/API.md` (endpoints, accepted and refused fields, streaming, error codes) and
+  `docs/DEPLOYMENT.md` (Compose, Docker, binaries and systemd, TLS, keys, logs). What the
+  README said about the crate is `docs/ENGINE.md`, rewritten as the engine's documentation
+  and mapped to the configuration keys that drive it. CONTRIBUTING, DESIGN, BEDROCK and
+  SECURITY are rewritten for a gateway rather than a library.
 - `Cargo.lock` is committed, because the repository now builds a binary and an image that
   have to be reproducible.
 - A `v*` tag now builds Linux (x86_64, arm64) and macOS (arm64) binaries and creates a GitHub

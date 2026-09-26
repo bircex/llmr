@@ -1,11 +1,12 @@
 # llmr gateway configuration.
 #
 # Copy this to llmr.toml, keep what you use, and mount it at /etc/llmr/llmr.toml.
+# docs/CONFIGURATION.md lists every key and its default.
 # Keys are never written here: each provider names the environment variable that holds its
 # key, and the gateway refuses to start when one is missing.
 #
 # Check a file without serving anything:
-#   docker run --rm -v ./llmr.toml:/etc/llmr/llmr.toml:ro --env-file .env llmr check
+#   docker run --rm -v ./llmr.toml:/etc/llmr/llmr.toml:ro --env-file .env ghcr.io/bircex/llmr:latest check
 
 [server]
 listen = "0.0.0.0:8080"
