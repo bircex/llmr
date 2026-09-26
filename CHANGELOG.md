@@ -5,47 +5,54 @@ change is a minor bump.
 
 ## Unreleased
 
+llmr stops being a library and becomes a service: one Docker image, managed over REST, with
+its state in an encrypted database. Nothing below existed in 0.2.0, and nothing from 0.2.0
+is published as a crate any more.
+
 ### Added
 
-- The gateway: an `llmr` binary behind the new `server` feature, and a Docker image built
-  from it. It serves the OpenAI chat completions shape (`/v1/chat/completions`, whole and
-  streamed, and `/v1/models`) over the router, so any project reaches every configured
-  provider through one base URL and one key. Routes, fallbacks, ordering, retries, breakers,
-  deadlines and the on-device floor are set per name in one TOML file; provider keys come
-  from the environment and a missing one stops startup.
-- `llmr check`, which builds every provider, reports routes that can never be chosen and
-  preflights the rest without a billable call, and `llmr healthcheck` for the image.
-- `/llmr/routes`, and `x-llmr-route`, `x-llmr-attempts` and `x-llmr-fell-through` on every
-  reply, so which provider answered and what failed first is visible to the client.
-- A workflow publishing the image to GitHub's container registry for amd64 and arm64.
+- The service: an `llmr` binary behind the `server` feature, run as the Docker image
+  `ghcr.io/<owner>/llmr` (amd64 and arm64).
+- The client API, in the OpenAI chat completions shape: `POST /v1/chat/completions`, whole
+  and streamed, and `GET /v1/models`. A client asks for a route set such as `default`, or for
+  an enabled model as `provider/model`. Fields that cannot be carried to every provider are
+  refused by name; a disabled model is refused as `model_not_enabled`; usage nobody reported
+  is left out rather than zero. `x-llmr-route`, `x-llmr-attempts` and `x-llmr-fell-through`
+  on every reply.
+- The management API under `/manage`: provider types, providers (add, change, remove, test
+  for free or with one live call), the models each serves (listed by the provider, enabled or
+  not, with capabilities for models this release does not know), every enabled model, route
+  sets (routes, order, on-device floor, retries, breaker, deadline, and what is usable,
+  unavailable or resting), and status. Changes take effect on the next request.
+- State in SQLite on the container's volume, with every provider credential sealed with
+  XChaCha20-Poly1305 under `LLMR_MASTER_KEY`. The key never touches the volume; a wrong key is
+  refused at startup. Credentials are write only over the API.
+- `llmr keygen` to make a master key, and `llmr healthcheck` for the image.
+- Optional `LLMR_TOKEN`: tokens every call must present. Without it nothing is checked, and
+  llmr says so at every start.
+- Workflows: the image built on every pull request and started twice (refusing without a
+  master key, serving with one), published from `main` and from `v*` tags; a `v*` tag also
+  creates a GitHub release with this changelog's section as notes.
+- Documentation for running it: `docs/MANAGEMENT.md`, `docs/API.md`, `docs/DEPLOYMENT.md`.
 
 ### Changed
 
-- The README is the gateway's quick start. The reference for running it is
-  `docs/CONFIGURATION.md` (every key and default, with a complete example that CI parses),
-  `docs/API.md` (endpoints, accepted and refused fields, streaming, error codes) and
-  `docs/DEPLOYMENT.md` (Compose, Docker, binaries and systemd, TLS, keys, logs). What the
-  README said about the crate is `docs/ENGINE.md`, rewritten as the engine's documentation
-  and mapped to the configuration keys that drive it. CONTRIBUTING, DESIGN, BEDROCK and
-  SECURITY are rewritten for a gateway rather than a library.
-- `Cargo.lock` is committed, because the repository now builds a binary and an image that
-  have to be reproducible.
-- A `v*` tag now builds Linux (x86_64, arm64) and macOS (arm64) binaries and creates a GitHub
-  release with them and this changelog's section as notes. The image for the tag comes from
-  the Docker workflow.
-- Semantic versioning now applies to the HTTP API, the response headers, the configuration
-  file and the command line, not to the engine's Rust types.
+- Semantic versioning applies to the client API, the management API, the headers, the
+  environment variables and the database schema, not to the engine's Rust types.
+- `Cargo.lock` is committed, because the image has to be reproducible.
+- CONTRIBUTING, DESIGN, SECURITY and BEDROCK describe a service rather than a library.
+- Four engine error messages had lost the line breaks inside them to long runs of spaces;
+  they read as one sentence again.
 
 ### Removed
 
-- Publishing to crates.io. `Cargo.toml` says `publish = false`, the release workflow no longer
-  runs `cargo publish`, and the `crates-io` environment and `CARGO_REGISTRY_TOKEN` secret it
-  used are no longer read. 0.1.0 stays on crates.io; nothing newer will be published there.
-- The pull request jobs that guarded the crate's public API: `cargo package` /
+- Publishing to crates.io. `Cargo.toml` says `publish = false`, and the release workflow no
+  longer runs `cargo publish`; the `crates-io` environment and `CARGO_REGISTRY_TOKEN` secret
+  are no longer read. 0.1.0 stays on crates.io; nothing newer will be published there.
+- Rustdoc as a deliverable: the docs.rs configuration, the `docsrs` attributes, the crate
+  README, and the `cargo doc` CI steps. Doc comments stay, as comments.
+- The pull request jobs that guarded the crate's public API: `cargo package`,
   `cargo publish --dry-run` and `cargo-semver-checks`.
-- The docs.rs configuration: `[package.metadata.docs.rs]`, the `docsrs` feature-badge
-  attributes in the source, and the crates.io metadata (`documentation`, `keywords`,
-  `categories`, `exclude`).
 
 ## 0.2.0 — 2026-09-07
 

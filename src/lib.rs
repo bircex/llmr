@@ -1,4 +1,9 @@
-#![doc = include_str!("../docs/ENGINE.md")]
+//! The routing engine inside llmr.
+//!
+//! Providers, what each model can do reached each way, what a call consumed, and the router
+//! that chooses between them. The product is the gateway in `src/bin/llmr/`, run as a Docker
+//! image and managed over REST; this crate is how it is built, not an API of its own.
+//! `docs/DESIGN.md` records why it is shaped the way it is.
 #![deny(missing_docs)]
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]

@@ -1,11 +1,15 @@
-# The gateway, and the one line a project needs to use it:
+# llmr, and the one line a project needs to use it:
 #
-#   OPENAI_BASE_URL=http://localhost:8080/v1   OPENAI_API_KEY=<one of LLMR_API_KEYS>
+#   OPENAI_BASE_URL=http://llmr:8080/v1   OPENAI_API_KEY=<LLMR_TOKEN, or anything if unset>
 #
-#   cp llmr.example.toml llmr.toml && cp .env.example .env   # then fill both in
+#   cp .env.example .env     # then set LLMR_MASTER_KEY: docker run --rm ghcr.io/bircex/llmr keygen
 #   docker compose up -d
 #
-# Another compose project reaches it at http://llmr:8080/v1 by joining the `llmr` network:
+# Providers, models and route sets are then added through the management API
+# (http://localhost:8080/manage/...), usually by the panel that runs llmr. They live in the
+# `llmr-data` volume, encrypted where they are secret.
+#
+# Another compose project reaches llmr at http://llmr:8080 by joining the `llmr` network:
 #
 #   networks:
 #     llmr:
@@ -16,16 +20,21 @@ services:
     image: ghcr.io/bircex/llmr:latest
     build: .
     restart: unless-stopped
+    # Loopback only. The management API can change providers and credentials, so it belongs
+    # on a network only the panel can reach; widen this deliberately, with LLMR_TOKEN set.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     env_file: .env
     volumes:
-      - ./llmr.toml:/etc/llmr/llmr.toml:ro
+      - llmr-data:/var/lib/llmr
     read_only: true
     security_opt:
       - no-new-privileges:true
     networks:
       - llmr
+
+volumes:
+  llmr-data:
 
 networks:
   llmr:

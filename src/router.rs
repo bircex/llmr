@@ -547,7 +547,7 @@ impl Router {
         };
         if book.currency != budget.currency() {
             return Some(format!(
-                "priced in {} and the budget is in {}. There is no exchange rate in this                  crate: a rate has a date and a source exactly like a price does",
+                "priced in {} and the budget is in {}. There is no exchange rate in this crate: a rate has a date and a source exactly like a price does",
                 book.currency,
                 budget.currency()
             ));

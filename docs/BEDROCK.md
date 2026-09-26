@@ -1,7 +1,7 @@
 # Calling Bedrock
 
-> **Not available in the gateway yet.** There is no `kind = "bedrock"` in the configuration,
-> because the gateway would need a signing transport, and that is exactly what this page
+> **Not available in llmr yet.** There is no `bedrock` provider type in the management API,
+> because llmr would need a signing transport, and that is exactly what this page
 > describes building. Until then this page is for engine work: the design of that transport,
 > and how to call Bedrock from Rust code that uses the engine directly. The
 > [ROADMAP](../ROADMAP.md) tracks it.

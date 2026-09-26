@@ -1,15 +1,22 @@
-//! `llmr`, the router as a service.
+//! `llmr`, an LLM router run as a container and managed over REST.
 //!
 //! ```text
-//! llmr [serve] [--config PATH]    run the gateway (the default)
-//! llmr check   [--config PATH]    read the configuration, build every provider, ask every
-//!                                 route whether it is reachable, and exit
-//! llmr healthcheck [--config PATH]  exit 0 when the local gateway answers /healthz
+//! llmr [serve]       run the gateway (the default)
+//! llmr keygen        print a new master key for LLMR_MASTER_KEY
+//! llmr healthcheck   exit 0 when the local gateway answers /healthz
 //! ```
 //!
-//! The configuration path is `--config`, else `LLMR_CONFIG`, else `llmr.toml`.
-//! `LLMR_LISTEN` overrides the listen address, `RUST_LOG` the log filter, and
-//! `LLMR_LOG_FORMAT=json` writes one JSON object per line for a log collector.
+//! Everything else is configured through the management API and kept in the database. The
+//! process itself reads only its environment:
+//!
+//! | Variable | |
+//! |---|---|
+//! | `LLMR_MASTER_KEY` | Required. The key credentials are sealed with; `llmr keygen` makes one |
+//! | `LLMR_DATA_DIR` | Where the database lives. `/var/lib/llmr`, a volume in the image |
+//! | `LLMR_TOKEN` | Optional. Tokens callers must present, comma separated. Unset: no check |
+//! | `LLMR_LISTEN` | Address and port. `0.0.0.0:8080` |
+//! | `LLMR_MAX_BODY_MB` | Largest request body. `32` |
+//! | `RUST_LOG`, `LLMR_LOG_FORMAT` | Log filter, and `json` for one object per line |
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -18,68 +25,58 @@
 #![deny(clippy::unimplemented)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-mod config;
+mod crypto;
 mod error;
 mod gateway;
+mod manage;
 mod openai;
+mod records;
 mod server;
+mod store;
 
-use config::{AuthMode, Config};
-use gateway::Gateway;
+use crypto::MasterKey;
+use gateway::{Gateway, Live, Snapshot};
 use server::AppState;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use store::{Db, Store};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-const USAGE: &str = "usage: llmr [serve|check|healthcheck] [--config PATH]";
+const USAGE: &str = "usage: llmr [serve|keygen|healthcheck]";
+
+fn listen_address() -> String {
+    std::env::var("LLMR_LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".into())
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    let mut command = None;
-    let mut config_path = None;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--config" | "-c" => match args.next() {
-                Some(path) => config_path = Some(path),
-                None => return fail(USAGE),
-            },
-            "--version" | "-V" => {
-                println!("llmr {}", env!("CARGO_PKG_VERSION"));
-                return ExitCode::SUCCESS;
-            }
-            "--help" | "-h" => {
-                println!("{USAGE}");
-                return ExitCode::SUCCESS;
-            }
-            "serve" | "check" | "healthcheck" if command.is_none() => command = Some(arg),
-            _ => return fail(USAGE),
-        }
-    }
-    let config_path = config_path
-        .or_else(|| std::env::var("LLMR_CONFIG").ok())
-        .unwrap_or_else(|| "llmr.toml".into());
-
-    let config = match std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("{config_path}: {e}"))
-        .and_then(|text| Config::parse(&text).map_err(|e| format!("{config_path}: {e}")))
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
     {
-        Ok(config) => config,
-        Err(e) => return fail(&e),
-    };
-    let listen = std::env::var("LLMR_LISTEN").unwrap_or_else(|_| config.server.listen.clone());
-
-    match command.as_deref() {
-        Some("healthcheck") => healthcheck(&listen).await,
-        Some("check") => {
+        [] | ["serve"] => {
             init_logging();
-            check(&config).await
+            serve().await
         }
-        _ => {
-            init_logging();
-            serve(config, listen).await
+        ["keygen"] => {
+            println!("{}", MasterKey::generate());
+            ExitCode::SUCCESS
         }
+        ["healthcheck"] => healthcheck(&listen_address()).await,
+        ["--version" | "-V"] => {
+            println!("llmr {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
+        ["--help" | "-h"] => {
+            println!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        _ => fail(USAGE),
     }
 }
 
@@ -105,117 +102,107 @@ fn init_logging() {
     }
 }
 
-/// The keys callers may present, or a reason the server must not start.
-fn keys(config: &Config) -> Result<Vec<String>, String> {
-    match config.server.auth {
-        AuthMode::None => {
-            tracing::warn!(
-                "authentication is off: anybody who can reach this port can spend the \
-                 providers' money"
-            );
-            Ok(Vec::new())
-        }
-        AuthMode::Keys => {
-            let variable = &config.server.api_keys_env;
-            let keys: Vec<String> = std::env::var(variable)
-                .unwrap_or_default()
-                .split(',')
-                .map(str::trim)
-                .filter(|k| !k.is_empty())
-                .map(String::from)
-                .collect();
-            if keys.is_empty() {
-                return Err(format!(
-                    "{variable} holds no keys. Set it to one or more comma separated keys \
-                     clients will present, or set `auth = \"none\"` under [server] for a \
-                     network nobody else is on"
-                ));
-            }
-            Ok(keys)
-        }
-    }
+/// Tokens callers must present, from `LLMR_TOKEN`. Empty means no check.
+fn tokens() -> Vec<String> {
+    std::env::var("LLMR_TOKEN")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(String::from)
+        .collect()
 }
 
-/// Says which routes can never be chosen, then asks every route whether it can be reached.
+/// Says which routes cannot be used, then asks every usable route whether it is reachable.
 ///
 /// Reports and does not prune: a denied route is rested by its breaker and still retried
 /// later, and an unknown one is left exactly as it was.
-async fn survey(gateway: &Gateway, ask: bool) -> usize {
-    let mut denied = 0;
+async fn survey(gateway: Arc<Gateway>) {
+    for (provider, why) in gateway.problems() {
+        tracing::warn!(provider = %provider, problem = %why, "provider not built");
+    }
     for served in gateway.served() {
-        for route in served.router.unusable() {
-            tracing::warn!(
-                model = %served.name,
-                route = %route,
-                "the provider does not know this model, so no request can ever select it. \
-                 Add a [[provider.model]] row for it or fix the name"
-            );
-        }
-        if !ask {
-            continue;
+        for (route, why) in &served.unavailable {
+            tracing::warn!(model = %served.name, route = %route, why = %why, "route unavailable");
         }
         for (route, access) in served.router.preflight().await {
             if access.is_denied() {
-                denied += 1;
                 tracing::warn!(model = %served.name, route = %route, access = %access, "preflight");
             } else {
                 tracing::info!(model = %served.name, route = %route, access = %access, "preflight");
             }
         }
     }
-    denied
 }
 
-async fn check(config: &Config) -> ExitCode {
-    let gateway = match Gateway::build(config) {
-        Ok(gateway) => gateway,
-        Err(e) => return fail(&e),
+async fn serve() -> ExitCode {
+    let key = match std::env::var("LLMR_MASTER_KEY") {
+        Ok(text) if !text.trim().is_empty() => match MasterKey::from_base64(&text) {
+            Ok(key) => key,
+            Err(e) => return fail(&e),
+        },
+        _ => {
+            return fail(
+                "LLMR_MASTER_KEY is not set. It seals every stored credential; make one with `docker run --rm ghcr.io/bircex/llmr keygen` and keep a copy somewhere safe: without it the stored credentials cannot be read",
+            )
+        }
     };
-    if let Err(e) = keys(config) {
-        return fail(&e);
-    }
-    let unusable: usize = gateway.served().map(|s| s.router.unusable().len()).sum();
-    let denied = survey(&gateway, true).await;
-    if unusable + denied > 0 {
+
+    let dir =
+        PathBuf::from(std::env::var("LLMR_DATA_DIR").unwrap_or_else(|_| "/var/lib/llmr".into()));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
         return fail(&format!(
-            "{unusable} route(s) can never be chosen and {denied} were denied; see above"
+            "cannot create the data directory {}: {e}",
+            dir.display()
         ));
     }
-    println!("configuration is sound");
-    ExitCode::SUCCESS
-}
-
-async fn serve(config: Config, listen: String) -> ExitCode {
-    let gateway = match Gateway::build(&config) {
-        Ok(gateway) => gateway,
-        Err(e) => return fail(&e),
+    let path = dir.join("llmr.db");
+    let store = match Store::open(&path, key) {
+        Ok(store) => store,
+        Err(e) => return fail(&format!("{}: {e}", path.display())),
     };
-    let keys = match keys(&config) {
-        Ok(keys) => keys,
-        Err(e) => return fail(&e),
+    let gateway = match Snapshot::read(&store) {
+        Ok(snapshot) => Gateway::build(&snapshot),
+        Err(e) => return fail(&format!("{}: {e}", path.display())),
     };
 
-    let state = Arc::new(AppState { gateway, keys });
-    let app = server::app(state.clone(), config.server.max_body_mb * 1024 * 1024);
+    let keys = tokens();
+    if keys.is_empty() {
+        tracing::warn!(
+            "LLMR_TOKEN is not set: anybody who can reach this port can call models and change providers. Keep the port on a network only your panel can reach"
+        );
+    }
+    let max_body_mb: usize = std::env::var("LLMR_MAX_BODY_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(32);
 
+    let state = Arc::new(AppState {
+        live: Live::new(gateway),
+        db: Db::new(store),
+        keys,
+        started: std::time::Instant::now(),
+    });
+    let app = server::app(state.clone(), max_body_mb * 1024 * 1024);
+
+    let listen = listen_address();
     let listener = match tokio::net::TcpListener::bind(&listen).await {
         Ok(listener) => listener,
         Err(e) => return fail(&format!("cannot listen on {listen}: {e}")),
     };
+    let current = state.live.current();
     tracing::info!(
         listen = %listen,
-        models = state.gateway.served().count(),
+        data = %path.display(),
+        route_sets = current.served().count(),
+        models = current.enabled().count(),
         version = env!("CARGO_PKG_VERSION"),
         "llmr is serving"
     );
 
     // In the background, so a slow vendor does not hold up the port opening. Free: every
     // provider answers from its model list, never from a billable call.
-    let preflight = config.server.preflight;
-    let surveyed = state.clone();
-    tokio::spawn(async move {
-        survey(&surveyed.gateway, preflight).await;
-    });
+    tokio::spawn(survey(current));
 
     match axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())

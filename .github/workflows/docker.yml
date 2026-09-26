@@ -56,15 +56,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # The image has to start and answer, not just build. The example configuration needs
-      # vendor keys it will never be given here, so this proves the binary runs and refuses
-      # a missing key loudly, which is the behaviour a deploy depends on.
+      # The image has to start and answer, not just build: refuse to start without a master
+      # key, and with one, open a fresh database on its volume and answer its healthcheck.
       - name: The image runs
         if: github.event_name == 'pull_request'
         run: |
           docker buildx build --load --platform linux/amd64 -t llmr:ci --cache-from type=gha .
           docker run --rm llmr:ci --version
           if docker run --rm llmr:ci 2> err.txt; then
-            echo "::error::started without provider keys"; exit 1
+            echo "::error::started without a master key"; exit 1
           fi
-          grep -q "ANTHROPIC_API_KEY" err.txt
+          grep -q "LLMR_MASTER_KEY" err.txt
+          key=$(docker run --rm llmr:ci keygen)
+          docker run -d --name llmr-ci -v llmr-ci-data:/var/lib/llmr -e LLMR_MASTER_KEY="$key" llmr:ci
+          for i in $(seq 1 20); do
+            docker exec llmr-ci /usr/local/bin/llmr healthcheck && break
+            sleep 1
+          done
+          docker exec llmr-ci /usr/local/bin/llmr healthcheck
+          docker logs llmr-ci

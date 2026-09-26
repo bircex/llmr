@@ -1,11 +1,10 @@
 # A release, from a tag rather than from somebody's laptop.
 #
-# llmr ships as a Docker image and as binaries, never as a crate. Pushing `v0.3.0` does
-# three things:
+# llmr ships as a Docker image and nothing else. Pushing `v0.3.0` does two things:
 #
-#   * docker.yml publishes ghcr.io/<owner>/llmr:0.3.0 and :0.3 (amd64 and arm64)
-#   * this workflow checks the tag, builds a binary per platform, and
-#   * creates the GitHub Release with those binaries and the changelog section as notes.
+#   * docker.yml publishes ghcr.io/<owner>/llmr:0.3.0 and :0.3 (amd64 and arm64), and
+#   * this workflow checks the tag and creates the GitHub release, with the changelog
+#     section as notes and the image to pull.
 #
 # The tag is the trigger and the tag is also the claim: it must match the version in
 # Cargo.toml and have a CHANGELOG.md section, and this refuses if it does not.
@@ -38,12 +37,6 @@ jobs:
       - run: cargo clippy --all-features --all-targets -- -D warnings
       - run: cargo clippy --no-default-features --all-targets -- -D warnings
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo doc --all-features --no-deps
-        env:
-          RUSTDOCFLAGS: -D warnings
-      - run: cargo doc --no-deps
-        env:
-          RUSTDOCFLAGS: -D warnings
       - run: cargo test --all-features
       - run: cargo test
 
@@ -72,59 +65,14 @@ jobs:
             exit 1
           fi
 
-  binaries:
-    name: binary for ${{ matrix.target }}
-    needs: [verify, agree]
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          # Native runners rather than cross compilation, so each binary is built and run
-          # on the platform it is for.
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
-          - { target: aarch64-apple-darwin, os: macos-latest }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Build
-        run: cargo build --release --locked --features server --bin llmr
-
-      # The binary has to run, not just link.
-      - name: It runs
-        run: ./target/release/llmr --version
-
-      - name: Package
-        run: |
-          name="llmr-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir "$name"
-          cp target/release/llmr LICENSE README.md llmr.example.toml "$name/"
-          tar -czf "$name.tar.gz" "$name"
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}
-          path: llmr-*.tar.gz*
-          if-no-files-found: error
-
   release:
     name: publish the GitHub release
-    needs: [binaries]
+    needs: [verify, agree]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
 
       # The notes are the changelog section for this version, so what the release page says
       # and what CHANGELOG.md says cannot drift apart.
@@ -145,7 +93,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --notes-file notes.md \
             --verify-tag

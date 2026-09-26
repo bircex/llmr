@@ -1,18 +1,19 @@
-//! The HTTP surface.
+//! The HTTP surface: the OpenAI-shaped client API, and the management API beside it.
 //!
 //! | Method | Path | What |
 //! |---|---|---|
-//! | `GET`  | `/healthz` | Liveness. No key needed, so an orchestrator can ask. |
+//! | `GET`  | `/healthz` | Liveness. No token needed, so an orchestrator can ask. |
 //! | `GET`  | `/v1/models` | The names this gateway serves. |
 //! | `POST` | `/v1/chat/completions` | A chat call, whole or streamed. |
-//! | `GET`  | `/llmr/routes` | Every name, its routes, what each can do, and which are resting. |
+//! | *      | `/manage/...` | Providers, models, route sets and status; see `manage.rs`. |
 //!
 //! Nothing here logs a prompt, a reply or a key. A request is logged as the name asked for,
 //! the route that answered, how many attempts it took, the token counts and the stop reason.
 
 use crate::error::ApiError;
-use crate::gateway::Gateway;
+use crate::gateway::{Live, Resolution};
 use crate::openai::{self, ChunkWriter};
+use crate::store::Db;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -31,9 +32,15 @@ use tokio::sync::{mpsc, oneshot};
 
 /// What every handler shares.
 pub struct AppState {
-    pub gateway: Gateway,
-    /// Keys a caller may present. Empty only when authentication is switched off.
+    /// The gateway serving requests, replaced whole when the management API changes it.
+    pub live: Live,
+    /// Providers, models and route sets.
+    pub db: Db,
+    /// Tokens a caller may present. Empty when `LLMR_TOKEN` is unset, and then the API is
+    /// open to whoever can reach the port.
     pub keys: Vec<String>,
+    /// When the process started, for the status endpoint.
+    pub started: std::time::Instant,
 }
 
 /// The whole application, ready to serve.
@@ -41,7 +48,7 @@ pub fn app(state: Arc<AppState>, max_body_bytes: usize) -> axum::Router {
     let protected = axum::Router::new()
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
-        .route("/llmr/routes", get(routes))
+        .merge(crate::manage::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
 
     axum::Router::new()
@@ -106,53 +113,23 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 }
 
 async fn models(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let data: Vec<Value> = state
-        .gateway
-        .served()
-        .map(|served| {
-            json!({
-                "id": served.name,
-                "object": "model",
-                "created": 0,
-                "owned_by": "llmr",
-            })
+    let gateway = state.live.current();
+    let entry = |id: &str| {
+        json!({
+            "id": id,
+            "object": "model",
+            "created": 0,
+            "owned_by": "llmr",
         })
+    };
+    // Route sets first, because those are the names a client is meant to use; then every
+    // enabled model, addressable directly as provider/model.
+    let data: Vec<Value> = gateway
+        .served()
+        .map(|served| entry(&served.name))
+        .chain(gateway.enabled().map(|id| entry(id)))
         .collect();
     Json(json!({ "object": "list", "data": data }))
-}
-
-async fn routes(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let models: Vec<Value> = state
-        .gateway
-        .served()
-        .map(|served| {
-            let resting: Vec<Value> = served
-                .router
-                .resting()
-                .into_iter()
-                .map(|(route, left)| json!({ "route": route, "seconds_left": left.as_secs() }))
-                .collect();
-            let routes: Vec<Value> = served
-                .router
-                .routes()
-                .map(|(route, capabilities)| {
-                    json!({
-                        "route": route,
-                        // `null` for a route whose provider does not know the model: it can
-                        // never be chosen, and is almost always a typo.
-                        "capabilities": capabilities,
-                    })
-                })
-                .collect();
-            json!({
-                "name": served.name,
-                "on_device": served.on_device,
-                "routes": routes,
-                "resting": resting,
-            })
-        })
-        .collect();
-    Json(json!({ "models": models }))
 }
 
 /// A process-unique id for one reply.
@@ -208,10 +185,11 @@ async fn chat_completions(
     let incoming = openai::read_request(&body)?;
     let asked = incoming.request.model.as_str().to_string();
 
-    let (router, on_device) = state
-        .gateway
-        .resolve(&asked)
-        .ok_or_else(|| ApiError::model_not_found(&asked))?;
+    let (router, on_device) = match state.live.current().resolve(&asked) {
+        Resolution::Found(router, on_device) => (router, on_device),
+        Resolution::NotEnabled(why) => return Err(ApiError::model_not_enabled(&asked, why)),
+        Resolution::Unknown => return Err(ApiError::model_not_found(&asked)),
+    };
 
     let mut needs = Requirements::of(&incoming.request);
     if on_device || wants_on_device(&headers) {
@@ -503,8 +481,18 @@ mod tests {
     fn app_with(served: Vec<(&str, Router, bool)>) -> axum::Router {
         app(
             Arc::new(AppState {
-                gateway: Gateway::from_routers(served),
+                live: Live::new(crate::gateway::Gateway::from_routers(served)),
+                db: Db::new(
+                    crate::store::Store::in_memory(
+                        crate::crypto::MasterKey::from_base64(
+                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                ),
                 keys: vec!["secret".into()],
+                started: std::time::Instant::now(),
             }),
             1024 * 1024,
         )

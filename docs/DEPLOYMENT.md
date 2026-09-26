@@ -1,27 +1,43 @@
 # Running llmr
 
-llmr is one process with one configuration file. There is no database and no state on disk:
-what it remembers (which routes are failing) lives in memory and is rebuilt after a restart.
+llmr runs only as its Docker image, `ghcr.io/bircex/llmr`. It needs two things from you: a
+master key in its environment, and a volume for its database. Everything else (providers,
+models, route sets) is set afterwards through the [management API](MANAGEMENT.md).
+
+## The master key
+
+Every stored credential is encrypted with `LLMR_MASTER_KEY`. Make one:
+
+```sh
+docker run --rm ghcr.io/bircex/llmr keygen
+```
+
+- **Keep a copy outside the host**, in whatever holds your other secrets. The database alone
+  opens nothing; without the key, the stored credentials are gone and have to be entered
+  again.
+- **llmr refuses to start with a different key** than the one its database was created with,
+  and says so, rather than starting with every provider broken.
+- Never put the key on the same volume as the database: that would defeat the encryption.
 
 ## With Docker Compose
 
 ```sh
-cp llmr.example.toml llmr.toml     # the routes
-cp .env.example .env               # LLMR_API_KEYS and the provider keys
+cp .env.example .env        # set LLMR_MASTER_KEY, and LLMR_TOKEN if you want one
 docker compose up -d
 docker compose logs -f llmr
 ```
 
 [`docker-compose.yml`](../docker-compose.yml) runs the image read only, with
-`no-new-privileges`, publishes port 8080, and creates a network named `llmr`. Another compose
-project reaches the gateway at `http://llmr:8080/v1` by joining that network:
+`no-new-privileges`, keeps the database in the named volume `llmr-data`, publishes the port on
+loopback only, and creates a network named `llmr`. Another compose project reaches llmr at
+`http://llmr:8080` by joining that network:
 
 ```yaml
 services:
   app:
     environment:
       OPENAI_BASE_URL: http://llmr:8080/v1
-      OPENAI_API_KEY: ${LLMR_KEY}
+      OPENAI_API_KEY: ${LLMR_TOKEN}
     networks: [llmr]
 
 networks:
@@ -29,78 +45,46 @@ networks:
     external: true
 ```
 
-When only other containers call it, drop the `ports:` mapping so it is not reachable from
-outside the host at all.
-
 ## With `docker run`
 
 ```sh
 docker run -d --name llmr --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
-  -v "$PWD/llmr.toml:/etc/llmr/llmr.toml:ro" \
-  --env-file .env \
+  -v llmr-data:/var/lib/llmr \
+  -e LLMR_MASTER_KEY="..." \
+  -e LLMR_TOKEN="..." \
   --read-only \
   ghcr.io/bircex/llmr:latest
 ```
 
-## The image
+**Use a named volume.** The image's `/var/lib/llmr` belongs to its non root user, and a named
+volume starts with that ownership. A bind mount (`-v /srv/llmr:/var/lib/llmr`) must be
+writable by uid `65532`: `chown 65532:65532 /srv/llmr`.
 
-- `ghcr.io/bircex/llmr`, for `linux/amd64` and `linux/arm64`.
-- Tags: `X.Y.Z` and `X.Y` from release tags, `latest` from `main`, `sha-<commit>` for every
-  build. **Pin `X.Y.Z` in production**; `latest` moves with every merge.
-- Distroless, no shell, runs as a non root user. The configuration is read from
-  `/etc/llmr/llmr.toml`; the image carries `llmr.example.toml` there, which will not start
-  without vendor keys, so mount your own.
-- `HEALTHCHECK` runs `llmr healthcheck`, which asks `/healthz` over loopback every 15
-  seconds.
-- `docker stop` sends SIGTERM: the gateway stops accepting connections and finishes the
-  requests in flight, streams included, before it exits.
+## Environment
 
-Other commands the image runs:
+| Variable | Default | |
+|---|---|---|
+| `LLMR_MASTER_KEY` | required | Seals stored credentials. See above |
+| `LLMR_TOKEN` | unset | Tokens callers must present, comma separated. Unset, nothing is checked |
+| `LLMR_LISTEN` | `0.0.0.0:8080` | Address and port inside the container |
+| `LLMR_DATA_DIR` | `/var/lib/llmr` | Where the database lives |
+| `LLMR_MAX_BODY_MB` | `32` | Largest request body; images arrive inline |
+| `RUST_LOG` | `info` | Log filter |
+| `LLMR_LOG_FORMAT` | text | `json` for one object per line |
 
-```sh
-docker run --rm ghcr.io/bircex/llmr:latest --version
-docker run --rm -v "$PWD/llmr.toml:/etc/llmr/llmr.toml:ro" --env-file .env ghcr.io/bircex/llmr:latest check
-```
+## Who can reach it
 
-## Without Docker
+The management API can add providers, replace credentials and send traffic anywhere, so
+whoever can reach the port can do all of that. Pick one:
 
-Every release has binaries for Linux (x86_64, arm64) and macOS (arm64) on the
-[releases page](https://github.com/bircex/llmr/releases), each with a `.sha256` beside it.
+- **A private network.** The panel and your apps share a Docker network or a VPC with llmr,
+  and the port is not published beyond it. `LLMR_TOKEN` can stay unset.
+- **A token.** Set `LLMR_TOKEN`; the panel and your apps present it. Rotate it by setting two
+  comma separated tokens, moving callers to the new one, then removing the old one.
 
-```sh
-tar -xzf llmr-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
-sha256sum -c llmr-v0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-./llmr-v0.3.0-x86_64-unknown-linux-gnu/llmr --config llmr.toml
-```
-
-A systemd unit, with the keys in an environment file only root can read:
-
-```ini
-[Unit]
-Description=llmr gateway
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/usr/local/bin/llmr serve --config /etc/llmr/llmr.toml
-EnvironmentFile=/etc/llmr/llmr.env
-DynamicUser=yes
-NoNewPrivileges=yes
-ProtectSystem=strict
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Or from source: `cargo run --release --features server -- --config llmr.toml`.
-
-## In front of it: TLS
-
-The gateway serves plain HTTP and does not terminate TLS. Client keys travel in a header, so
-anything that crosses a network you do not control needs TLS in front. With Caddy, which
-fetches a certificate on its own:
+Either way, anything that crosses a network you do not control needs TLS in front: llmr
+serves plain HTTP. With Caddy, which fetches a certificate on its own:
 
 ```
 llm.example.com {
@@ -110,25 +94,36 @@ llm.example.com {
 }
 ```
 
-`flush_interval -1` passes streamed chunks through as they arrive. The gateway also sends
+`flush_interval -1` passes streamed chunks through as they arrive. llmr also sends
 `x-accel-buffering: no`, which nginx honours, and a keep-alive comment every 15 seconds on a
-quiet stream; still, set the proxy's read timeout above your longest expected reply
-(`proxy_read_timeout` in nginx).
+quiet stream; set the proxy's read timeout above your longest expected reply.
 
-## Changing the configuration
+## The image
 
-The file is read at startup. After editing it, run `llmr check`, then restart the gateway.
-A restart finishes requests in flight first, and forgets which routes were resting.
+- `linux/amd64` and `linux/arm64`.
+- Tags: `X.Y.Z` and `X.Y` from releases, `latest` from `main`, `sha-<commit>` for every
+  build. **Pin `X.Y.Z` in production**; `latest` moves with every merge.
+- Distroless: no shell, no package manager, a non root user.
+- `HEALTHCHECK` runs `llmr healthcheck`, which asks `/healthz` over loopback every 15 seconds.
+- `docker stop` sends SIGTERM: llmr stops accepting connections and finishes requests in
+  flight, streams included, before it exits.
 
-## Keys
+## Backups and upgrades
 
-**Client keys** live in `LLMR_API_KEYS`, comma separated. To rotate one: add the new key,
-restart, move clients to it, remove the old key, restart.
+The state is one SQLite file, `/var/lib/llmr/llmr.db`. Back it up with the container stopped,
+or while it runs from a second container with SQLite's online backup:
 
-**Provider keys** are read once at startup from the variables the configuration names. A
-missing or empty one stops startup with a message naming the variable. A key the vendor
-rejects is reported by the startup preflight, and the route is rested rather than tried
-first in every request.
+```sh
+docker run --rm -v llmr-data:/data -v "$PWD":/backup keinos/sqlite3 \
+  sqlite3 /data/llmr.db ".backup /backup/llmr-$(date +%F).db"
+```
+
+A backup restores only with the master key it was made under.
+
+Upgrading is pulling a newer tag and recreating the container on the same volume. The
+database is migrated forward on start. An older llmr refuses to open a database a newer one
+has written, rather than guessing at it; to go back, restore the backup taken before the
+upgrade.
 
 ## Logs
 
@@ -139,16 +134,12 @@ INFO answered model=default route=anthropic/claude-sonnet-5 attempts=1 fell_thro
 WARN fell through model=default route=openai/gpt-5.1 why="rate limited, retry after 2000ms (attempt 1 of 2, waiting 2000ms)"
 ```
 
-`LLMR_LOG_FORMAT=json` writes the same as one JSON object per line, for a log collector.
-`RUST_LOG` sets the filter (`info` by default).
+`LLMR_LOG_FORMAT=json` writes the same as one JSON object per line. Prompts, replies and
+credentials are never logged.
 
-Prompts, replies and keys are never logged. What is worth alerting on is a `fell through`
-warning on a request that still succeeded: a provider degrading while nothing fails.
+At startup llmr logs every provider it could not build and every route that cannot be used,
+then asks each usable route whether it is reachable, without a billable call. A `fell
+through` warning on a request that still succeeded is worth alerting on: a provider degrading
+while nothing fails.
 
-## What to watch
-
-- `GET /llmr/routes` lists routes a breaker is currently skipping and for how long.
-- `llmr check` in a scheduled job catches a key that expired or a model a vendor retired,
-  without spending anything.
-- Startup logs name every route that can never be chosen (`the provider does not know this
-  model`); fix those before anything else.
+`GET /manage/status` and `GET /manage/routes` are the same picture for a panel.

@@ -6,7 +6,7 @@ rust-version  = "1.90"
 license       = "MIT"
 description   = "An LLM router you run as a container: one OpenAI-compatible endpoint in front of Anthropic, OpenAI, Gemini and anything OpenAI-compatible."
 repository    = "https://github.com/bircex/llmr"
-# Distributed as a Docker image and release binaries, not as a crate. The engine under
+# Distributed as a Docker image and nothing else, never as a crate. The engine under
 # `src/` is how the gateway is built, not an API anybody downstream depends on, so nothing
 # here can be published by accident.
 publish       = false
@@ -54,10 +54,10 @@ retry = ["dep:tokio", "tokio/time"]
 # does no work.
 tracing = ["dep:tracing"]
 
-# The router as a service: an HTTP server speaking the OpenAI chat completions shape, so any
-# project reaches every configured provider through one base URL and one key. This is what
-# the Docker image runs. It pulls a web server, a runtime and a log formatter, which is why
-# it is a feature rather than something every build pays for.
+# The router as a service: the OpenAI-shaped client API, the management API, and the
+# encrypted database behind them. This is what the Docker image runs. It pulls a web server,
+# a runtime, SQLite and a cipher, which is why it is a feature rather than something every
+# build of the engine pays for.
 server = [
     "anthropic",
     "openai",
@@ -67,6 +67,8 @@ server = [
     "tracing",
     "dep:axum",
     "dep:tracing-subscriber",
+    "dep:rusqlite",
+    "dep:chacha20poly1305",
     "tokio/rt-multi-thread",
     "tokio/macros",
     "tokio/net",
@@ -89,15 +91,21 @@ toml        = "1.1"
 reqwest     = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio       = { version = "1", optional = true, default-features = false }
 tracing     = { version = "0.1", optional = true, default-features = false, features = ["std"] }
-axum        = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
+axum        = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio", "query"] }
 tracing-subscriber = { version = "0.3", optional = true, default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json"] }
+# The gateway's own state: providers, models, routes and usage, in one file on the data volume.
+# `bundled` compiles SQLite in, so the image needs no system library and every build runs the
+# same SQLite.
+rusqlite    = { version = "0.37", optional = true, features = ["bundled"] }
+# Credentials at rest. An AEAD with a 192-bit nonce, so a random nonce per value is safe.
+chacha20poly1305 = { version = "0.10", optional = true, default-features = false, features = ["alloc", "getrandom"] }
 
 [dev-dependencies]
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }
 async-trait = "0.1"
 tower       = { version = "0.5", default-features = false, features = ["util"] }
 
-# The gateway. `cargo run --features server -- --config llmr.toml`, or the Docker image.
+# The service the Docker image runs.
 [[bin]]
 name              = "llmr"
 path              = "src/bin/llmr/main.rs"

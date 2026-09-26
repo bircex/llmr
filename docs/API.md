@@ -1,26 +1,27 @@
-# HTTP API
+# Client API
 
-The gateway speaks the OpenAI chat completions shape, so any OpenAI SDK or framework works by
+llmr speaks the OpenAI chat completions shape, so any OpenAI SDK or framework works by
 changing its base URL to `http://<host>:8080/v1`. This page is what it accepts, what it
-refuses, and what it sends back.
+refuses, and what it sends back. Setting up what it serves is the
+[management API](MANAGEMENT.md).
 
-| Method | Path | Key needed | |
+| Method | Path | Token | |
 |---|---|---|---|
-| `POST` | `/v1/chat/completions` | yes | A chat call, whole or streamed |
-| `GET` | `/v1/models` | yes | The names this gateway serves |
-| `GET` | `/llmr/routes` | yes | Every name, its routes, what each can do, and which are resting |
-| `GET` | `/healthz` | no | Liveness: `200 ok` while the process serves |
+| `POST` | `/v1/chat/completions` | when set | A chat call, whole or streamed |
+| `GET` | `/v1/models` | when set | The names a client can use |
+| `GET` | `/healthz` | never | Liveness: `200 ok` while the process serves |
 
-A key is presented as `Authorization: Bearer <key>` or `x-api-key: <key>`, and must be one
-of the keys in `LLMR_API_KEYS` (unless the gateway runs with `auth = "none"`).
+With `LLMR_TOKEN` set, a call presents one of its tokens as `Authorization: Bearer <token>`
+or `x-api-key: <token>`. OpenAI SDKs send their `api_key` as the first, so setting the SDK's
+key to the token is all it takes. Without `LLMR_TOKEN`, nothing is checked.
 
 ## `POST /v1/chat/completions`
 
 ### `model`
 
-A name from `[[model]]` in the configuration, such as `default`. With `allow_direct` on, also
-`provider/model` for a model the provider lists, such as `anthropic/claude-haiku-4-5`. Any
-other name is a `404 model_not_found`.
+A route set, such as `default`, or an enabled model addressed directly as `provider/model`,
+such as `anthropic/claude-haiku-4-5`. A model that exists and is not enabled is a
+`404 model_not_enabled` saying so; any other name is a `404 model_not_found`.
 
 The reply's `model` is the model that actually answered, not the name asked for.
 
@@ -45,7 +46,7 @@ which is the only arrangement every provider accepts.
 
 ### What is refused
 
-A field the gateway cannot carry to every provider is a `400` naming it in `error.param`,
+A field llmr cannot carry to every provider is a `400` naming it in `error.param`,
 never silently dropped, because a reply that ignored half the request is still billed:
 
 - `n` above 1
@@ -63,9 +64,9 @@ never silently dropped, because a reply that ignored half the request is still b
 The request is matched against what each route can do. A request with tools skips routes
 that cannot take tools; one with an image skips routes that cannot see; one with a schema or a
 `reasoning_effort` other than `none` skips routes without structured output or reasoning. Among the routes
-that fit, they are tried in the configured order until one answers.
+that fit, they are tried in the route set's order until one answers.
 
-A name configured `on_device` is only served by `self-hosted` routes. A client can ask for the
+A route set marked `on_device` is only served by `self-hosted` routes. A client can ask for the
 same floor on one request with the header `x-llmr-on-device: true`; a header can tighten the
 floor and never loosen it.
 
@@ -130,49 +131,34 @@ Every error is the OpenAI envelope:
 | Status | `code` | Meaning |
 |---|---|---|
 | 400 | `invalid_request` | The request is malformed or asks for something refused above; `param` names the field |
-| 400 | `no_route` | No configured route can serve this request |
+| 400 | `no_route` | No usable route in the set can serve this request |
 | 400 | `upstream_rejected_request` | The provider refused the request's shape |
-| 401 | `invalid_api_key` | No key, or not one of the gateway's keys |
-| 404 | `model_not_found` | Not a name this gateway serves |
+| 401 | `invalid_api_key` | `LLMR_TOKEN` is set and the call did not present one of its tokens |
+| 404 | `model_not_found` | Not a route set or a known model |
+| 404 | `model_not_enabled` | A model that exists and is switched off |
 | 404 | `not_found` | No such endpoint |
 | 429 | `rate_limited` | Every route that was tried is rate limited. `Retry-After` carries the provider's wait, rounded up |
-| 502 | `upstream_credential_rejected` | A provider rejected the **gateway's** key. Your key was fine; the operator has to fix theirs |
-| 502 | `upstream_not_found` | A provider does not have the configured model |
+| 502 | `upstream_credential_rejected` | A provider rejected **llmr's** key for it. Your token was fine; the provider's credential needs fixing through the management API |
+| 502 | `upstream_not_found` | A provider does not have the model it was asked for |
 | 502 | `upstream_unreadable` | A provider answered and the answer could not be read |
 | 503 | `upstream_unavailable` | Every route that could serve this failed or is resting |
 | 504 | `timeout` | The configured deadline passed |
 
 The split is by whose problem it is: a 4xx is something the client can change, a 5xx is
-behind the gateway.
+behind llmr.
 
 ## `GET /v1/models`
 
 ```json
-{ "object": "list", "data": [{ "id": "default", "object": "model", "created": 0, "owned_by": "llmr" }] }
+{ "object": "list", "data": [
+  { "id": "default", "object": "model", "created": 0, "owned_by": "llmr" },
+  { "id": "anthropic/claude-sonnet-5", "object": "model", "created": 0, "owned_by": "llmr" }
+] }
 ```
 
-Only the names under `[[model]]`. Direct `provider/model` names are not listed.
-
-## `GET /llmr/routes`
-
-```json
-{
-  "models": [{
-    "name": "default",
-    "on_device": false,
-    "routes": [
-      { "route": "anthropic/claude-sonnet-5", "capabilities": { "tools": true, "streaming": true, "reach": "FirstPartyApi", "...": "..." } },
-      { "route": "openai/gpt-typo", "capabilities": null }
-    ],
-    "resting": [{ "route": "anthropic/claude-sonnet-5", "seconds_left": 12 }]
-  }]
-}
-```
-
-`capabilities: null` is a route whose provider does not list the model: it can never be
-chosen, and is almost always a typo. `resting` is the routes a breaker is currently skipping
-and for how much longer. A route that stays on it for hours is a provider nobody has noticed
-is gone.
+Route sets first, because those are the names a client is meant to use, then every enabled
+model as `provider/model`. What each route set is made of, and which of its routes are
+usable or resting, is `GET /manage/routes`.
 
 ## `GET /healthz`
 

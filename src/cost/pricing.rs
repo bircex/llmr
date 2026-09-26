@@ -508,7 +508,7 @@ mod tests {
         assert_eq!(
             book.age("2026-07-31"),
             Some(-1),
-            "a table dated in the future is one somebody typed wrong, and saying so beats              clamping it to zero"
+            "a table dated in the future is one somebody typed wrong, and saying so beats clamping it to zero"
         );
     }
 

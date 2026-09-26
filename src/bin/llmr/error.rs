@@ -61,13 +61,45 @@ impl ApiError {
         error
     }
 
+    /// A model that exists and is switched off.
+    pub fn model_not_enabled(model: &str, why: String) -> Self {
+        let mut error = Self::new(
+            StatusCode::NOT_FOUND,
+            "invalid_request_error",
+            "model_not_enabled",
+            format!("the model {model:?} is not enabled: {why}"),
+        );
+        error.param = Some("model".into());
+        error
+    }
+
+    /// No such thing, on the management API.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            "invalid_request_error",
+            "not_found",
+            message.into(),
+        )
+    }
+
+    /// It exists already.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "invalid_request_error",
+            "conflict",
+            message.into(),
+        )
+    }
+
     /// The caller presented no key, or a wrong one.
     pub fn unauthorized() -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,
             "authentication_error",
             "invalid_api_key",
-            "a valid key is required, as `Authorization: Bearer <key>` or `x-api-key`".into(),
+            "a valid token is required, as `Authorization: Bearer <token>` or `x-api-key`".into(),
         )
     }
 
@@ -170,6 +202,17 @@ impl From<llmr::Error> for ApiError {
                 "upstream_unreadable",
                 message,
             ),
+        }
+    }
+}
+
+impl From<crate::store::StoreError> for ApiError {
+    fn from(error: crate::store::StoreError) -> Self {
+        use crate::store::StoreError as E;
+        match error {
+            E::NotFound(m) => ApiError::not_found(m),
+            E::Conflict(m) => ApiError::conflict(m),
+            E::Failed(m) => ApiError::internal(m),
         }
     }
 }
