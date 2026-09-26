@@ -4,16 +4,12 @@ version       = "0.2.0"
 edition       = "2021"
 rust-version  = "1.90"
 license       = "MIT"
-description   = "Reach language models across providers, with capabilities you can read before you ask and usage you can trust."
+description   = "An LLM router you run as a container: one OpenAI-compatible endpoint in front of Anthropic, OpenAI, Gemini and anything OpenAI-compatible."
 repository    = "https://github.com/bircex/llmr"
-documentation = "https://docs.rs/llmr"
-readme        = "README.md"
-keywords      = ["llm", "anthropic", "openai", "ai", "provider"]
-categories    = ["api-bindings", "asynchronous"]
-# `rust-toolchain.toml` is how this repository is built, not how the crate must be. Shipping
-# it would be a library telling a consumer which compiler to use. `deny.toml` is the same
-# kind of thing: it is how this repository is audited, not something a consumer builds with.
-exclude       = ["/.github", "/docs", "/ROADMAP.md", "/rust-toolchain.toml", "/deny.toml", "/Dockerfile", "/.dockerignore", "/docker-compose.yml", "/.env.example"]
+# Distributed as a Docker image and release binaries, not as a crate. The engine under
+# `src/` is how the gateway is built, not an API anybody downstream depends on, so nothing
+# here can be published by accident.
+publish       = false
 
 [features]
 # Both protocols, and no HTTP client. You supply a transport, which almost every program
@@ -134,10 +130,6 @@ required-features = ["openai", "reqwest"]
 [[example]]
 name              = "nearest"
 required-features = ["openai", "embeddings", "reqwest"]
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
 
 # Only the lints that should hold in tests as well as in the library live here.
 # The rest are inner attributes in lib.rs, so a test may still call `expect`.

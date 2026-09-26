@@ -10,7 +10,6 @@
 // The bans above are about the library. A test that cannot panic cannot assert, so they are
 // lifted inside `#[cfg(test)]` and nowhere else.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
-#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod breaker;
 pub mod budget;
@@ -18,7 +17,6 @@ pub mod chat;
 pub mod cost;
 
 #[cfg(feature = "embeddings")]
-#[cfg_attr(docsrs, doc(cfg(feature = "embeddings")))]
 pub mod embed;
 
 pub mod error;
@@ -34,7 +32,6 @@ pub mod transport;
 pub mod providers;
 
 #[cfg(feature = "testkit")]
-#[cfg_attr(docsrs, doc(cfg(feature = "testkit")))]
 pub mod testkit;
 
 pub use breaker::Breaker;

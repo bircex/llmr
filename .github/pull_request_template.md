@@ -31,5 +31,6 @@ commands passed locally on 1.97 and failed on CI for months.
       somebody tidying a decision away, and this checkbox is where that gets caught. If this
       change makes a choice that would look wrong to a reader, write down what would break
       if it were reversed.
-- [ ] **Does this change the public surface?** Narrowing after publish is breaking and
-      widening never is. A new `pub` item is a promise; say so here if you added one.
+- [ ] **Does this change what users of the gateway depend on?** The HTTP API, a response
+      header, a configuration key or the command line. Adding is fine; renaming or removing
+      breaks somebody's deployment and needs a line in `CHANGELOG.md` saying so.

@@ -196,6 +196,20 @@ Usage a provider did not report is left out of the reply rather than written as 
   the natural next step.
 - No embeddings endpoint yet, though the engine has two embedders.
 
+## Releases
+
+Every `vX.Y.Z` tag publishes:
+
+- the image, `ghcr.io/bircex/llmr:X.Y.Z` and `:X.Y`, for amd64 and arm64 (`:latest` follows
+  `main`);
+- a [GitHub release](https://github.com/bircex/llmr/releases) with binaries for Linux
+  (x86_64, arm64) and macOS (arm64), each with a checksum, and the changelog section as
+  notes.
+
+llmr is not published to crates.io. It is a service, not a library; 0.1.0 on crates.io
+predates the gateway and nothing newer goes there. What is versioned is what you depend on:
+the HTTP API, the response headers, the configuration file and the command line.
+
 ## Build from source
 
 ```sh
@@ -203,8 +217,9 @@ cargo run --features server -- --config llmr.toml
 docker build -t llmr .
 ```
 
-The routing engine underneath is also a Rust crate; [LIBRARY.md](LIBRARY.md) describes it,
-and [docs/DESIGN.md](docs/DESIGN.md) records why it is shaped the way it is.
+[LIBRARY.md](LIBRARY.md) documents the routing engine inside the gateway, and
+[docs/DESIGN.md](docs/DESIGN.md) records why it is shaped the way it is.
+[CONTRIBUTING.md](CONTRIBUTING.md) lists the checks a pull request has to pass.
 
 ## License
 

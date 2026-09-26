@@ -1,7 +1,7 @@
 # Roadmap
 
-Where this crate is, what shipped in each release, and what is left. Written so
-somebody picking this up cold can carry on without asking anybody anything.
+Where llmr is, what shipped in each release, and what is left. Written so somebody picking
+this up cold can carry on without asking anybody anything.
 
 Read [docs/DESIGN.md](docs/DESIGN.md) first if you are about to change something. It says
 what was decided and why, and several of those decisions look wrong until you know the
@@ -9,46 +9,25 @@ reason.
 
 ## Where it stands
 
-As of 0.2.0. See **After 0.1.0** below for what the twelve issues behind it were and where
-each got to.
+llmr began as a crate and is now a gateway: a container projects point an OpenAI client at,
+with the routing engine built into it. It is distributed as a Docker image
+(`ghcr.io/<owner>/llmr`) and as release binaries, and **is not published to crates.io any
+more**. 0.1.0 is still on crates.io from before the change; nothing newer will be.
+
+Everything below the gateway section is the history of the engine, written while it was a
+crate. It is kept because the reasoning still holds for the code; where it talks about
+publishing, docs.rs or a public API, that is what the project did then, not what it does now.
 
 | | |
 |---|---:|
-| Source | 13,852 lines across 38 files |
-| Tests | 400 passing, all features · 283 on the default set |
-| Public items | 6,854 all in, 1,440 hand written · **not re-measured since the second embedder** |
-| Dependency tree, default features | 35 crates |
-| Published | 0.1.0 on crates.io. 0.2.0 is on `main` and not yet tagged |
-| CI on GitHub | runs, and is green on `main` |
-
-The public item row is marked rather than updated, because re-running it needs a nightly
-toolchain and `cargo public-api`, and a number carried forward under a caption that does not
-say so is the exact thing the note below this table was written about. It has certainly
-grown: `Breaker`, `Budget`, `Order`, `Recheck`, `Spending` and a dozen methods landed since.
-Re-run the two commands below before the next release and replace the row.
+| Source | 17,026 lines across 44 files, the gateway included |
+| Tests | 440 passing, all features · 283 on the default set |
+| Distributed as | Docker image for amd64 and arm64, and binaries for Linux (x86_64, arm64) and macOS (arm64), from a `v*` tag |
+| CI on GitHub | runs on every pull request, the image build included |
 
 Everything below is green: `cargo fmt --check`, clippy under three feature combinations,
 `cargo doc` with warnings denied under two feature sets, every feature built alone, and the
 full test suite under two.
-
-The public item count is two numbers because it needs a stated method, and used to be one
-number twice with no method at all — this file said 180 and issue #19 said 189, and neither
-could be compared to anything. Both come from:
-
-```sh
-cargo +nightly public-api --all-features | wc -l
-cargo +nightly public-api --all-features \
-  --omit blanket-impls,auto-trait-impls,auto-derived-impls | wc -l
-```
-
-6,854 is every public item, dominated by the trait implementations `derive` writes. 1,440 is
-that with them omitted, which is roughly what a reader of the docs meets. Either is fine.
-Using the same one next time is what matters, and after 0.1.0 `cargo public-api --diff`
-answers the better question anyway.
-
-The flags are written down here because the previous pair of numbers, 6,128 and 1,209, was
-measured before Bedrock landed and left in a table captioned as though it were not. A stated
-method that nobody re-runs is a stated method for one commit.
 
 ```sh
 cargo fmt --all -- --check
@@ -80,10 +59,12 @@ cannot see one that is broken.
 
 ## The gateway · **first cut, unreleased**
 
-The direction changed: llmr is now primarily a container projects point an OpenAI client at,
-with the crate as the engine underneath. `src/bin/llmr/` is the server (behind the `server`
+The direction changed: llmr is a container projects point an OpenAI client at, with the
+engine underneath and no crate published. `src/bin/llmr/` is the server (behind the `server`
 feature), `Dockerfile` and `docker-compose.yml` run it, and `.github/workflows/docker.yml`
-publishes `ghcr.io/<owner>/llmr`. README.md describes it; LIBRARY.md is the old crate README.
+publishes `ghcr.io/<owner>/llmr`, and `.github/workflows/release.yml` turns a `v*` tag into a
+GitHub release with binaries. README.md describes the gateway; LIBRARY.md describes the
+engine.
 
 Next, roughly in order of how much a user would notice:
 
@@ -264,17 +245,11 @@ tick on somebody's unrelated pull request.
   blanket ignores, and duplicates warned. `cargo deny check` passes; it warns about `syn` 1
   and 2 and two `windows-sys` versions, both transitive and neither ours to fix.
 - **A release workflow.** `.github/workflows/release.yml` fires on a `v*` tag, re-runs all
-  eight checks against that commit, refuses if the tag disagrees with `Cargo.toml` or the
-  changelog has no section for it, and holds the publish behind a `crates-io` environment so
-  a person approves it. A published version cannot be unpublished, only yanked.
-- **A packaging job on pull requests.** `cargo package --list` and `cargo publish --dry-run`,
-  so a packaging problem is found on a pull request rather than at the moment of release.
-- **`cargo-semver-checks` on pull requests.** Nothing to compare against until 0.1.0 is
-  published, and it is here now so the first release after it is checked by a job somebody
-  already trusts rather than one added in a hurry. It does **not** skip on its own when the
-  crate is unpublished — it exits 101 with "not found in registry", which is what it did the
-  first time this job ran — so the job asks the sparse index first and says why it is
-  skipping. A probe that cannot tell fails the job rather than guessing.
+  eight checks against that commit, and refuses if the tag disagrees with `Cargo.toml` or the
+  changelog has no section for it. It published to crates.io then; since the gateway it
+  builds binaries and a GitHub release instead.
+- **A packaging job and `cargo-semver-checks` on pull requests.** Both guarded the crate's
+  published API, and both were removed with the gateway, when there stopped being one.
 - **Issue and pull request templates, and a code of conduct.** The provider template asks
   which vendor *and* which reach, because those decide different things: the vendor decides
   the directory, the reach decides what it can carry.
@@ -312,12 +287,8 @@ them.
 
 ### Then
 
-`cargo publish`, and only then does anything switch a path dependency for a version.
-
-### Done when
-
-docs.rs has built it, a fresh project can add it and make one call, and the README's first
-example works copied straight out.
+`cargo publish`. Done for 0.1.0, which is the last version on crates.io: the project stopped
+publishing a crate when it became a gateway.
 
 ---
 
@@ -412,11 +383,11 @@ Five gaps found by auditing which public items no executable test ever touches. 
 unparsed header does not fail, it quietly drops what the caller asked for, and the reply looks
 correct all the way down.
 
-## Things known to be missing, said in the README
+## Things known to be missing from the engine
 
 Reranking and completion endpoints, audio and documents, and a model catalogue on the command
 line providers, which cannot be asked what they serve. Bedrock does not stream, because its
-event framing is not server sent events. If you fix one, take it out of the README's list in
-the same commit.
+event framing is not server sent events. The gateway's own gaps are listed in the README; if
+you fix one, take it out of that list in the same commit.
 
 Streaming, retries, images and embeddings used to be on this line and are not any more.

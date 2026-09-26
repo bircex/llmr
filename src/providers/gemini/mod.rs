@@ -14,11 +14,9 @@
 //! `docs/DESIGN.md` on what the top level of `providers::` names.
 
 #[cfg(feature = "gemini")]
-#[cfg_attr(docsrs, doc(cfg(feature = "gemini")))]
 pub mod api;
 
 // Embeddings are a different trait, so they are a sibling of `api` rather than something
 // inside it. This is the one reach in the crate where `Purpose` reaches a wire.
 #[cfg(all(feature = "gemini", feature = "embeddings"))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "gemini", feature = "embeddings"))))]
 pub mod embed;

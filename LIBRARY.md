@@ -1,16 +1,23 @@
 # llmr, the engine
 
-The routing engine the [`llmr` gateway](https://github.com/bircex/llmr) is built on, usable as a Rust crate on its
-own. Most projects should run the gateway and point an OpenAI client at it; this is for a
-Rust program that wants the router in-process.
+The routing engine inside the [`llmr` gateway](https://github.com/bircex/llmr): providers,
+capabilities, usage, the router. This page is its documentation, and the examples in it run
+as tests.
 
-Reach language models across providers, with capabilities you can read before you ask and
-usage you can trust.
+It is **not published to crates.io**. llmr ships as a Docker image and release binaries, and
+these types are how the gateway is built rather than a stable API. A Rust program that
+really wants the router in-process can depend on the repository by git and pin a commit,
+with no compatibility promise between commits:
 
 ```toml
 [dependencies]
-llmr = { version = "0.2", features = ["reqwest"] }
+llmr = { git = "https://github.com/bircex/llmr", rev = "<commit>", features = ["reqwest"] }
 ```
+
+Everybody else should run the gateway and point an OpenAI client at it.
+
+Reach language models across providers, with capabilities you can read before you ask and
+usage you can trust.
 
 ```rust,no_run
 use llmr::providers::anthropic;

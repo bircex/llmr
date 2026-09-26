@@ -43,7 +43,6 @@ pub trait Delay: Send + Sync {
 
 /// A [`Delay`] backed by `tokio`.
 #[cfg(feature = "retry")]
-#[cfg_attr(docsrs, doc(cfg(feature = "retry")))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokioDelay;
 
@@ -85,7 +84,6 @@ impl Retry {
     /// `Retry::new(1)` never retries, which is the same as no policy at all. Zero is read as
     /// one: a call that was never made is not a policy anybody meant to write.
     #[cfg(feature = "retry")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "retry")))]
     pub fn new(attempts: u32) -> Self {
         Self::with_delay(attempts, Arc::new(TokioDelay))
     }

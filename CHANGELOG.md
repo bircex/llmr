@@ -22,9 +22,25 @@ change is a minor bump.
 ### Changed
 
 - The README describes the gateway. What it said about the crate is in `LIBRARY.md`, which
-  is also what docs.rs shows.
+  is now the engine's internal documentation.
 - `Cargo.lock` is committed, because the repository now builds a binary and an image that
   have to be reproducible.
+- A `v*` tag now builds Linux (x86_64, arm64) and macOS (arm64) binaries and creates a GitHub
+  release with them and this changelog's section as notes. The image for the tag comes from
+  the Docker workflow.
+- Semantic versioning now applies to the HTTP API, the response headers, the configuration
+  file and the command line, not to the engine's Rust types.
+
+### Removed
+
+- Publishing to crates.io. `Cargo.toml` says `publish = false`, the release workflow no longer
+  runs `cargo publish`, and the `crates-io` environment and `CARGO_REGISTRY_TOKEN` secret it
+  used are no longer read. 0.1.0 stays on crates.io; nothing newer will be published there.
+- The pull request jobs that guarded the crate's public API: `cargo package` /
+  `cargo publish --dry-run` and `cargo-semver-checks`.
+- The docs.rs configuration: `[package.metadata.docs.rs]`, the `docsrs` feature-badge
+  attributes in the source, and the crates.io metadata (`documentation`, `keywords`,
+  `categories`, `exclude`).
 
 ## 0.2.0 — 2026-09-07
 
