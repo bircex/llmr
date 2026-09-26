@@ -49,13 +49,13 @@ body:
     id: provider
     attributes:
       label: Which provider and model
-      placeholder: "anthropic/claude-sonnet-5, or the [[provider]] block from llmr.toml without keys"
+      placeholder: "anthropic/claude-sonnet-5, and the provider as GET /manage/providers/{id} shows it"
 
   - type: input
     id: running
     attributes:
       label: How you run it
-      placeholder: "ghcr.io/bircex/llmr:0.3.0, a release binary, or built from source"
+      placeholder: "ghcr.io/bircex/llmr:0.3.0, or an image built from a commit"
 
   - type: input
     id: version

@@ -10,11 +10,11 @@ with the reason rather than the rule.
 
 ## What llmr is
 
-A gateway (`src/bin/llmr/`) in front of an engine (the rest of `src/`). The gateway is what
-people run: an HTTP server in the OpenAI shape, one configuration file, one container. The
-engine is how it reaches providers and chooses between them. Most sections below are engine
-decisions, because that is where most of the decisions are; the gateway's own are collected
-near the end, in the section on the OpenAI shape.
+A service (`src/bin/llmr/`) in front of an engine (the rest of `src/`). The service is what
+people run: one Docker container with an OpenAI-shaped client API, a management API a panel
+drives, and an encrypted database on a volume. The engine is how it reaches providers and
+chooses between them. Most sections below are engine decisions, because that is where most
+of the decisions are; the service's own are collected near the end.
 
 Both answer one question: **how do I reach this model, and what did it cost.**
 
@@ -536,11 +536,12 @@ that promise: which dependencies leaked into its public API (`serde_json`, `serd
 `cargo public-api`. CI ran `cargo-semver-checks` and a `cargo publish --dry-run` on every
 pull request.
 
-All of that is gone, because the promise is gone. llmr ships as a Docker image and release
-binaries, `Cargo.toml` says `publish = false`, and the engine's Rust types are how the
-gateway is built rather than an API somebody downstream compiles against. What users depend
-on now is the HTTP API, the response headers, the configuration file and the command line,
-and that is what `CONTRIBUTING.md` holds to semantic versioning.
+All of that is gone, because the promise is gone. llmr ships as a Docker image and nothing
+else, `Cargo.toml` says `publish = false`, and the engine's Rust types are how the service is
+built rather than an API somebody downstream compiles against. What users depend on now is
+the client API, the management API, the headers, the environment and the database on their
+volume, and that is what `CONTRIBUTING.md` holds to semantic versioning. Rustdoc went with
+the crate: it documented an API nobody outside calls. Documentation is for the product.
 
 **Why not keep publishing both.** Two products with two compatibility promises is twice the
 release work for a project with one maintainer, and every engine change would have to be
@@ -548,10 +549,9 @@ weighed against callers nobody can see. A Rust program that wants the router in-
 still depend on this repository by git and pin a commit; it just gets no promise between
 commits.
 
-**What stays.** The engine keeps `#[non_exhaustive]` and constructors on its types, and keeps
-its rustdoc and doctests under `-D warnings`. Those were never only about outside callers:
-they are what makes a change to a type local, and what keeps the documentation that
-contributors read from pointing at things that no longer exist.
+**What stays.** The engine keeps `#[non_exhaustive]` and constructors on its types, its doc
+comments, and the doctests inside them. Those were never only about outside callers: they are
+what makes a change to a type local, and the comments are how a contributor reads the code.
 
 ---
 
@@ -868,7 +868,7 @@ skipped route is reported. Only the method being called differs, so that is the 
 Racing two providers for the same question and taking whichever answers first is not this
 crate's job. Whether doubling the bill is worth the latency, which two to race, how long to
 wait before starting the second: those are policy over the caller's own system, the same
-reasoning `docs/ENGINE.md` gives for the engine not deciding what your work needs. A router that
+reasoning that keeps the engine from deciding what your work needs. A router that
 hedged would be one whose cost model its author chose for you.
 
 A caller can already do it, and needs nothing added here. `Provider` is `Send + Sync`, `chat`
@@ -1153,40 +1153,79 @@ gated environment, never on a push.
 
 ---
 
-## The gateway speaks the OpenAI shape, and refuses what it cannot carry
+## The client API speaks the OpenAI shape, and refuses what it cannot carry
 
-The binary behind the `server` feature is how every project uses llmr: one container,
-one base URL, one key, and the routes decided in a file nobody's application code reads.
-
-**Why the OpenAI shape and not the crate's own.** Every SDK, framework and editor already
-speaks it, so adopting the gateway is a base URL change. The cost is that the shape has no
-place for a thinking signature, a cache breakpoint or an opaque block, so those do not cross
-it. An Anthropic Messages endpoint beside it is the way to carry them, and is listed as a
-gap rather than approximated.
+**Why the OpenAI shape and not the engine's own.** Every SDK, framework and editor already
+speaks it, so adopting llmr is a base URL change. The cost is that the shape has no place for
+a thinking signature, a cache breakpoint or an opaque block, so those do not cross it. An
+Anthropic Messages endpoint beside it is the way to carry them, and is listed as a gap rather
+than approximated.
 
 **A field that cannot be honoured is a 400, not ignored.** `n = 3`, stop sequences, a
 forced `tool_choice`, `json_object`: each would be sent without the thing asked for and
-billed anyway. That is the crate's `Needs::unmet_by` rule applied at the edge. Fields that
+billed anyway. That is the engine's `Needs::unmet_by` rule applied at the edge. Fields that
 cannot change what a client is owed (`user`, `seed`, `parallel_tool_calls`) pass.
 
 **A refusal is a 200 with `content_filter`**, which is how the shape writes one. As an
 error status it would send every client's retry logic asking the same question again, the
 thing the router's refusal rule exists to stop.
 
-**A vendor rejecting the gateway's key is a 502, not a 401.** The client's key was fine; a
+**A provider rejecting llmr's credential is a 502, not a 401.** The client's token was fine; a
 401 would send somebody checking the wrong credential.
 
-**Startup refuses rather than degrades.** A provider key that is missing, a `LLMR_API_KEYS`
-that is empty without `auth = "none"`, an `openai-compatible` endpoint with no stated reach:
-each stops the process with a message naming it. A gateway that started anyway would fail on
-the first request, far from the deploy that caused it.
+**A model that is switched off says so.** `model_not_enabled` rather than `model_not_found`,
+because the fix is different: one is a typo in the client, the other is a switch in the panel.
 
-**Route names use the operator's provider ids.** The crate's providers name themselves after
-their protocol, so two Anthropic accounts would both log as `anthropic`. A thin wrapper puts
-the configured id in front and delegates everything else.
+---
 
-**Direct `provider/model` routers are cached only for models the provider knows**, so their
-breakers remember between requests and a client cannot grow the cache by inventing names.
+## Configuration is data, managed over REST
+
+llmr is run by a panel, not edited by hand, so everything it serves is set through the
+management API and kept in SQLite on the container's volume. There is no configuration file.
+
+**Why a database and not a file the panel writes.** A file needs somewhere to be written from,
+a restart or a reload signal to take effect, and a format two programs agree on. The API
+validates a change before it is stored, answers with what llmr made of it (usable routes,
+unavailable ones and why), and takes effect on the next request. SQLite because the state is
+small, lives with the container, and needs no second service.
+
+**Credentials are sealed with a key the database never holds.** `LLMR_MASTER_KEY` comes from
+the environment; each credential is sealed with XChaCha20-Poly1305 and a random 192-bit nonce,
+long enough that choosing it at random is safe with no counter to keep. A copy of the volume
+alone opens nothing. The API is write only for credentials: in on `POST` and `PATCH`, out as
+four characters. A sealed marker in the database makes a wrong key fail at startup, with a
+message, instead of producing a service whose every provider fails on first use.
+
+**No users, no roles.** A panel is the only client of the management API, and it has its own
+users. Roles here would be a second permission system to keep in step with the first. The
+boundary is the port: a private network, or `LLMR_TOKEN`, or both. What that costs is written
+in `SECURITY.md` rather than left to be discovered.
+
+**A change rebuilds the whole gateway and swaps it in.** Providers and routers are immutable,
+which is what lets the request path hold no lock. So a change reads the store, builds a new
+gateway, and replaces the old one behind an `Arc`; requests in flight finish on the one they
+started on. The price is that routers' failure counts start again after every change, which
+a management API that changes rarely can afford, and a lock on every request could not.
+
+**One bad row does not take the rest down.** A provider that cannot be built is left out and
+named in `/manage/status`; a route that cannot be used is left out of its set and named in
+that set's `unavailable`, with the reason. Refusing to start, the right answer for a file read
+once at boot, would be the wrong one for a database a panel edits while traffic flows.
+
+**A model needs capabilities to be enabled.** Routing reads what a model can do, and a model
+nothing is known about would be a route no request can ever select, silently. So enabling one
+the release's tables do not list is refused until the panel says what it can do.
+
+**A test is free unless asked otherwise.** Testing a provider asks for its model list, which
+proves the credential and the entitlement without generating a token. The live test that sends
+one real request is opt in, because a check that spends money is one that gets skipped.
+
+**Route names use the provider ids the panel chose.** The engine's providers name themselves
+after their protocol, so two Anthropic accounts would both log as `anthropic`. A thin wrapper
+puts the stored id in front and delegates everything else.
+
+**Direct `provider/model` routers are cached only for enabled models**, so their breakers
+remember between requests and a client cannot grow the cache by inventing names.
 
 ---
 

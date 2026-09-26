@@ -9,78 +9,58 @@ reason.
 
 ## Where it stands
 
-llmr began as a crate and is now a gateway: a container projects point an OpenAI client at,
-with the routing engine built into it. It is distributed as a Docker image
-(`ghcr.io/<owner>/llmr`) and as release binaries, and **is not published to crates.io any
-more**. 0.1.0 is still on crates.io from before the change; nothing newer will be.
+llmr is a service: one Docker image (`ghcr.io/<owner>/llmr`) with an OpenAI-shaped client API,
+a management API a panel drives, and an encrypted SQLite database on a volume. It began as a
+crate; it is **not published to crates.io any more**, and 0.1.0 is the last version there.
 
-Everything below the gateway section is the history of the engine, written while it was a
+Everything below the "Next" section is the history of the engine, written while it was a
 crate. It is kept because the reasoning still holds for the code; where it talks about
-publishing, docs.rs or a public API, that is what the project did then, not what it does now.
+publishing, docs.rs or a public API, that is what the project did then.
 
 | | |
 |---|---:|
-| Source | 17,044 lines across 44 files, the gateway included |
-| Tests | 441 passing, all features · 283 on the default set |
-| Distributed as | Docker image for amd64 and arm64, and binaries for Linux (x86_64, arm64) and macOS (arm64), from a `v*` tag |
-| CI on GitHub | runs on every pull request, the image build included |
+| Source | 19,109 lines across 47 files, the service included |
+| Tests | 444 passing, all features · 270 on the default set |
+| Distributed as | The Docker image, for amd64 and arm64, from `main` and from `v*` tags |
+| CI on GitHub | every pull request, including building and starting the image |
 
-Everything below is green: `cargo fmt --check`, clippy under three feature combinations,
-`cargo doc` with warnings denied under two feature sets, every feature built alone, and the
-full test suite under two.
+The checks, as `CONTRIBUTING.md` lists them, run on the toolchain in `rust-toolchain.toml`:
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --all-features --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --all-targets -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --all-features
 cargo test
 ```
 
-The last one is new, and it is there for the same reason the second `cargo doc` line is: a
-doctest naming a feature gated item compiles under `--all-features` and nowhere else. Two
-README examples had been failing on the default feature set for as long as this list ended at
-the line above.
-
-Run all eight before any commit, and run them on the toolchain in `rust-toolchain.toml`
-rather than whatever a laptop happens to have. That file is the reason these commands mean
-the same thing here as on a runner; without it they passed on 1.97 and failed on 1.98 for
-months.
-
-The third one catches more than it looks like it should, because a lint can fire under one
-feature set and not another. The sixth is there for the same reason: a doc link to a feature
-gated item resolves under `--all-features` and nowhere else, so the all-features pass alone
-cannot see one that is broken.
-
 ---
 
-## The gateway · **on `main`, not yet tagged**
+## Next
 
-The direction changed in #76: llmr is a container projects point an OpenAI client at, with
-the engine underneath and no crate published. `src/bin/llmr/` is the server (behind the `server`
-feature), `Dockerfile` and `docker-compose.yml` run it, and `.github/workflows/docker.yml`
-publishes `ghcr.io/<owner>/llmr`, and `.github/workflows/release.yml` turns a `v*` tag into a
-GitHub release with binaries. README.md is the quick start; `docs/CONFIGURATION.md`,
-`docs/API.md` and `docs/DEPLOYMENT.md` are the reference for running it, and
-`docs/ENGINE.md` describes the engine.
+**Done, not yet tagged:** the service (#76), its documentation (#77), and REST management with
+the encrypted store (this change). Before the first tag: bump `version` in `Cargo.toml`, turn
+the changelog's Unreleased section into that version's, and tag. The release workflow and the
+image's `X.Y.Z` tags have not run yet, so watch the first one.
 
-Before the first tag: bump `version` in `Cargo.toml`, turn the changelog's Unreleased section
-into that version's, and tag. The release workflow and the image's `X.Y.Z` tags have not run
-yet, so watch the first one.
+In order:
 
-Next, roughly in order of how much a user would notice:
-
-1. Per key budgets and rate limits. The engine's `Budget` is per process lifetime, which a
-   long running server cannot use as is.
-2. An Anthropic Messages endpoint beside the OpenAI one, so prompt caching and thinking
-   signatures can cross the gateway.
-3. Bedrock (needs a SigV4 signing transport) and an embeddings endpoint.
-4. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
-   the gateway therefore refuses.
-5. Metrics (Prometheus) beside the structured logs.
+1. **Usage.** Every request and response recorded in the database: route, tokens, cost,
+   latency, outcome, never content. Totals overall, per model, per provider, over a time
+   range, through the management API. Cost only where the provider is priced; a self hosted
+   model reports tokens and no cost.
+2. **Command line providers in the image.** Claude Code and Codex installed in the container,
+   their versions reported and updatable over the management API, their credentials (an API
+   key or a subscription token) stored sealed like any other. The image grows from about
+   50 MB to about 300 MB, because both need Node.
+3. **The product site** on GitHub Pages: what llmr is and how to run it, not the code.
+4. Per caller limits: spending caps and rate limits. The engine's `Budget` is per process
+   lifetime, which a long running service cannot use as is.
+5. An Anthropic Messages endpoint beside the OpenAI one, so prompt caching and thinking
+   signatures can cross; Bedrock (needs a SigV4 signing transport); embeddings.
+6. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
+   the client API therefore refuses.
 
 ---
 
@@ -251,8 +231,8 @@ tick on somebody's unrelated pull request.
   and 2 and two `windows-sys` versions, both transitive and neither ours to fix.
 - **A release workflow.** `.github/workflows/release.yml` fires on a `v*` tag, re-runs all
   eight checks against that commit, and refuses if the tag disagrees with `Cargo.toml` or the
-  changelog has no section for it. It published to crates.io then; since the gateway it
-  builds binaries and a GitHub release instead.
+  changelog has no section for it. It published to crates.io then; now it
+  creates a GitHub release, and the image comes from the Docker workflow.
 - **A packaging job and `cargo-semver-checks` on pull requests.** Both guarded the crate's
   published API, and both were removed with the gateway, when there stopped being one.
 - **Issue and pull request templates, and a code of conduct.** The provider template asks

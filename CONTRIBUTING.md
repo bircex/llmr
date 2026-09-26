@@ -1,11 +1,12 @@
 # Contributing
 
-Thanks for looking. llmr is an LLM router that runs as a container: an OpenAI-compatible
-gateway (`src/bin/llmr/`) over a routing engine (the rest of `src/`). It has a narrow job, and
-the rules below exist to keep it that way.
+Thanks for looking. llmr is an LLM router that runs as a Docker container and is managed over
+REST: an OpenAI-compatible client API and a management API (`src/bin/llmr/`), over a routing
+engine (the rest of `src/`), with its state in an encrypted SQLite database. It has a narrow
+job, and the rules below exist to keep it that way.
 
-It is distributed as a Docker image and release binaries. It is not published as a crate, so
-the engine's Rust types are internal and can change whenever the gateway needs them to.
+The Docker image is the only thing it ships. Nothing is published as a crate, so the engine's
+Rust types are internal and can change whenever the service needs them to.
 
 ## Read this first
 
@@ -32,17 +33,13 @@ cargo fmt --all -- --check
 cargo clippy --all-features --all-targets -- -D warnings
 cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --all-targets -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo test --all-features
 cargo test
 ```
 
-All eight must be clean, and warnings count. Three of them look redundant and are not: a
-clippy lint can fire under one feature set and not another, a doc link to a feature gated
-item resolves under `--all-features` and nowhere else, and so does a *doctest* naming one.
-The last line is there because two examples in what is now `docs/ENGINE.md` had been failing
-on the default feature set for as long as this list ended one line earlier.
+All six must be clean, and warnings count. The repeats are not redundant: a clippy lint can
+fire under one feature set and not another, and a doctest naming a feature gated item
+compiles under `--all-features` and nowhere else.
 
 Run them on the toolchain in `rust-toolchain.toml` rather than whatever your machine has.
 That file exists because these commands once passed on a laptop running 1.97 and failed on
@@ -74,10 +71,13 @@ deployment that upgrades.
 src/
   bin/llmr/      the gateway
     main.rs        command line, startup, shutdown, logging, `check` and `healthcheck`
-    config.rs      the TOML file, and everything checked before anything starts
-    gateway.rs     providers and routers built from the configuration
+    records.rs     what is stored: provider types, providers, models, route sets
+    store.rs       the SQLite database, and every query
+    crypto.rs      credentials at rest, sealed with the master key
+    gateway.rs     providers and routers built from the store, swapped in on a change
+    manage.rs      the management API
     openai.rs      the OpenAI request and reply shape, both directions
-    server.rs      the HTTP endpoints, authentication, streaming
+    server.rs      the client API, the token check, streaming
     error.rs       failures as OpenAI error bodies and status codes
   chat/          the engine: what a call is made of: message, request, response, stream
   cost/          what it consumed and what that is worth: usage, pricing, ledger
@@ -95,13 +95,13 @@ src/
   transport.rs   the HTTP boundary, and a reqwest implementation of it
   error.rs secret.rs observe.rs testkit.rs
 models/          the shipped model tables and price books, dated
-docs/            CONFIGURATION, API, DEPLOYMENT for people running it; ENGINE, DESIGN, BEDROCK
-                 for people changing it
-Dockerfile, docker-compose.yml, llmr.example.toml, .env.example
+docs/            MANAGEMENT, API, DEPLOYMENT for people running it; DESIGN, BEDROCK for people
+                 changing it
+Dockerfile, docker-compose.yml, .env.example
 .github/workflows/
-  ci.yml         every pull request: the eight checks, each feature alone, MSRV, cargo deny
+  ci.yml         every pull request: the six checks, each feature alone, MSRV, cargo deny
   docker.yml     the image: built on pull requests, published from main and from tags
-  release.yml    a v* tag: checks, binaries, the GitHub release
+  release.yml    a v* tag: checks, and the GitHub release
   live.yml       calls real providers, by hand only
 ```
 
@@ -123,34 +123,39 @@ Most changes a user would notice land in `src/bin/llmr/`. Three habits keep it h
 - **A field is carried or refused, never dropped.** If the OpenAI shape has a field the
   engine cannot carry, `openai.rs` answers `400` naming it. Carrying one means adding it to
   `ChatRequest` and to every protocol, not only to the parser.
-- **A configuration key is a promise.** Add it to `config.rs` with a default, to
-  `docs/CONFIGURATION.md`, and to `llmr.example.toml` if most people will want it. Renaming
-  or removing one breaks a file that worked yesterday, so it needs a changelog line.
-  `deny_unknown_fields` means a misspelt key fails at startup; keep it that way.
-- **Test through HTTP.** `server.rs` has tests that send real requests to the router with a
-  fake provider behind it. A behaviour a client can see gets a test there, not only a unit
-  test of the function underneath.
-
-Both `llmr.example.toml` and the complete example in `docs/CONFIGURATION.md` are parsed by
-tests, so a documented configuration that stops working fails CI.
+- **A management API field is a promise.** A panel is built against it. Add fields with a
+  default; renaming or removing one breaks every panel that sends it, so it needs a changelog
+  line. Bodies use `deny_unknown_fields`, so a misspelt field is a `400` rather than ignored;
+  keep it that way.
+- **Secrets go in sealed and come out as a hint.** A credential is sealed in `store.rs`
+  before it is written, opened only to build a provider, and shown as its last four
+  characters. Nothing returns it, and nothing logs it.
+- **A schema change is a migration.** `store.rs` records a schema version; raise it and add
+  the step that brings an older database forward. Never edit a released schema in place:
+  somebody's volume has it.
+- **Test through HTTP.** `server.rs` and `manage.rs` send real requests to the application,
+  and `manage.rs` stands up a real OpenAI-compatible endpoint to point providers at. A
+  behaviour a client or a panel can see gets a test there, not only a unit test of the
+  function underneath.
 
 To see a change for real, build the image and run it:
 
 ```sh
 docker build -t llmr:dev .
-docker run --rm -p 8080:8080 -e LLMR_API_KEYS=dev -v "$PWD/llmr.toml:/etc/llmr/llmr.toml:ro" llmr:dev
+docker run --rm -p 8080:8080 -v llmr-dev:/var/lib/llmr \
+  -e LLMR_MASTER_KEY="$(docker run --rm llmr:dev keygen)" llmr:dev
 ```
 
 ## What CI will run
 
-The eight above, plus two you would not usually run by hand:
+The six above, plus two you would not usually run by hand:
 
 - **`cargo deny check`** — licences against an allowlist, advisories denied, sources limited
   to crates.io, duplicate versions warned. `deny.toml` says why each allowed licence is
   there. Install it with `cargo install cargo-deny --locked` if you want to run it locally.
-- **The Docker image** — built on every pull request, then started to prove it runs and that
-  it refuses to start without the provider keys its configuration names. `docker build .`
-  reproduces it locally.
+- **The Docker image** — built on every pull request, then started twice: without a master
+  key, which it must refuse, and with one, when it must open a fresh database and answer its
+  healthcheck. `docker build .` reproduces it locally.
 
 ## Writing a provider
 
@@ -199,10 +204,10 @@ Three things the suite is checking, and they are the ones that are easy to get w
 3. Usage the provider did not report is `Usage::absent()`, not zeros. An unknown cost
    written as zero becomes a free call in every report that adds it up.
 
-Put your provider behind a feature, add it to the table in `docs/ENGINE.md`, and give it a
-`kind` in the gateway (`src/bin/llmr/config.rs` and `gateway.rs`), documented in
-`docs/CONFIGURATION.md` and shown in `llmr.example.toml`. A provider the gateway cannot
-configure is a provider nobody running llmr can use.
+Put your provider behind a feature, then make it something a panel can add: a
+`ProviderType` in `src/bin/llmr/records.rs` (with the `TypeInfo` a panel renders a form
+from), a branch in `build_provider` in `gateway.rs`, and a row in `docs/MANAGEMENT.md`. A
+provider the management API cannot add is a provider nobody running llmr can use.
 
 ### And then call it for real, once
 
@@ -276,16 +281,16 @@ person to see it will be deciding whether to delete it.
 
 ## Commits and versions
 
-Versions follow semantic versioning, applied to what users of the gateway depend on: the
-HTTP API, the response headers, the configuration file and the command line. Before 1.0, a
-breaking change to any of those is a minor bump and gets a line in `CHANGELOG.md`. A
-configuration key that is renamed or removed is breaking, because a file that worked
-yesterday is refused at startup today.
+Versions follow semantic versioning, applied to what users of llmr depend on: the client
+API, the management API, the response headers, the environment variables, and the database
+on their volume. Before 1.0, a breaking change to any of those is a minor bump and gets a
+line in `CHANGELOG.md`. A database that a new release cannot open is the worst kind of
+break, which is why schema changes are migrations.
 
 The engine's Rust types are not part of that promise. Most of them are `#[non_exhaustive]`
 and built through constructors, which keeps changes to them local; if you add a struct the
 gateway must build, give it a constructor in the same commit.
 
 A release is a tag, `vX.Y.Z`, matching the version in `Cargo.toml` and a section in
-`CHANGELOG.md`. The tag publishes the Docker image and the GitHub release with its binaries;
-nothing is published from a laptop.
+`CHANGELOG.md`. The tag publishes the Docker image and the GitHub release; nothing is
+published from a laptop.

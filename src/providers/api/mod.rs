@@ -333,7 +333,7 @@ impl<P: Protocol> Provider for ApiProvider<P> {
 
         let Some(url) = self.protocol.catalogue_url(&self.base_url) else {
             return Access::unknown(format!(
-                "{id} has no model list to ask for, and the only other question it answers                  costs a call"
+                "{id} has no model list to ask for, and the only other question it answers costs a call"
             ));
         };
 
@@ -361,7 +361,7 @@ impl<P: Protocol> Provider for ApiProvider<P> {
         // different fixes: an account without the entitlement, and a name the list spells
         // differently. Neither is visible from a bare "denied".
         Access::denied(format!(
-            "{id} answered with {} models and none of them is {model}. Either this account              cannot reach it or the list spells it differently",
+            "{id} answered with {} models and none of them is {model}. Either this account cannot reach it or the list spells it differently",
             listed.len()
         ))
     }

@@ -721,7 +721,7 @@ impl Provider for LocalCli {
             // The tool runs, and which models it serves is genuinely not knowable from
             // here. Ready would be a claim about a model nobody has said it can reach.
             return Access::unknown(format!(
-                "{} runs, and a command line tool cannot be asked which models it serves.                  Name them with `serving` and this becomes an answer",
+                "{} runs, and a command line tool cannot be asked which models it serves. Name them with `serving` and this becomes an answer",
                 self.program
             ));
         }
