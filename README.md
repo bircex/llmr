@@ -11,7 +11,7 @@ database on a volume. There is no configuration file.
 ```
 your apps ──OpenAI SDK──▶ llmr :8080 /v1 ──▶ anthropic/claude-sonnet-5
                                           └─▶ openai/gpt-5.1          (if the first is down)
-your panel ──REST──────▶ llmr :8080 /manage   providers, models, routes, tests, status
+your panel ──REST──────▶ llmr :8080 /manage   providers, models, routes, tests, usage, status
 ```
 
 ## Run it
@@ -89,8 +89,8 @@ reply = client.chat.completions.create(
 ```
 
 A model that is not enabled is refused by name (`model_not_enabled`), not silently served.
-Every reply says which provider answered (`x-llmr-route`) and whether anything failed first
-(`x-llmr-fell-through`). [docs/API.md](docs/API.md) has the client API: fields, streaming,
+Every reply says which provider answered (`x-llmr-route`), whether anything failed first
+(`x-llmr-fell-through`), and what it cost (`llmr_cost`, `x-llmr-cost`). [docs/API.md](docs/API.md) has the client API: fields, streaming,
 errors.
 
 ## How it routes
@@ -109,11 +109,25 @@ still billed.
 
 **Usage nobody reported is left out, never written as zero.**
 
+## Usage and cost
+
+Every request is recorded, without its content: what was asked for, which route answered,
+tokens, cost, latency, outcome. The management API totals it over any time range, overall or
+by model, provider, name or day, and lists single requests:
+
+```sh
+curl "localhost:8080/manage/usage?group_by=model&from=$(date -d yesterday +%s)"
+```
+
+Cost is the provider's published rate times the usage it reported, one amount per currency.
+A self hosted model is `free`; a paid provider llmr has no rate for is `unpriced`, and a total
+that includes one says it is incomplete rather than presenting a floor as the bill.
+
 ## Documentation
 
 | | |
 |---|---|
-| [docs/MANAGEMENT.md](docs/MANAGEMENT.md) | The management API: providers, models, route sets, tests, status |
+| [docs/MANAGEMENT.md](docs/MANAGEMENT.md) | The management API: providers, models, route sets, tests, usage, status |
 | [docs/API.md](docs/API.md) | The client API: `/v1/chat/completions`, streaming, headers, errors |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Compose, volumes, the master key, TLS in front, backups, logs |
 | [SECURITY.md](SECURITY.md) | What llmr holds, where prompts go, how to report a problem |
@@ -123,8 +137,6 @@ still billed.
 
 ## Not there yet
 
-- **Usage reporting.** Every reply carries its token counts; per request, per model and
-  overall totals with cost over the management API are next.
 - **Command line providers.** Claude Code and Codex installed in the image, with their
   versions reported and updatable over the API.
 - Bedrock (needs a SigV4 signing transport), an Anthropic Messages endpoint (`/v1/messages`),

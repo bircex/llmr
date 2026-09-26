@@ -39,27 +39,23 @@ cargo test
 
 ## Next
 
-**Done, not yet tagged:** the service (#76), its documentation (#77), and REST management with
-the encrypted store (this change). Before the first tag: bump `version` in `Cargo.toml`, turn
+**Done, not yet tagged:** the service (#76), its documentation (#77), REST management with the
+encrypted store (#78), and usage with cost (this change). Before the first tag: bump `version` in `Cargo.toml`, turn
 the changelog's Unreleased section into that version's, and tag. The release workflow and the
 image's `X.Y.Z` tags have not run yet, so watch the first one.
 
 In order:
 
-1. **Usage.** Every request and response recorded in the database: route, tokens, cost,
-   latency, outcome, never content. Totals overall, per model, per provider, over a time
-   range, through the management API. Cost only where the provider is priced; a self hosted
-   model reports tokens and no cost.
-2. **Command line providers in the image.** Claude Code and Codex installed in the container,
+1. **Command line providers in the image.** Claude Code and Codex installed in the container,
    their versions reported and updatable over the management API, their credentials (an API
    key or a subscription token) stored sealed like any other. The image grows from about
    50 MB to about 300 MB, because both need Node.
-3. **The product site** on GitHub Pages: what llmr is and how to run it, not the code.
-4. Per caller limits: spending caps and rate limits. The engine's `Budget` is per process
-   lifetime, which a long running service cannot use as is.
-5. An Anthropic Messages endpoint beside the OpenAI one, so prompt caching and thinking
+2. **The product site** on GitHub Pages: what llmr is and how to run it, not the code.
+3. Per caller limits: spending caps and rate limits, now that usage is recorded. The engine's
+   `Budget` is per process lifetime, which a long running service cannot use as is.
+4. An Anthropic Messages endpoint beside the OpenAI one, so prompt caching and thinking
    signatures can cross; Bedrock (needs a SigV4 signing transport); embeddings.
-6. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
+5. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
    the client API therefore refuses.
 
 ---

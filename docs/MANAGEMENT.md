@@ -20,6 +20,8 @@ call needs `Authorization: Bearer <token>` (or `x-api-key`); without it, nothing
 | `GET` | `/manage/models` | Every enabled model, across providers |
 | `GET` | [`/manage/routes`](#route-sets) | Every route set, with what is usable and what is resting |
 | `GET` `PUT` `DELETE` | `/manage/routes/{name}` | One route set |
+| `GET` `DELETE` | [`/manage/usage`](#usage) | Totals over a time range, overall or grouped; forget old rows |
+| `GET` | `/manage/usage/requests` | Single requests, newest first |
 
 ## Status
 
@@ -273,6 +275,87 @@ when its model is not enabled, or when nothing is known about what the model can
 answers `400 no_route`.
 
 `GET /manage/routes` lists them all; `DELETE /manage/routes/{name}` removes one.
+
+## Usage
+
+Every request the client API handles is recorded: answered, refused, failed or cut short.
+A row holds what was asked for, the route that answered, the token counts, the cost, the
+latency and the outcome. Never the prompt, never the reply. Rows are written in the
+background, so they appear a moment after the reply.
+
+### Totals
+
+`GET /manage/usage?from=1790380800&to=1790467200&group_by=model`
+
+| Parameter | |
+|---|---|
+| `from`, `to` | Unix seconds; `from` inclusive, `to` exclusive. Either may be left out |
+| `group_by` | `none` (default), `model` (`provider/model`), `provider`, `asked` (the name the client used), `day` (UTC) |
+| `provider`, `model`, `asked`, `outcome` | Narrow to one. `outcome` is `ok`, `refused`, `error` or `interrupted` |
+
+```json
+{
+  "from": 1790380800, "to": 1790467200, "group_by": "model",
+  "total": {
+    "requests": 1240,
+    "outcomes": { "ok": 1198, "refused": 2, "error": 37, "interrupted": 3 },
+    "tokens": { "input": 812004, "cache_read": 2210400, "cache_write": 48000, "output": 190233, "total": 3260637 },
+    "usage_missing": 0,
+    "latency_ms_avg": 1840,
+    "cost": [{ "currency": "USD", "amount": "14.281950" }],
+    "cost_complete": false,
+    "priced": 1150, "partial": 0, "unpriced": 12, "free": 39
+  },
+  "data": [
+    { "model": "anthropic/claude-sonnet-5", "requests": 1150, "...": "..." },
+    { "model": "ollama/llama3.1:8b", "requests": 39, "free": 39, "cost": [], "...": "..." },
+    { "model": null, "requests": 37, "outcomes": { "error": 37, "...": 0 }, "...": "..." }
+  ]
+}
+```
+
+How to read the cost:
+
+| | |
+|---|---|
+| `cost` | One amount per currency, never added across currencies |
+| `priced` | Requests priced in full: the provider's published rate times the usage it reported |
+| `partial` | Priced, but the provider left some usage fields out, so the amount is a floor |
+| `unpriced` | Answered by a paid provider llmr has no rate for (a custom `base_url`, an `openai-compatible` host, a model newer than the price table), or whose provider reported no usage |
+| `free` | Answered by a `self-hosted` provider: tokens are counted, nothing is charged |
+| `cost_complete` | `true` only when no request was `partial` or `unpriced`. Otherwise the amounts are what is known, and the real bill is higher |
+| `usage_missing` | Answered requests whose provider reported no token counts at all |
+
+Requests that failed before any provider answered (a `model_not_found`, every route down)
+have no cost and no tokens; they are counted in `outcomes.error` and grouped under a `null`
+model.
+
+### Single requests
+
+`GET /manage/usage/requests?limit=100&before=48213`, newest first, with the same filters.
+
+```json
+{
+  "data": [{
+    "id": 48212, "at": 1790466950, "request_id": "chatcmpl-18d9...", "asked": "default",
+    "route": "anthropic/claude-sonnet-5", "provider": "anthropic", "model": "claude-sonnet-5",
+    "served_model": "claude-sonnet-5", "stream": true, "outcome": "ok", "error_code": null,
+    "stop_reason": "end_turn", "attempts": 1, "fell_through": 0, "latency_ms": 2210,
+    "tokens": { "input": 812, "cache_read": 0, "cache_write": 0, "output": 64, "total": 876 },
+    "cost": { "status": "priced", "amount": "0.003396", "currency": "USD" }
+  }],
+  "next_before": 48212
+}
+```
+
+`limit` is 1 to 1000 (default 100). Pass `next_before` as `before` for the next, older page;
+it is `null` on the last one. `request_id` is the `id` the client received, so a client's log
+and this one can be joined.
+
+### Forgetting old rows
+
+`DELETE /manage/usage?before=1782604800` removes rows recorded before that time and answers
+`{"deleted": 18231}`. `before` is required.
 
 ## Errors
 

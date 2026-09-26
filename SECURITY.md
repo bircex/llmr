@@ -24,8 +24,9 @@ and says so, instead of starting with every provider broken.
 **The rest of the configuration**, in the clear: provider ids, base URLs, which models are
 enabled, route sets. Nothing in it is a secret, and a panel needs to read all of it.
 
-**Prompts and replies are never stored and never logged.** A request is logged as the name
-asked for, the route that answered, attempts, token counts and the stop reason.
+**Prompts and replies are never stored and never logged.** A request is logged, and recorded
+in the usage table, as the name asked for, the route that answered, attempts, token counts,
+cost, latency and the outcome. That table has no column a prompt or a reply could go into.
 
 ## Who can change it
 

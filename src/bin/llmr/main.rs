@@ -33,6 +33,7 @@ mod openai;
 mod records;
 mod server;
 mod store;
+mod usage;
 
 use crypto::MasterKey;
 use gateway::{Gateway, Live, Snapshot};
@@ -177,11 +178,14 @@ async fn serve() -> ExitCode {
         .and_then(|v| v.parse().ok())
         .unwrap_or(32);
 
+    let db = Db::new(store);
+    let (recorder, writer) = usage::Recorder::start(db.clone());
     let state = Arc::new(AppState {
         live: Live::new(gateway),
-        db: Db::new(store),
+        db,
         keys,
         started: std::time::Instant::now(),
+        recorder,
     });
     let app = server::app(state.clone(), max_body_mb * 1024 * 1024);
 
@@ -204,10 +208,21 @@ async fn serve() -> ExitCode {
     // provider answers from its model list, never from a billable call.
     tokio::spawn(survey(current));
 
-    match axum::serve(listener, app)
+    let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
+        .await;
+
+    // The last recorder goes with the state; the writer then writes what is queued and ends.
+    // Bounded, so a stuck disk cannot keep a container from stopping.
+    drop(state);
+    if tokio::time::timeout(std::time::Duration::from_secs(5), writer)
         .await
+        .is_err()
     {
+        tracing::warn!("usage rows still queued at shutdown were not all written");
+    }
+
+    match served {
         Ok(()) => {
             tracing::info!("stopped");
             ExitCode::SUCCESS

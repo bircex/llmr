@@ -257,6 +257,37 @@ impl Gateway {
     }
 }
 
+impl Gateway {
+    /// What a call through this route cost.
+    ///
+    /// A self hosted route is free: its tokens are counted and nothing is charged. A route
+    /// with a price book is priced against the model that served it, or, when a provider
+    /// answered under a dated alias the book does not list, the model the route names. Any
+    /// other answered call is unpriced, which is a different thing from free.
+    pub fn cost(&self, route: &str, served: &ModelId, usage: &llmr::Usage) -> crate::usage::Cost {
+        use crate::usage::Cost;
+        let Some((provider_id, target)) = split_route(route) else {
+            return Cost::Unpriced;
+        };
+        let Some(built) = self.providers.get(provider_id) else {
+            return Cost::Unpriced;
+        };
+        if built.reach.is_on_device() {
+            return Cost::Free;
+        }
+        let Some(book) = &built.prices else {
+            return Cost::Unpriced;
+        };
+        match book
+            .price(served, usage)
+            .or_else(|| book.price(&ModelId::from(target), usage))
+        {
+            Some(priced) => Cost::priced(priced.amount, priced.currency, priced.coverage),
+            None => Cost::Unpriced,
+        }
+    }
+}
+
 /// The gateway currently serving, replaced whole on every change.
 pub struct Live(RwLock<Arc<Gateway>>);
 
@@ -613,6 +644,69 @@ mod tests {
             gateway.resolve("local/small"),
             Resolution::Found(..)
         ));
+    }
+
+    #[test]
+    fn a_call_is_priced_free_or_unpriced_and_never_a_made_up_zero() {
+        use crate::usage::Cost;
+        let (mut vendor, _) = provider("anthropic", true);
+        vendor.provider_type = ProviderType::Anthropic;
+        vendor.base_url = None;
+        vendor.reach = None;
+        let snapshot = Snapshot {
+            providers: vec![(vendor, Some("sk-test".into())), provider("local", true)],
+            models: vec![],
+            routes: vec![],
+        };
+        let gateway = Gateway::build(&snapshot);
+        let million = llmr::Usage::absent().with_input(1_000_000).with_output(0);
+
+        // Priced from the vendor's published rate, even under a dated alias it answered with.
+        let rate = anthropic::api::shipped_prices()
+            .rate(&ModelId::from("claude-sonnet-5"))
+            .copied()
+            .unwrap();
+        match gateway.cost(
+            "anthropic/claude-sonnet-5",
+            &"claude-sonnet-5-20260801".into(),
+            &million,
+        ) {
+            Cost::Priced {
+                micros,
+                currency,
+                partial,
+            } => {
+                assert_eq!(micros, rate.input.0);
+                assert_eq!(currency, "USD");
+                // Cache fields were not reported, so the figure is a floor.
+                assert!(partial);
+            }
+            other => panic!("expected a price, got {other:?}"),
+        }
+
+        // A model the book does not list is unpriced, not free.
+        assert_eq!(
+            gateway.cost(
+                "anthropic/claude-unknown",
+                &"claude-unknown".into(),
+                &million
+            ),
+            Cost::Unpriced
+        );
+        // A provider that reported no usage at all cannot be priced either.
+        assert_eq!(
+            gateway.cost(
+                "anthropic/claude-sonnet-5",
+                &"claude-sonnet-5".into(),
+                &llmr::Usage::absent()
+            ),
+            Cost::Unpriced
+        );
+        // A self hosted model costs nothing.
+        assert_eq!(
+            gateway.cost("local/small", &"small".into(), &million),
+            Cost::Free
+        );
     }
 
     #[test]

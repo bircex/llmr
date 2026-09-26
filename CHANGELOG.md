@@ -34,6 +34,14 @@ is published as a crate any more.
   master key, serving with one), published from `main` and from `v*` tags; a `v*` tag also
   creates a GitHub release with this changelog's section as notes.
 - Documentation for running it: `docs/MANAGEMENT.md`, `docs/API.md`, `docs/DEPLOYMENT.md`.
+- Usage: every request the client API handles is recorded in the database (what was asked
+  for, the route, tokens, cost, latency, outcome; never content), written in the background
+  so no request waits on it. `GET /manage/usage` totals any time range, overall or grouped by
+  model, provider, name or day, with one amount per currency and a `cost_complete` flag;
+  `GET /manage/usage/requests` pages through single requests; `DELETE /manage/usage` forgets
+  rows before a time. Each reply carries its own cost as `llmr_cost` (and `x-llmr-cost`):
+  `priced`, `partial` (a floor), `unpriced` or `free` for a self hosted model. Schema
+  version 2; a version 1 database is brought forward on start.
 
 ### Changed
 

@@ -14,6 +14,7 @@ use crate::error::ApiError;
 use crate::gateway::{Live, Resolution};
 use crate::openai::{self, ChunkWriter};
 use crate::store::Db;
+use crate::usage::{Cost, Outcome, Recorder, Tokens, UsageRecord};
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -41,6 +42,58 @@ pub struct AppState {
     pub keys: Vec<String>,
     /// When the process started, for the status endpoint.
     pub started: std::time::Instant,
+    /// Where each request's usage row goes.
+    pub recorder: Recorder,
+}
+
+/// Milliseconds since `started`, for a usage row.
+fn elapsed_ms(started: std::time::Instant) -> i64 {
+    i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)
+}
+
+/// The route an answer came from, split for a usage row.
+fn route_parts(route: &str) -> (Option<String>, Option<String>) {
+    match crate::records::split_route(route) {
+        Some((provider, model)) => (Some(provider.to_string()), Some(model.to_string())),
+        None => (None, None),
+    }
+}
+
+/// A usage row for a request some provider answered.
+#[allow(clippy::too_many_arguments)]
+fn answered_row(
+    id: &str,
+    asked: &str,
+    stream: bool,
+    route: &str,
+    served: &str,
+    outcome: Outcome,
+    stop: &str,
+    attempts: u32,
+    fell_through: usize,
+    started: std::time::Instant,
+    usage: &llmr::Usage,
+    cost: Cost,
+) -> UsageRecord {
+    let (provider_id, model) = route_parts(route);
+    UsageRecord {
+        at: crate::usage::now(),
+        request_id: id.to_string(),
+        asked: asked.to_string(),
+        route: Some(route.to_string()),
+        provider_id,
+        model,
+        served_model: Some(served.to_string()),
+        stream,
+        outcome,
+        error_code: None,
+        stop_reason: Some(stop.to_string()),
+        attempts: i64::from(attempts),
+        fell_through: i64::try_from(fell_through).unwrap_or(i64::MAX),
+        latency_ms: elapsed_ms(started),
+        tokens: Tokens::from_usage(usage),
+        cost,
+    }
 }
 
 /// The whole application, ready to serve.
@@ -180,15 +233,39 @@ async fn chat_completions(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    let started = std::time::Instant::now();
+    let id = completion_id();
     let body: Value = serde_json::from_slice(&body)
         .map_err(|e| ApiError::invalid(format!("the body is not JSON: {e}")))?;
-    let incoming = openai::read_request(&body)?;
-    let asked = incoming.request.model.as_str().to_string();
+    // Whatever the client asked for, recorded even when the request is refused, so a panel
+    // can see who is asking for a model that is off.
+    let asked = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let refuse = |error: ApiError| {
+        state.recorder.record(UsageRecord::failed(
+            &id,
+            &asked,
+            streaming,
+            error.code,
+            elapsed_ms(started),
+        ));
+        error
+    };
 
-    let (router, on_device) = match state.live.current().resolve(&asked) {
+    let incoming = openai::read_request(&body).map_err(refuse)?;
+    // One gateway for the whole request, so a change made while it runs cannot price it
+    // against providers it never used.
+    let gateway = state.live.current();
+    let (router, on_device) = match gateway.resolve(&asked) {
         Resolution::Found(router, on_device) => (router, on_device),
-        Resolution::NotEnabled(why) => return Err(ApiError::model_not_enabled(&asked, why)),
-        Resolution::Unknown => return Err(ApiError::model_not_found(&asked)),
+        Resolution::NotEnabled(why) => {
+            return Err(refuse(ApiError::model_not_enabled(&asked, why)))
+        }
+        Resolution::Unknown => return Err(refuse(ApiError::model_not_found(&asked))),
     };
 
     let mut needs = Requirements::of(&incoming.request);
@@ -196,25 +273,29 @@ async fn chat_completions(
         needs = needs.on_device();
     }
 
-    let id = completion_id();
     let created = now();
 
     if incoming.stream {
-        return Ok(stream(
+        return Ok(stream(Streamed {
             router,
-            incoming.request,
+            gateway,
+            recorder: state.recorder.clone(),
+            request: incoming.request,
             needs,
-            incoming.include_usage,
+            include_usage: incoming.include_usage,
             id,
             created,
             asked,
-        )
+            started,
+        })
         .await);
     }
 
     match router.chat(incoming.request, needs).await {
         Ok(routed) => {
             let reply = &routed.response;
+            let cost = gateway.cost(&routed.route, &reply.model, &reply.usage);
+            let stop = openai::stop_name(reply.stop_reason);
             tracing::info!(
                 model = %asked,
                 route = %routed.route,
@@ -222,20 +303,51 @@ async fn chat_completions(
                 fell_through = routed.fell_through.len(),
                 input_tokens = reply.usage.prompt_tokens(),
                 output_tokens = reply.usage.output_tokens,
-                stop = openai::stop_name(reply.stop_reason),
+                stop = stop,
+                cost = cost.header().unwrap_or_else(|| cost.status().unwrap_or("none").to_string()),
                 "answered"
             );
             for attempt in &routed.fell_through {
                 tracing::warn!(model = %asked, route = %attempt.route, why = %attempt.why, "fell through");
             }
-            let mut response = Json(openai::write_response(&id, created, reply)).into_response();
+
+            let mut body = openai::write_response(&id, created, reply);
+            body["llmr_cost"] = cost.view();
+            let mut response = Json(body).into_response();
             route_headers(&mut response, &routed);
+            if let Some(value) = cost.header().and_then(|h| HeaderValue::from_str(&h).ok()) {
+                response.headers_mut().insert("x-llmr-cost", value);
+            }
+
+            let outcome = if reply.stop_reason == llmr::StopReason::Refusal {
+                Outcome::Refused
+            } else {
+                Outcome::Ok
+            };
+            state.recorder.record(answered_row(
+                &id,
+                &asked,
+                false,
+                &routed.route,
+                reply.model.as_str(),
+                outcome,
+                stop,
+                routed.attempts,
+                routed.fell_through.len(),
+                started,
+                &reply.usage,
+                cost,
+            ));
             Ok(response)
         }
         // A refusal is an answer, and this shape writes one as a successful reply with no
         // content. An error status would send a client's retry logic asking again.
         Err(llmr::Error::Refused { category }) => {
             tracing::info!(model = %asked, "refused");
+            let mut row = UsageRecord::failed(&id, &asked, false, "refused", elapsed_ms(started));
+            row.outcome = Outcome::Refused;
+            row.error_code = None;
+            state.recorder.record(row);
             Ok(Json(openai::write_refusal(
                 &id,
                 created,
@@ -246,7 +358,7 @@ async fn chat_completions(
         }
         Err(error) => {
             tracing::warn!(model = %asked, error = %error, "failed");
-            Err(error.into())
+            Err(refuse(error.into()))
         }
     }
 }
@@ -289,56 +401,98 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// whether a route was found. A failure there is still an ordinary error status, because
 /// nothing has been written yet; a failure after the first event can only arrive inside the
 /// stream, which is where the router's own rule puts it.
-async fn stream(
+/// Everything a streamed call needs, moved into the task that owns the upstream stream.
+struct Streamed {
     router: Arc<llmr::Router>,
+    gateway: Arc<crate::gateway::Gateway>,
+    recorder: Recorder,
     request: llmr::ChatRequest,
     needs: Requirements,
     include_usage: bool,
     id: String,
     created: u64,
     asked: String,
-) -> Response {
+    started: std::time::Instant,
+}
+
+async fn stream(call: Streamed) -> Response {
+    let Streamed {
+        router,
+        gateway,
+        recorder,
+        request,
+        needs,
+        include_usage,
+        id,
+        created,
+        asked,
+        started,
+    } = call;
     let (ready_tx, ready_rx) = oneshot::channel::<Result<Routed<()>, llmr::Error>>();
     let (tx, rx) = mpsc::channel::<Bytes>(64);
     let model_for_task = asked.clone();
     let refusal_id = id.clone();
+    let task_recorder = recorder.clone();
 
     tokio::spawn(async move {
+        let recorder = task_recorder;
         let asked = model_for_task;
         let (mut events, routed) = match router.stream(request, needs).await {
             Ok(opened) => opened,
             Err(error) => {
+                // Recorded here rather than by the handler, which only sees the error after
+                // this task has handed it over.
+                let row = match &error {
+                    llmr::Error::Refused { .. } => {
+                        let mut row =
+                            UsageRecord::failed(&id, &asked, true, "refused", elapsed_ms(started));
+                        row.outcome = Outcome::Refused;
+                        row.error_code = None;
+                        row
+                    }
+                    other => UsageRecord::failed(
+                        &id,
+                        &asked,
+                        true,
+                        ApiError::from(other).code,
+                        elapsed_ms(started),
+                    ),
+                };
+                recorder.record(row);
                 let _ = ready_tx.send(Err(error));
                 return;
             }
         };
         let route = routed.route.clone();
         let attempts = routed.attempts;
+        let fell_through = routed.fell_through.len();
         if ready_tx.send(Ok(routed)).is_err() {
             return;
         }
 
-        let mut writer = ChunkWriter::new(id, created, asked.clone());
+        let mut writer = ChunkWriter::new(id.clone(), created, asked.clone());
         let mut transcript = Transcript::new(asked.as_str());
         let mut failure = None;
+        let mut client_left = false;
         let mut quiet = tokio::time::interval(KEEP_ALIVE);
         quiet.tick().await;
 
-        loop {
+        'events: loop {
             let next = tokio::select! {
                 next = std::future::poll_fn(|cx| events.as_mut().poll_next(cx)) => next,
                 _ = quiet.tick() => {
                     if tx.send(Bytes::from_static(b": keep-alive\n\n")).await.is_err() {
-                        return;
+                        client_left = true;
+                        break 'events;
                     }
                     continue;
                 }
-                // The client went away while the provider was quiet. Returning drops the
-                // upstream stream, which closes that connection now rather than paying for
-                // tokens nobody will read.
+                // The client went away while the provider was quiet. Leaving the loop drops
+                // the upstream stream, which closes that connection now rather than paying
+                // for tokens nobody will read.
                 () = tx.closed() => {
-                    tracing::info!(model = %asked, route = %route, "client left mid-stream");
-                    return;
+                    client_left = true;
+                    break 'events;
                 }
             };
             match next {
@@ -347,11 +501,9 @@ async fn stream(
                     let chunks = writer.write(&event);
                     transcript.push(event);
                     for chunk in chunks {
-                        // The client went away. Dropping the upstream stream here closes the
-                        // connection to the provider rather than paying for the rest.
                         if tx.send(frame(&chunk)).await.is_err() {
-                            tracing::info!(model = %asked, route = %route, "client left mid-stream");
-                            return;
+                            client_left = true;
+                            break 'events;
                         }
                     }
                 }
@@ -362,16 +514,45 @@ async fn stream(
                 None => break,
             }
         }
+        // Dropped before the row is written, so the provider connection closes first.
+        drop(events);
 
         // A stream that ended without saying why the model stopped did not finish, whatever
         // the transport thinks. Sending `[DONE]` after it would hand a client half an answer
         // marked complete.
-        if failure.is_none() && !transcript.is_finished() {
+        if !client_left && failure.is_none() && !transcript.is_finished() {
             failure = Some(llmr::Error::Transient(
                 "the provider's stream ended before the model said it was done".into(),
             ));
         }
         let reply = transcript.finish();
+        let cost = gateway.cost(&route, &reply.model, &reply.usage);
+        let stop = openai::stop_name(reply.stop_reason);
+        let outcome = match (client_left || failure.is_some(), reply.stop_reason) {
+            (true, _) => Outcome::Interrupted,
+            (false, llmr::StopReason::Refusal) => Outcome::Refused,
+            (false, _) => Outcome::Ok,
+        };
+        // What arrived was delivered and is counted, however the stream ended.
+        recorder.record(answered_row(
+            &id,
+            &asked,
+            true,
+            &route,
+            reply.model.as_str(),
+            outcome,
+            stop,
+            attempts,
+            fell_through,
+            started,
+            &reply.usage,
+            cost.clone(),
+        ));
+
+        if client_left {
+            tracing::info!(model = %asked, route = %route, "client left mid-stream");
+            return;
+        }
         if let Some(error) = failure {
             tracing::warn!(model = %asked, route = %route, error = %error, "stream broke");
             // What arrived is still the client's. The error says why the rest is not
@@ -386,11 +567,13 @@ async fn stream(
             attempts,
             input_tokens = reply.usage.prompt_tokens(),
             output_tokens = reply.usage.output_tokens,
-            stop = openai::stop_name(reply.stop_reason),
+            stop = stop,
+            cost = cost.header().unwrap_or_else(|| cost.status().unwrap_or("none").to_string()),
             "streamed"
         );
         if include_usage {
-            if let Some(chunk) = writer.usage_chunk(&reply.usage) {
+            if let Some(mut chunk) = writer.usage_chunk(&reply.usage) {
+                chunk["llmr_cost"] = cost.view();
                 let _ = tx.send(frame(&chunk)).await;
             }
         }
@@ -479,20 +662,22 @@ mod tests {
     }
 
     fn app_with(served: Vec<(&str, Router, bool)>) -> axum::Router {
+        let db = Db::new(
+            crate::store::Store::in_memory(
+                crate::crypto::MasterKey::from_base64(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        );
         app(
             Arc::new(AppState {
                 live: Live::new(crate::gateway::Gateway::from_routers(served)),
-                db: Db::new(
-                    crate::store::Store::in_memory(
-                        crate::crypto::MasterKey::from_base64(
-                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-                        )
-                        .unwrap(),
-                    )
-                    .unwrap(),
-                ),
+                db: db.clone(),
                 keys: vec!["secret".into()],
                 started: std::time::Instant::now(),
+                recorder: crate::usage::Recorder::start(db.clone()).0,
             }),
             1024 * 1024,
         )
@@ -823,6 +1008,58 @@ mod tests {
         assert!(text.contains("half an answ"), "{text}");
         assert!(text.contains("\"error\""), "{text}");
         assert!(!text.contains("[DONE]"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_stream_is_recorded_once_it_ends() {
+        let db = Db::new(
+            crate::store::Store::in_memory(
+                crate::crypto::MasterKey::from_base64(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let app = app(
+            Arc::new(AppState {
+                live: Live::new(crate::gateway::Gateway::from_routers(vec![(
+                    "default",
+                    Router::new(vec![Route::new(
+                        fake("hosted", Reach::FirstPartyApi, Ok("Hello there")),
+                        "m1",
+                    )]),
+                    false,
+                )])),
+                db: db.clone(),
+                keys: vec!["secret".into()],
+                started: std::time::Instant::now(),
+                recorder: crate::usage::Recorder::start(db.clone()).0,
+            }),
+            1024 * 1024,
+        );
+        let mut body = hello("default");
+        body["stream"] = json!(true);
+        let (status, _, _) = read(app.oneshot(post(body)).await.unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let mut rows = Vec::new();
+        for _ in 0..100 {
+            rows = db
+                .run(|s| s.usage_requests(&crate::usage::UsageFilter::default(), None, 10))
+                .await
+                .unwrap();
+            if !rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let (_, row) = rows.first().expect("a usage row");
+        assert!(row.stream);
+        assert_eq!(row.outcome, Outcome::Ok);
+        assert_eq!(row.route.as_deref(), Some("hosted/m1"));
+        assert_eq!(row.tokens.input, Some(12));
+        assert_eq!(row.tokens.output, Some(3));
     }
 
     #[tokio::test]

@@ -12,6 +12,8 @@
 //! | `GET` | `/manage/models` | Every enabled model, across providers |
 //! | `GET` | `/manage/routes` | Every route set, with what is usable and what is resting |
 //! | `GET` `PUT` `DELETE` | `/manage/routes/{name}` | One route set |
+//! | `GET` `DELETE` | `/manage/usage` | Totals over a time range, grouped; or forget old rows |
+//! | `GET` | `/manage/usage/requests` | Single requests, newest first |
 //!
 //! Every change is written to the store, then the gateway is rebuilt from the store and
 //! swapped in, so the next request sees it. A credential is write only: it goes in on a
@@ -21,7 +23,8 @@ use crate::error::ApiError;
 use crate::gateway::{build_provider, registry, Gateway, Snapshot};
 use crate::records::{valid_id, Capabilities, Model, Provider, ProviderType, RouteSpec};
 use crate::server::AppState;
-use axum::extract::{Path, State};
+use crate::usage::{Grouping, UsageFilter, UsageTotals};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -63,6 +66,8 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
             "/manage/routes/{name}",
             get(read_route).put(put_route).delete(delete_route),
         )
+        .route("/manage/usage", get(usage_totals).delete(forget_usage))
+        .route("/manage/usage/requests", get(usage_requests))
 }
 
 /// Reads the store again, builds a new gateway, and swaps it in.
@@ -783,6 +788,169 @@ async fn delete_route(State(state): Shared, Path(name): Path<String>) -> Answer 
     no_content()
 }
 
+// ----- usage -------------------------------------------------------------------------
+
+/// The query a usage call takes. Times are unix seconds: `from` inclusive, `to` exclusive.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct UsageQuery {
+    from: Option<i64>,
+    to: Option<i64>,
+    provider: Option<String>,
+    /// `provider/model`.
+    model: Option<String>,
+    /// The name the client asked for: a route set, or a direct model.
+    asked: Option<String>,
+    outcome: Option<String>,
+    group_by: Option<String>,
+    limit: Option<i64>,
+    /// A request id from a previous page: rows older than it.
+    before: Option<i64>,
+}
+
+impl UsageQuery {
+    fn filter(&self) -> Result<UsageFilter, ApiError> {
+        if let Some(outcome) = &self.outcome {
+            if !matches!(outcome.as_str(), "ok" | "refused" | "error" | "interrupted") {
+                return Err(ApiError::invalid_param(
+                    "outcome",
+                    "outcome is one of ok, refused, error, interrupted",
+                ));
+            }
+        }
+        if let (Some(from), Some(to)) = (self.from, self.to) {
+            if from >= to {
+                return Err(ApiError::invalid_param("to", "to must be after from"));
+            }
+        }
+        Ok(UsageFilter {
+            from: self.from,
+            to: self.to,
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            asked: self.asked.clone(),
+            outcome: self.outcome.clone(),
+        })
+    }
+}
+
+/// A query string read into its struct, with the same error envelope as everything else.
+fn query<T: serde::de::DeserializeOwned + Default>(
+    raw: Result<Query<T>, axum::extract::rejection::QueryRejection>,
+) -> Result<T, ApiError> {
+    raw.map(|Query(q)| q)
+        .map_err(|e| ApiError::invalid(format!("the query string could not be read: {e}")))
+}
+
+async fn usage_totals(
+    State(state): Shared,
+    raw: Result<Query<UsageQuery>, axum::extract::rejection::QueryRejection>,
+) -> Answer {
+    let q = query(raw)?;
+    let filter = q.filter()?;
+    let group = match q.group_by.as_deref() {
+        None => Grouping::None,
+        Some(text) => Grouping::parse(text).ok_or_else(|| {
+            ApiError::invalid_param(
+                "group_by",
+                "group_by is one of none, model, provider, asked, day",
+            )
+        })?,
+    };
+    let (by_group, all) = state
+        .db
+        .run(move |store| {
+            let by_group = match group {
+                Grouping::None => Vec::new(),
+                other => store.usage_summary(&filter, other)?,
+            };
+            let all = store.usage_summary(&filter, Grouping::None)?;
+            Ok((by_group, all))
+        })
+        .await?;
+
+    let total = all
+        .into_iter()
+        .fold(UsageTotals::default(), |mut total, part| {
+            total.absorb(part);
+            total
+        });
+    let mut body = json!({
+        "from": q.from,
+        "to": q.to,
+        "group_by": group.key_name(),
+        "total": total.view(None),
+    });
+    if group != Grouping::None {
+        body["data"] = json!(by_group
+            .iter()
+            .map(|t| t.view(group.key_name()))
+            .collect::<Vec<_>>());
+    }
+    ok(body)
+}
+
+async fn usage_requests(
+    State(state): Shared,
+    raw: Result<Query<UsageQuery>, axum::extract::rejection::QueryRejection>,
+) -> Answer {
+    let q = query(raw)?;
+    if q.group_by.is_some() {
+        return Err(ApiError::invalid_param(
+            "group_by",
+            "group_by is for /manage/usage; this lists single requests",
+        ));
+    }
+    let filter = q.filter()?;
+    let limit = q.limit.unwrap_or(100);
+    if !(1..=1000).contains(&limit) {
+        return Err(ApiError::invalid_param(
+            "limit",
+            "limit is between 1 and 1000",
+        ));
+    }
+    let before = q.before;
+    let rows = state
+        .db
+        .run(move |store| store.usage_requests(&filter, before, limit))
+        .await?;
+    let next = if rows.len() == usize::try_from(limit).unwrap_or(usize::MAX) {
+        rows.last().map(|(id, _)| *id)
+    } else {
+        None
+    };
+    ok(json!({
+        "data": rows.iter().map(|(id, row)| row.view(*id)).collect::<Vec<_>>(),
+        // Pass as `before` for the next, older page. `null` when this was the last.
+        "next_before": next,
+    }))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ForgetQuery {
+    before: Option<i64>,
+}
+
+async fn forget_usage(
+    State(state): Shared,
+    raw: Result<Query<ForgetQuery>, axum::extract::rejection::QueryRejection>,
+) -> Answer {
+    // Required rather than defaulted: "delete everything" is one missing parameter away
+    // from an accident.
+    let before = query(raw)?.before.ok_or_else(|| {
+        ApiError::invalid_param(
+            "before",
+            "before is required: the unix time before which rows are removed",
+        )
+    })?;
+    let deleted = state
+        .db
+        .run(move |store| store.delete_usage(before))
+        .await?;
+    ok(json!({ "deleted": deleted }))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::crypto::MasterKey;
@@ -842,12 +1010,14 @@ mod tests {
 
     fn gateway() -> axum::Router {
         let key = MasterKey::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
+        let db = Db::new(Store::in_memory(key).unwrap());
         app(
             Arc::new(AppState {
                 live: Live::new(Gateway::empty()),
-                db: Db::new(Store::in_memory(key).unwrap()),
+                db: db.clone(),
                 keys: Vec::new(),
                 started: std::time::Instant::now(),
+                recorder: crate::usage::Recorder::start(db.clone()).0,
             }),
             1024 * 1024,
         )
@@ -1131,6 +1301,129 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["route"], "local/meta-llama/llama-3.1-8b");
+    }
+
+    /// Usage rows are written by a background task; wait until `n` have landed.
+    async fn usage_after(app: &axum::Router, query: &str, n: i64) -> Value {
+        for _ in 0..100 {
+            let (_, body) = call(app, "GET", &format!("/manage/usage{query}"), None).await;
+            if body["total"]["requests"].as_i64() == Some(n) {
+                return body;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("usage never reached {n} requests");
+    }
+
+    #[tokio::test]
+    async fn every_request_is_recorded_with_its_outcome_tokens_and_cost() {
+        let app = gateway();
+        let base = upstream().await;
+        local_provider(&app, &base, "good").await;
+        call(
+            &app,
+            "PUT",
+            "/manage/providers/local/models/small",
+            Some(json!({ "enabled": true, "capabilities": {} })),
+        )
+        .await;
+        call(
+            &app,
+            "PUT",
+            "/manage/routes/default",
+            Some(json!({ "routes": ["local/small"] })),
+        )
+        .await;
+
+        // Answered, by a self hosted model: tokens counted, nothing charged.
+        let (status, reply) = call(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({ "model": "default", "messages": [{ "role": "user", "content": "hi" }] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_eq!(reply["llmr_cost"], json!({ "status": "free" }));
+
+        // Refused before any provider was asked, and still recorded, by name.
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({ "model": "nothing", "messages": [{ "role": "user", "content": "hi" }] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let totals = usage_after(&app, "?group_by=model", 2).await;
+        let total = &totals["total"];
+        assert_eq!(total["outcomes"]["ok"], 1);
+        assert_eq!(total["outcomes"]["error"], 1);
+        assert_eq!(total["tokens"]["input"], 5);
+        assert_eq!(total["tokens"]["output"], 1);
+        assert_eq!(total["free"], 1);
+        assert_eq!(total["cost"], json!([]));
+        assert_eq!(total["cost_complete"], true);
+        let groups: Vec<&Value> = totals["data"].as_array().unwrap().iter().collect();
+        assert!(
+            groups
+                .iter()
+                .any(|g| g["model"] == "local/small" && g["requests"] == 1),
+            "{totals}"
+        );
+        assert!(
+            groups
+                .iter()
+                .any(|g| g["model"].is_null() && g["requests"] == 1),
+            "{totals}"
+        );
+
+        let (_, requests) = call(&app, "GET", "/manage/usage/requests?limit=1", None).await;
+        let newest = &requests["data"][0];
+        assert_eq!(newest["asked"], "nothing");
+        assert_eq!(newest["outcome"], "error");
+        assert_eq!(newest["error_code"], "model_not_found");
+        assert!(newest["cost"].is_null());
+        // One per page, and a pointer to the next.
+        let before = requests["next_before"].as_i64().unwrap();
+        let (_, older) = call(
+            &app,
+            "GET",
+            &format!("/manage/usage/requests?limit=1&before={before}"),
+            None,
+        )
+        .await;
+        assert_eq!(older["data"][0]["route"], "local/small");
+        assert_eq!(older["data"][0]["served_model"], "small");
+        assert_eq!(older["data"][0]["request_id"], reply["id"]);
+
+        // Filters narrow it.
+        let (_, only_ok) = call(&app, "GET", "/manage/usage?outcome=ok", None).await;
+        assert_eq!(only_ok["total"]["requests"], 1);
+    }
+
+    #[tokio::test]
+    async fn usage_queries_refuse_what_they_cannot_answer() {
+        let app = gateway();
+        for path in [
+            "/manage/usage?group_by=colour",
+            "/manage/usage?outcome=maybe",
+            "/manage/usage?from=10&to=5",
+            "/manage/usage?nonsense=1",
+            "/manage/usage/requests?limit=0",
+            "/manage/usage/requests?group_by=day",
+        ] {
+            let (status, body) = call(&app, "GET", path, None).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+            assert_eq!(body["error"]["code"], "invalid_request", "{path}");
+        }
+        // Forgetting needs a cutoff: "delete everything" is one missing parameter away.
+        let (status, _) = call(&app, "DELETE", "/manage/usage", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, body) = call(&app, "DELETE", "/manage/usage?before=0", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["deleted"], 0);
     }
 
     #[tokio::test]

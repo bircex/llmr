@@ -82,6 +82,10 @@ The standard `chat.completion` object, with two additions:
   `interrupted`, `other`). `finish_reason` has five words and some of these would read as
   finished when they are not.
 - `choices[0].message.reasoning_content`: reasoning text, when the model showed any.
+- `llmr_cost`: what this request cost. `{"status": "priced", "amount": "0.003396", "currency":
+  "USD"}`; `"partial"` when the provider left some usage out and the amount is a floor;
+  `{"status": "unpriced"}` for a paid provider llmr has no rate for; `{"status": "free"}` for a
+  self hosted model. Never a zero standing in for "unknown".
 
 `usage` is present only when the provider reported both prompt and output counts. It is
 never filled with zeros, because a zero turns an unknown cost into a free one.
@@ -97,13 +101,14 @@ writes one. The next route is not asked the same question.
 |---|---|
 | `x-llmr-route` | The `provider/model` that answered |
 | `x-llmr-attempts` | Calls made, retries included |
+| `x-llmr-cost` | The amount and currency, `0.003396 USD`, when the request was priced. Absent otherwise |
 | `x-llmr-fell-through` | Entries for routes skipped or failed before the one that answered, one per failed attempt. Non zero on a successful call is a provider degrading while nothing is failing |
 
 ### Streaming
 
 `stream: true` answers with server sent events: `chat.completion.chunk` objects, then
 `data: [DONE]`. With `stream_options.include_usage`, a last chunk before `[DONE]` carries
-`usage` with empty `choices`, when the provider reported it.
+`usage` and `llmr_cost` with empty `choices`, when the provider reported usage.
 
 - **A route is replaced only before the first byte.** A provider that fails while the stream
   opens falls through to the next route, and the failure is an ordinary HTTP error status.
