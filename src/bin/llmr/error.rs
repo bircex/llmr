@@ -127,6 +127,12 @@ impl ApiError {
 }
 
 impl From<llmr::Error> for ApiError {
+    fn from(error: llmr::Error) -> Self {
+        ApiError::from(&error)
+    }
+}
+
+impl From<&llmr::Error> for ApiError {
     /// What a router failure means to the client that asked.
     ///
     /// The split follows whose problem it is. A request the providers will not accept is
@@ -134,7 +140,7 @@ impl From<llmr::Error> for ApiError {
     /// reply nobody could read are the gateway operator's, and a client cannot fix them, so
     /// they are a 502 rather than a 401 or a 404 that would send somebody checking their own
     /// key.
-    fn from(error: llmr::Error) -> Self {
+    fn from(error: &llmr::Error) -> Self {
         use llmr::Error as E;
         let message = error.to_string();
         match error {
@@ -157,7 +163,7 @@ impl From<llmr::Error> for ApiError {
                     "rate_limited",
                     message,
                 );
-                error.retry_after = retry_after;
+                error.retry_after = *retry_after;
                 error
             }
             E::OverBudget(_) => Self::new(

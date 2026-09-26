@@ -1229,6 +1229,42 @@ remember between requests and a client cannot grow the cache by inventing names.
 
 ---
 
+## Usage is recorded beside a request, never in its way
+
+Every request the client API handles leaves one row: what was asked for, the route, tokens,
+cost, latency, outcome. A panel needs the totals, and the engine already reports usage
+honestly; what was missing was somewhere to keep it.
+
+**Written in the background.** A row goes into a bounded queue and one task writes rows in
+batches of up to 500 per transaction. A request never waits on the disk. When the queue is
+full the row is dropped and the log says so: a missing usage row is a smaller failure than
+traffic stalling behind a slow volume. On shutdown the queue is flushed, with a time limit so
+a stuck disk cannot hold a container up.
+
+**Never content.** The row has no field a prompt or a reply could go into, the same shape
+rule the engine's spans follow.
+
+**Refused requests are recorded too.** A `model_not_found` or `model_not_enabled` never
+reaches a provider, and it is still worth seeing: it is a client asking for something the
+panel switched off.
+
+**Four answers for cost, and none of them is zero-for-unknown.** `priced` is the provider's
+published rate times the usage it reported; `partial` is the same with some usage fields
+missing, so a floor; `unpriced` is a paid provider with no known rate or no reported usage;
+`free` is a self hosted model. A total adds amounts only within a currency, and its
+`cost_complete` is false the moment any request was `partial` or `unpriced`. Presenting a
+floor as the bill is the mistake the engine's `Total` exists to prevent, and a panel is where
+somebody would make it.
+
+**Priced by the served model, then the routed one.** Vendors answer under dated aliases a
+price book does not list. Trying the served name first keeps a book that does list it exact;
+falling back to the route's model keeps a dated alias from turning a priced call unpriced.
+
+**A cost uses the gateway the request started on.** A provider changed or removed while a
+stream runs does not reprice it against something it never used.
+
+---
+
 ## Naming and prose
 
 Tests are named after the claim they make, not the function they call.

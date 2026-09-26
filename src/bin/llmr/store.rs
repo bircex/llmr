@@ -10,6 +10,7 @@
 
 use crate::crypto::MasterKey;
 use crate::records::{Capabilities, Model, Provider, ProviderType, RouteSpec};
+use crate::usage::{Cost, Grouping, Outcome, Tokens, UsageFilter, UsageRecord, UsageTotals};
 use llmr::Reach;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
@@ -76,8 +77,40 @@ CREATE TABLE IF NOT EXISTS routes (
 );
 "#;
 
+/// Version 2: one row per request the client API served or refused. Never the prompt or the
+/// reply; the route, the counts, the cost and the outcome.
+const USAGE_V2: &str = r#"
+CREATE TABLE IF NOT EXISTS usage (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    at                 INTEGER NOT NULL,
+    request_id         TEXT NOT NULL,
+    asked              TEXT NOT NULL,
+    route              TEXT,
+    provider_id        TEXT,
+    model              TEXT,
+    served_model       TEXT,
+    stream             INTEGER NOT NULL,
+    outcome            TEXT NOT NULL,
+    error_code         TEXT,
+    stop_reason        TEXT,
+    attempts           INTEGER NOT NULL,
+    fell_through       INTEGER NOT NULL,
+    latency_ms         INTEGER NOT NULL,
+    input_tokens       INTEGER,
+    cache_read_tokens  INTEGER,
+    cache_write_tokens INTEGER,
+    output_tokens      INTEGER,
+    cost_status        TEXT,
+    cost_micros        INTEGER,
+    currency           TEXT
+);
+CREATE INDEX IF NOT EXISTS usage_at ON usage (at);
+CREATE INDEX IF NOT EXISTS usage_route ON usage (route, at);
+CREATE INDEX IF NOT EXISTS usage_provider ON usage (provider_id, at);
+"#;
+
 /// The schema version this build writes. Raised with a migration, never edited in place.
-const VERSION: i64 = 1;
+const VERSION: i64 = 2;
 
 /// What is sealed into `meta` so a wrong master key is caught at startup.
 const KEY_CHECK: &[u8] = b"llmr-master-key-check";
@@ -126,6 +159,11 @@ impl Store {
             )));
         }
         conn.execute_batch(SCHEMA)?;
+        // Each step brings a database written by an older build forward, once. A fresh one
+        // (version 0) takes every step.
+        if version < 2 {
+            conn.execute_batch(USAGE_V2)?;
+        }
         conn.pragma_update(None, "user_version", VERSION)?;
 
         let store = Store { conn, key };
@@ -407,6 +445,185 @@ impl Store {
     }
 }
 
+// ----- usage -------------------------------------------------------------------------
+
+impl Store {
+    /// Writes a batch of usage rows in one transaction.
+    pub fn insert_usage(&mut self, rows: &[UsageRecord]) -> StoreResult<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO usage (at, request_id, asked, route, provider_id, model, served_model, \
+                 stream, outcome, error_code, stop_reason, attempts, fell_through, latency_ms, \
+                 input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, cost_status, \
+                 cost_micros, currency) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
+                 ?17, ?18, ?19, ?20, ?21)",
+            )?;
+            for row in rows {
+                insert.execute(params![
+                    row.at,
+                    row.request_id,
+                    row.asked,
+                    row.route,
+                    row.provider_id,
+                    row.model,
+                    row.served_model,
+                    row.stream,
+                    row.outcome.as_str(),
+                    row.error_code,
+                    row.stop_reason,
+                    row.attempts,
+                    row.fell_through,
+                    row.latency_ms,
+                    row.tokens.input,
+                    row.tokens.cache_read,
+                    row.tokens.cache_write,
+                    row.tokens.output,
+                    row.cost.status(),
+                    row.cost.micros(),
+                    row.cost.currency(),
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Totals for the rows the filter selects, grouped as asked.
+    pub fn usage_summary(
+        &self,
+        filter: &UsageFilter,
+        group: Grouping,
+    ) -> StoreResult<Vec<UsageTotals>> {
+        let key = group.column();
+        // One row per group and currency, folded into one total per group below: a sum
+        // across currencies would be a number in none of them.
+        let sql = format!(
+            "SELECT {key} AS key, COUNT(*), \
+             SUM(outcome = 'ok'), SUM(outcome = 'refused'), SUM(outcome = 'error'), \
+             SUM(outcome = 'interrupted'), \
+             SUM(input_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), \
+             SUM(output_tokens), \
+             SUM(outcome IN ('ok', 'interrupted') AND input_tokens IS NULL \
+                 AND cache_read_tokens IS NULL AND cache_write_tokens IS NULL \
+                 AND output_tokens IS NULL), \
+             SUM(latency_ms), \
+             SUM(cost_status = 'priced'), SUM(cost_status = 'partial'), \
+             SUM(cost_status = 'unpriced'), SUM(cost_status = 'free'), \
+             currency, SUM(cost_micros) \
+             FROM usage WHERE {where_} \
+             GROUP BY key, currency ORDER BY key",
+            where_ = filter.clause(),
+        );
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement.query_map(filter.params().as_slice(), |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                UsageTotals {
+                    key: None,
+                    requests: row.get::<_, i64>(1)?,
+                    ok: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    refused: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    errors: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                    interrupted: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                    tokens: Tokens {
+                        input: row.get(6)?,
+                        cache_read: row.get(7)?,
+                        cache_write: row.get(8)?,
+                        output: row.get(9)?,
+                    },
+                    usage_missing: row.get::<_, Option<i64>>(10)?.unwrap_or(0),
+                    latency_ms_total: row.get::<_, Option<i64>>(11)?.unwrap_or(0),
+                    priced: row.get::<_, Option<i64>>(12)?.unwrap_or(0),
+                    partial: row.get::<_, Option<i64>>(13)?.unwrap_or(0),
+                    unpriced: row.get::<_, Option<i64>>(14)?.unwrap_or(0),
+                    free: row.get::<_, Option<i64>>(15)?.unwrap_or(0),
+                    cost: match (
+                        row.get::<_, Option<String>>(16)?,
+                        row.get::<_, Option<i64>>(17)?,
+                    ) {
+                        (Some(currency), Some(micros)) => vec![(currency, micros)],
+                        _ => Vec::new(),
+                    },
+                },
+            ))
+        })?;
+
+        let mut folded: Vec<UsageTotals> = Vec::new();
+        for row in rows {
+            let (key, part) = row?;
+            match folded.last_mut() {
+                Some(last) if last.key == key => last.absorb(part),
+                _ => folded.push(UsageTotals { key, ..part }),
+            }
+        }
+        Ok(folded)
+    }
+
+    /// Single requests, newest first, `limit` at most, older than the row id `before`.
+    pub fn usage_requests(
+        &self,
+        filter: &UsageFilter,
+        before: Option<i64>,
+        limit: i64,
+    ) -> StoreResult<Vec<(i64, UsageRecord)>> {
+        let mut params = filter.params();
+        let before = before.unwrap_or(i64::MAX);
+        params.push(&before);
+        params.push(&limit);
+        let sql = format!(
+            "SELECT * FROM usage WHERE {} AND id < ?{} ORDER BY id DESC LIMIT ?{}",
+            filter.clause(),
+            params.len() - 1,
+            params.len(),
+        );
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement.query_map(params.as_slice(), |row| {
+            let outcome: String = row.get("outcome")?;
+            let status: Option<String> = row.get("cost_status")?;
+            Ok((
+                row.get("id")?,
+                UsageRecord {
+                    at: row.get("at")?,
+                    request_id: row.get("request_id")?,
+                    asked: row.get("asked")?,
+                    route: row.get("route")?,
+                    provider_id: row.get("provider_id")?,
+                    model: row.get("model")?,
+                    served_model: row.get("served_model")?,
+                    stream: row.get("stream")?,
+                    outcome: Outcome::parse(&outcome),
+                    error_code: row.get("error_code")?,
+                    stop_reason: row.get("stop_reason")?,
+                    attempts: row.get("attempts")?,
+                    fell_through: row.get("fell_through")?,
+                    latency_ms: row.get("latency_ms")?,
+                    tokens: Tokens {
+                        input: row.get("input_tokens")?,
+                        cache_read: row.get("cache_read_tokens")?,
+                        cache_write: row.get("cache_write_tokens")?,
+                        output: row.get("output_tokens")?,
+                    },
+                    cost: Cost::from_row(
+                        status.as_deref(),
+                        row.get("cost_micros")?,
+                        row.get("currency")?,
+                    ),
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Removes the rows recorded before this time, and says how many.
+    pub fn delete_usage(&self, before: i64) -> StoreResult<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM usage WHERE at < ?1", [before])?)
+    }
+}
+
 /// The store, shareable across handlers, with every call on the blocking pool.
 #[derive(Clone)]
 pub struct Db(Arc<Mutex<Store>>);
@@ -414,6 +631,24 @@ pub struct Db(Arc<Mutex<Store>>);
 impl Db {
     pub fn new(store: Store) -> Self {
         Db(Arc::new(Mutex::new(store)))
+    }
+
+    /// Runs `work` against the store on the blocking pool, with write access to the
+    /// connection, for a transaction.
+    pub async fn run_mut<T, F>(&self, work: F) -> StoreResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Store) -> StoreResult<T> + Send + 'static,
+    {
+        let inner = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut store = inner
+                .lock()
+                .map_err(|_| StoreError::Failed("the store lock was poisoned".into()))?;
+            work(&mut store)
+        })
+        .await
+        .map_err(|e| StoreError::Failed(format!("the store task failed: {e}")))?
     }
 
     /// Runs `work` against the store on the blocking pool.
@@ -556,6 +791,132 @@ mod tests {
             store.route("default"),
             Err(StoreError::NotFound(_))
         ));
+    }
+
+    fn row(
+        at: i64,
+        route: Option<&str>,
+        outcome: crate::usage::Outcome,
+        cost: crate::usage::Cost,
+    ) -> UsageRecord {
+        UsageRecord {
+            at,
+            request_id: format!("r{at}"),
+            asked: "default".into(),
+            route: route.map(String::from),
+            provider_id: route.and_then(|r| r.split('/').next()).map(String::from),
+            model: None,
+            served_model: None,
+            stream: false,
+            outcome,
+            error_code: None,
+            stop_reason: None,
+            attempts: 1,
+            fell_through: 0,
+            latency_ms: 100,
+            tokens: Tokens {
+                input: Some(10),
+                output: Some(2),
+                ..Tokens::default()
+            },
+            cost,
+        }
+    }
+
+    #[test]
+    fn usage_is_grouped_with_one_amount_per_currency() {
+        use crate::usage::{Cost, Grouping, Outcome, UsageFilter};
+        let mut store = Store::in_memory(key()).unwrap();
+        let usd = |micros| Cost::Priced {
+            micros,
+            currency: "USD".into(),
+            partial: false,
+        };
+        store
+            .insert_usage(&[
+                row(100, Some("a/m"), Outcome::Ok, usd(1_000)),
+                row(200, Some("a/m"), Outcome::Ok, usd(2_000)),
+                row(
+                    300,
+                    Some("b/m"),
+                    Outcome::Ok,
+                    Cost::Priced {
+                        micros: 500,
+                        currency: "EUR".into(),
+                        partial: false,
+                    },
+                ),
+                row(400, Some("c/m"), Outcome::Ok, Cost::Unpriced),
+                row(500, None, Outcome::Error, Cost::None),
+            ])
+            .unwrap();
+
+        let by_model = store
+            .usage_summary(&UsageFilter::default(), Grouping::Model)
+            .unwrap();
+        let a = by_model
+            .iter()
+            .find(|t| t.key.as_deref() == Some("a/m"))
+            .unwrap();
+        assert_eq!(a.requests, 2);
+        assert_eq!(a.cost, vec![("USD".to_string(), 3_000)]);
+        assert_eq!(a.tokens.input, Some(20));
+
+        let all = store
+            .usage_summary(&UsageFilter::default(), Grouping::None)
+            .unwrap();
+        let mut total = crate::usage::UsageTotals::default();
+        for part in all {
+            total.absorb(part);
+        }
+        assert_eq!(total.requests, 5);
+        assert_eq!(total.errors, 1);
+        assert_eq!(total.unpriced, 1);
+        assert!(total.cost.contains(&("USD".to_string(), 3_000)));
+        assert!(total.cost.contains(&("EUR".to_string(), 500)));
+
+        // A time window, from inclusive and to exclusive.
+        let window = UsageFilter {
+            from: Some(200),
+            to: Some(400),
+            ..UsageFilter::default()
+        };
+        let rows = store.usage_requests(&window, None, 10).unwrap();
+        assert_eq!(
+            rows.iter().map(|(_, r)| r.at).collect::<Vec<_>>(),
+            vec![300, 200]
+        );
+
+        assert_eq!(store.delete_usage(300).unwrap(), 2);
+        assert_eq!(
+            store
+                .usage_requests(&UsageFilter::default(), None, 10)
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_version_one_database_is_brought_forward() {
+        // A database from the build before usage existed: the providers table, version 1.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        let mut store = Store::setup(conn, key()).unwrap();
+        store
+            .insert_usage(&[row(
+                1,
+                None,
+                crate::usage::Outcome::Error,
+                crate::usage::Cost::None,
+            )])
+            .unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, VERSION);
     }
 
     #[test]
