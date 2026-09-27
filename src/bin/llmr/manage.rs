@@ -674,8 +674,8 @@ async fn put_model(
             return Err(ApiError::invalid_param(
                 "capabilities",
                 format!(
-                    "capabilities describe a chat model, and a {} model takes none",
-                    row.kind.as_str()
+                    "capabilities describe a chat model, and {} model takes none",
+                    row.kind.with_article()
                 ),
             ))
         }

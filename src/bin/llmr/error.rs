@@ -80,8 +80,8 @@ impl ApiError {
             "invalid_request_error",
             "wrong_endpoint",
             format!(
-                "{model:?} is a {} model; send it to {}",
-                kind.as_str(),
+                "{model:?} is {} model; send it to {}",
+                kind.with_article(),
                 kind.endpoint()
             ),
         );

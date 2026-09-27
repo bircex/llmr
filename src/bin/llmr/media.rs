@@ -291,17 +291,15 @@ pub async fn embeddings(
             json!({ "object": "embedding", "index": index, "embedding": vector })
         })
         .collect();
-    let prompt = reply.usage.input_tokens;
     let mut out = json!({
         "object": "list",
         "data": data,
         "model": reply.model.as_str(),
-        "usage": { "prompt_tokens": prompt.unwrap_or(0), "total_tokens": prompt.unwrap_or(0) },
         "llmr_cost": cost.view(),
     });
-    if prompt.is_none() {
-        // Unreported rather than zero, as everywhere else.
-        out["usage"] = Value::Null;
+    // Left out when the provider reported nothing, as chat does: absent rather than zero.
+    if let Some(prompt) = reply.usage.input_tokens {
+        out["usage"] = json!({ "prompt_tokens": prompt, "total_tokens": prompt });
     }
     Ok(with_headers(Json(out).into_response(), &routed, &cost))
 }

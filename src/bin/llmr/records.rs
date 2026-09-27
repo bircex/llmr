@@ -64,6 +64,17 @@ impl Kind {
         Kind::ALL.into_iter().find(|k| k.as_str() == text)
     }
 
+    /// The kind with its article, for a sentence: "an embedding", "a chat".
+    pub fn with_article(self) -> &'static str {
+        match self {
+            Kind::Chat => "a chat",
+            Kind::Embedding => "an embedding",
+            Kind::Image => "an image",
+            Kind::Speech => "a speech",
+            Kind::Transcription => "a transcription",
+        }
+    }
+
     /// Where a client sends a request for a model of this kind.
     pub fn endpoint(self) -> &'static str {
         match self {

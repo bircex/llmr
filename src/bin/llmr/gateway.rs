@@ -730,8 +730,8 @@ fn build_served(
             unavailable.push((
                 written.clone(),
                 format!(
-                    "a {} model, in a set serving {}",
-                    route_kind.as_str(),
+                    "{} model, in a set serving {}",
+                    route_kind.with_article(),
                     kind.as_str()
                 ),
             ));
