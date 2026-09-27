@@ -70,9 +70,6 @@ writable by uid `65532`: `chown 65532:65532 /srv/llmr`.
 | `LLMR_LISTEN` | `0.0.0.0:8080` | Address and port inside the container |
 | `LLMR_DATA_DIR` | `/var/lib/llmr` | Where the database lives |
 | `LLMR_MAX_BODY_MB` | `32` | Largest request body; images arrive inline |
-| `LLMR_CLI_CONCURRENCY` | `8` | Command line calls running at once, across every tool. Each is a process of up to a few hundred MB; a call that finds every slot taken for its whole timeout falls through to the next route |
-| `LLMR_NPM_REGISTRY` | npmjs.org | Where command line tool updates are installed from, for a mirror |
-| `HTTPS_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` | unset | Passed on to the command line tools, and nothing else is. Set them when outbound traffic goes through a proxy |
 | `RUST_LOG` | `info` | Log filter |
 | `LLMR_LOG_FORMAT` | text | `json` for one object per line |
 
@@ -106,25 +103,11 @@ quiet stream; set the proxy's read timeout above your longest expected reply.
 - `linux/amd64` and `linux/arm64`.
 - Tags: `X.Y.Z` and `X.Y` from releases, `latest` from `main`, `sha-<commit>` for every
   build. **Pin `X.Y.Z` in production**; `latest` moves with every merge.
-- Debian slim with Node.js, because Claude Code, Codex and Gemini CLI come with it: about
-  370 MB to download and 1.4 GB on disk, most of it the three tools. They live in
-  `/opt/llmr/cli`, at the versions the release was tested with.
-- A non root user, uid `65532`.
-- llmr is process 1 and its own init: it reaps the processes the tools leave behind and passes
-  `docker stop` on. Do not add `--init` or tini; see [SECURITY.md](../SECURITY.md) for why.
+- Distroless (`gcr.io/distroless/cc-debian12:nonroot`) with the llmr binary and nothing
+  else: no shell, no package manager, a non root user (uid `65532`). Tens of MB to download.
 - `HEALTHCHECK` runs `llmr healthcheck`, which asks `/healthz` over loopback every 15 seconds.
 - `docker stop` sends SIGTERM: llmr stops accepting connections and finishes requests in
   flight, streams included, before it exits.
-
-## The volume
-
-| Path | |
-|---|---|
-| `/var/lib/llmr/llmr.db` | Providers, models, route sets, usage. The only file worth backing up |
-| `/var/lib/llmr/cli/` | Command line tools updated through the API, a few hundred MB each. Removed by a reset; safe to delete with the container stopped |
-| `/var/lib/llmr/run/` | One directory per command line call while it runs. Emptied at every start |
-
-The container can run `--read-only`: everything it writes is on the volume.
 
 ## Backups and upgrades
 
@@ -145,9 +128,7 @@ no longer need on a schedule, for example everything older than 90 days:
 curl -X DELETE "localhost:8080/manage/usage?before=$(date -d '90 days ago' +%s)"
 ```
 
-Upgrading is pulling a newer tag and recreating the container on the same volume. A command
-line tool updated through the API stays at its version across the upgrade; reset it to take
-the version the new image carries. The
+Upgrading is pulling a newer tag and recreating the container on the same volume. The
 database is migrated forward on start. An older llmr refuses to open a database a newer one
 has written, rather than guessing at it; to go back, restore the backup taken before the
 upgrade.

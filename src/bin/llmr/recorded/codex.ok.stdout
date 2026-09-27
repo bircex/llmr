@@ -1,5 +1,0 @@
-{"type":"thread.started","thread_id":"01a0e012-9215-7613-aed0-e755a0320955"}
-{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `gpt-5.1` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
-{"type":"turn.started"}
-{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Hello from mock"}}
-{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":7,"reasoning_output_tokens":3}}

@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn a_call_the_provider_did_not_measure_has_no_price() {
-        // The case a subscription command line tool produces on every call. Returning zero
+        // The case a provider that reports no usage produces on every call. Returning zero
         // would make an unknown cost look like a free one.
         assert_eq!(book().price(&"test-model".into(), &Usage::absent()), None);
     }

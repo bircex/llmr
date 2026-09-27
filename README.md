@@ -3,10 +3,8 @@
 An LLM router that runs as a Docker container and is managed entirely over REST.
 
 Your projects call one OpenAI-compatible endpoint. Behind it, llmr holds the providers
-(Anthropic, OpenAI, Gemini, anything OpenAI-compatible such as Ollama, vLLM, Groq or
-OpenRouter, and the vendors' own command line tools: Claude Code, Codex and Gemini CLI, which
-ship inside the image), which of their models are enabled, and which names route to which
-models, with fallbacks.
+(Anthropic, OpenAI, Gemini, and anything OpenAI-compatible: Ollama, vLLM, Groq, OpenRouter),
+which of their models are enabled, and which names route to which models, with fallbacks.
 All of that is set through a management API, usually by a panel, and kept in an encrypted
 database on a volume. There is no configuration file.
 
@@ -42,7 +40,6 @@ docker run -d --name llmr -p 127.0.0.1:8080:8080 \
 | `LLMR_TOKEN` | Optional. Tokens callers must present as `Authorization: Bearer <token>`, comma separated. Unset, nothing is checked: keep the port on a network only your panel and apps can reach |
 | `LLMR_LISTEN` | `0.0.0.0:8080` |
 | `LLMR_MAX_BODY_MB` | `32`. Images arrive inline |
-| `LLMR_NPM_REGISTRY` | Optional. An npm registry to update the command line tools from, instead of npmjs.org |
 | `RUST_LOG`, `LLMR_LOG_FORMAT` | Log filter (`info`), and `json` for one object per line |
 
 Everything llmr is told is kept in `/var/lib/llmr`. Mount a volume there, or it is lost with
@@ -76,25 +73,6 @@ curl -X PUT localhost:8080/manage/routes/default -d '{
 Changes take effect on the next request, without a restart. The full management API,
 including provider types, capabilities for models llmr does not know, route policies and
 status, is in [docs/MANAGEMENT.md](docs/MANAGEMENT.md).
-
-## Command line tools
-
-Claude Code, Codex and Gemini CLI are installed in the image and can be providers like any
-other: `"type": "claude-code"`, `codex` or `gemini-cli`, **signed in with your own
-subscription** (Claude Pro or Max, ChatGPT, a Google account) so calls are covered by the plan
-instead of charged per token, or with an API key. Each request runs the tool once, in an empty
-directory of its own, with its own tools switched off: it answers the prompt and can do
-nothing else. How to get each sign in is in
-[docs/MANAGEMENT.md](docs/MANAGEMENT.md#signing-in-with-a-subscription).
-
-```sh
-curl localhost:8080/manage/clis?check_latest=true                    # versions, and the newest on npm
-curl -X POST localhost:8080/manage/clis/codex/update -d '{"version": "latest"}'
-curl -X POST localhost:8080/manage/clis/codex/reset                   # back to the image's version
-```
-
-An update is installed onto the volume inside the running container and kept across
-restarts. The image's versions are the ones this release was tested with.
 
 ## Connect a project
 
@@ -142,9 +120,8 @@ curl "localhost:8080/manage/usage?group_by=model&from=$(date -d yesterday +%s)"
 ```
 
 Cost is the provider's published rate times the usage it reported, one amount per currency.
-A self hosted model is `free`; a command line tool signed in with a subscription is
-`subscription`, covered by the plan; a paid provider llmr has no rate for is `unpriced`, and a
-total that includes one says it is incomplete rather than presenting a floor as the bill.
+A self hosted model is `free`; a paid provider llmr has no rate for is `unpriced`, and a total
+that includes one says it is incomplete rather than presenting a floor as the bill.
 
 ## Documentation
 
@@ -160,8 +137,8 @@ total that includes one says it is incomplete rather than presenting a floor as 
 
 ## Not there yet
 
-- **Signing a command line tool in from the panel**, without running the tool's own sign in
-  somewhere else first.
+- Media beyond an image in a prompt: images and other non-text inputs and outputs over the
+  API.
 - Bedrock (needs a SigV4 signing transport), an Anthropic Messages endpoint (`/v1/messages`),
   and embeddings.
 

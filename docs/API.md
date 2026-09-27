@@ -85,8 +85,7 @@ The standard `chat.completion` object, with two additions:
 - `llmr_cost`: what this request cost. `{"status": "priced", "amount": "0.003396", "currency":
   "USD"}`; `"partial"` when the provider left some usage out and the amount is a floor;
   `{"status": "unpriced"}` for a paid provider llmr has no rate for; `{"status": "free"}` for a
-  self hosted model; `{"status": "subscription"}` for a command line tool signed in with a
-  subscription, which its plan covers. Never a zero standing in for "unknown".
+  self hosted model. Never a zero standing in for "unknown".
 
 `usage` is present only when the provider reported both prompt and output counts. It is
 never filled with zeros, because a zero turns an unknown cost into a free one.

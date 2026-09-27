@@ -4,8 +4,7 @@
 //! It checks the promises [`crate::Provider`] makes, which are the ones a caller relies on
 //! without being able to see your code.
 //!
-//! Every provider in this crate passes it, including the local command line one. That is
-//! the point: a suite only one implementation can pass has stopped being a specification
+//! Every provider in this crate passes it. That is the point: a suite only one implementation can pass has stopped being a specification
 //! and become a description of that implementation.
 //!
 //! What it does not check is concurrency. Running calls at the same time needs a runtime to

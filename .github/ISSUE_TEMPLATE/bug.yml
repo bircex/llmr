@@ -39,7 +39,6 @@ body:
         - first-party-api
         - cloud-partner
         - private-endpoint
-        - local-cli
         - self-hosted
         - not sure
     validations:
