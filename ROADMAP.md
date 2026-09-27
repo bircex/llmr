@@ -39,9 +39,10 @@ cargo test
 
 ## Next
 
-**2026.9.0, the first release as a service** (and the first calendar version; there is no 0.3.0): the service (#76), its documentation (#77), REST
-management with the encrypted store (#78) and usage with cost (#79). It is the first release
-the release workflow and the image's `YYYY.M.PATCH` tags run for as a service.
+**2026.9.0, released 2026-09-27, the first release as a service** and the first calendar
+version (there is no 0.3.0): the service (#76), its documentation (#77), REST management with
+the encrypted store (#78), usage with cost (#79), media over the API (#85), and prices kept
+current (#86). `CHANGELOG.md` has the whole list.
 
 In order:
 
@@ -54,7 +55,7 @@ In order:
 4. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
    the client API therefore refuses.
 5. ~~Media: images and other non-text inputs and outputs over the API, beyond the image a
-   prompt can already carry.~~ · **done**, unreleased. A chat request carries PDFs and
+   prompt can already carry.~~ · **done**, in 2026.9.0. A chat request carries PDFs and
    recordings, routed on two new capabilities, `documents` and `audio`. Models have a `kind`,
    and `/v1/embeddings`, `/v1/images/generations`, `/v1/audio/speech` and
    `/v1/audio/transcriptions` serve route sets of that kind, in order, without the chat
