@@ -1882,7 +1882,10 @@ mod tests {
                 .iter()
                 .position(|a| a == "--system-prompt-file")
                 .unwrap();
-            assert_eq!(claude[at + 1], "/h/system.md");
+            assert_eq!(
+                claude[at + 1],
+                Path::new("/h").join("system.md").display().to_string()
+            );
             // `--bare` reads only an API key.
             assert_eq!(claude.contains(&"--bare".to_string()), auth == Auth::ApiKey);
 
@@ -1962,7 +1965,10 @@ mod tests {
         let gemini = env(Tool::GeminiCli, Auth::Subscription, Some("http://ca"));
         assert!(!gemini.values().any(|v| v == "the-secret"));
         assert_eq!(gemini["CODE_ASSIST_ENDPOINT"], "http://ca");
-        assert_eq!(gemini["GEMINI_SYSTEM_MD"], "/h/system.md");
+        assert_eq!(
+            gemini["GEMINI_SYSTEM_MD"],
+            Path::new("/h").join("system.md").display().to_string()
+        );
         let gemini = env(Tool::GeminiCli, Auth::ApiKey, Some("http://g"));
         assert_eq!(gemini["GEMINI_API_KEY"], "the-secret");
         assert_eq!(gemini["GOOGLE_GEMINI_BASE_URL"], "http://g");
