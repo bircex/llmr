@@ -759,6 +759,8 @@ impl Failure {
 
 /// Kills a process group when dropped: at the end of a call, on a timeout, and when the
 /// request that started it is abandoned.
+// Read only where there are process groups to kill.
+#[cfg_attr(not(unix), allow(dead_code))]
 struct Group(Option<u32>);
 
 impl Drop for Group {
@@ -1470,7 +1472,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("llmr-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        // Resolved, because a tool's `$PWD` is: macOS's temporary directory is under
+        // `/var`, a link to `/private/var`.
+        dir.canonicalize().unwrap()
     }
 
     #[cfg(unix)]
