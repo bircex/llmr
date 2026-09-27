@@ -29,7 +29,7 @@ call needs `Authorization: Bearer <token>` (or `x-api-key`); without it, nothing
 
 ```json
 {
-  "version": "0.3.0",
+  "version": "2026.9.0",
   "uptime_secs": 3600,
   "auth": true,
   "providers": { "total": 3, "enabled": 2, "problems": [{ "provider": "groq", "problem": "no credential is set, and this provider type needs one" }] },
@@ -428,7 +428,7 @@ model.
     "served_model": "claude-sonnet-5", "stream": true, "outcome": "ok", "error_code": null,
     "stop_reason": "end_turn", "attempts": 1, "fell_through": 0, "latency_ms": 2210,
     "tokens": { "input": 812, "cache_read": 0, "cache_write": 0, "output": 64, "total": 876 },
-    "cost": { "status": "priced", "amount": "0.003396", "currency": "USD" }
+    "cost": { "status": "priced", "amount": "0.002264", "currency": "USD" }
   }],
   "next_before": 48212
 }

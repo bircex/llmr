@@ -107,7 +107,7 @@ The standard `chat.completion` object, with two additions:
   `interrupted`, `other`). `finish_reason` has five words and some of these would read as
   finished when they are not.
 - `choices[0].message.reasoning_content`: reasoning text, when the model showed any.
-- `llmr_cost`: what this request cost. `{"status": "priced", "amount": "0.003396", "currency":
+- `llmr_cost`: what this request cost. `{"status": "priced", "amount": "0.002264", "currency":
   "USD"}`; `"partial"` when the provider left some usage out and the amount is a floor;
   `{"status": "unpriced"}` for a paid provider llmr has no rate for; `{"status": "free"}` for a
   self hosted model. Never a zero standing in for "unknown".
@@ -126,7 +126,7 @@ writes one. The next route is not asked the same question.
 |---|---|
 | `x-llmr-route` | The `provider/model` that answered |
 | `x-llmr-attempts` | Calls made, retries included |
-| `x-llmr-cost` | The amount and currency, `0.003396 USD`, when the request was priced. Absent otherwise |
+| `x-llmr-cost` | The amount and currency, `0.002264 USD`, when the request was priced. Absent otherwise |
 | `x-llmr-fell-through` | Entries for routes skipped or failed before the one that answered, one per failed attempt. Non zero on a successful call is a provider degrading while nothing is failing |
 
 ### Streaming

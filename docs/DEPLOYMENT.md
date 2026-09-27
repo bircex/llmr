@@ -138,7 +138,7 @@ upgrade.
 One line per request, on stdout (shown here without the timestamp and target):
 
 ```
-INFO answered model=default route=anthropic/claude-sonnet-5 attempts=1 fell_through=0 input_tokens=812 output_tokens=64 stop="end_turn" cost="0.003396 USD"
+INFO answered model=default route=anthropic/claude-sonnet-5 attempts=1 fell_through=0 input_tokens=812 output_tokens=64 stop="end_turn" cost="0.002264 USD"
 WARN fell through model=default route=openai/gpt-5.1 why="rate limited, retry after 2000ms (attempt 1 of 2, waiting 2000ms)"
 ```
 

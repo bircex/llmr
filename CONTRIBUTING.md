@@ -254,16 +254,23 @@ person to see it will be deciding whether to delete it.
 
 ## Commits and versions
 
-Versions follow semantic versioning, applied to what users of llmr depend on: the client
-API, the management API, the response headers, the environment variables, and the database
-on their volume. Before 1.0, a breaking change to any of those is a minor bump and gets a
-line in `CHANGELOG.md`. A database that a new release cannot open is the worst kind of
+Versions are calendar versions, `YYYY.M.PATCH`: the year, the month without a leading zero,
+and a count of releases in that month from 0 (`2026.9.0`, `2026.9.1`, `2026.10.0`). They are
+valid semver as well, which Cargo requires. The number says when a release was cut, not how
+much it changed, so compatibility is kept by the changelog: a change that breaks what users
+of llmr depend on (the client API, the management API, the response headers, the
+environment variables, and the database on their volume) is listed under **Breaking** in
+that release's section. A database that a new release cannot open is the worst kind of
 break, which is why schema changes are migrations.
+
+Between releases, `Cargo.toml` carries the version the next release is expected to have, and
+`CHANGELOG.md` collects it under `## Unreleased: <version>`. Cutting a release sets both to
+the month it is cut in and renames that heading to `## <version> — <date>`.
 
 The engine's Rust types are not part of that promise. Most of them are `#[non_exhaustive]`
 and built through constructors, which keeps changes to them local; if you add a struct the
 gateway must build, give it a constructor in the same commit.
 
-A release is a tag, `vX.Y.Z`, matching the version in `Cargo.toml` and a section in
-`CHANGELOG.md`. The tag publishes the Docker image and the GitHub release; nothing is
+A release is a tag, `vYYYY.M.PATCH`, for the month it is pushed in, matching the version in
+`Cargo.toml` and a section in `CHANGELOG.md`; the release workflow refuses anything else. The tag publishes the Docker image and the GitHub release; nothing is
 published from a laptop.

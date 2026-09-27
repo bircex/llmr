@@ -39,9 +39,9 @@ cargo test
 
 ## Next
 
-**0.3.0, the first release as a service:** the service (#76), its documentation (#77), REST
+**2026.9.0, the first release as a service** (and the first calendar version; there is no 0.3.0): the service (#76), its documentation (#77), REST
 management with the encrypted store (#78) and usage with cost (#79). It is the first release
-the release workflow and the image's `X.Y.Z` tags run for as a service.
+the release workflow and the image's `YYYY.M.PATCH` tags run for as a service.
 
 In order:
 

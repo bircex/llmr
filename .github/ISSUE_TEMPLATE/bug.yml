@@ -54,7 +54,7 @@ body:
     id: running
     attributes:
       label: How you run it
-      placeholder: "ghcr.io/bircex/llmr:0.3.0, or an image built from a commit"
+      placeholder: "ghcr.io/bircex/llmr:2026.9.0, or an image built from a commit"
 
   - type: input
     id: version

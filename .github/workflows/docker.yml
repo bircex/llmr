@@ -4,7 +4,7 @@ name: Docker image
 # Dockerfile is found before merge, and pushed only from main and from version tags.
 #
 #   ghcr.io/<owner>/llmr:latest   main
-#   ghcr.io/<owner>/llmr:0.3.0    tag v0.3.0 (and :0.3)
+#   ghcr.io/<owner>/llmr:2026.9.0 tag v2026.9.0 (and :2026.9, every release that month)
 #   ghcr.io/<owner>/llmr:sha-...  every push
 
 on:
@@ -42,6 +42,8 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/llmr
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            # A calendar version, YYYY.M.PATCH, is valid semver, so the semver patterns read
+            # it: {{version}} is 2026.9.0 and {{major}}.{{minor}} is 2026.9.
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
