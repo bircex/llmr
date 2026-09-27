@@ -44,6 +44,9 @@ pub struct AppState {
     pub started: std::time::Instant,
     /// Where each request's usage row goes.
     pub recorder: Recorder,
+    /// The command line tools, for providers that run one and for the endpoints that
+    /// update them.
+    pub tools: Arc<crate::cli::Toolbox>,
 }
 
 /// Milliseconds since `started`, for a usage row.
@@ -678,6 +681,10 @@ mod tests {
                 keys: vec!["secret".into()],
                 started: std::time::Instant::now(),
                 recorder: crate::usage::Recorder::start(db.clone()).0,
+                tools: Arc::new(crate::cli::Toolbox::new(
+                    std::path::PathBuf::from("/nonexistent"),
+                    std::path::Path::new("/nonexistent"),
+                )),
             }),
             1024 * 1024,
         )
@@ -1035,6 +1042,10 @@ mod tests {
                 keys: vec!["secret".into()],
                 started: std::time::Instant::now(),
                 recorder: crate::usage::Recorder::start(db.clone()).0,
+                tools: Arc::new(crate::cli::Toolbox::new(
+                    std::path::PathBuf::from("/nonexistent"),
+                    std::path::Path::new("/nonexistent"),
+                )),
             }),
             1024 * 1024,
         );

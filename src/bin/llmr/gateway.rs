@@ -5,6 +5,7 @@
 //! flight finish on the gateway they started on. The routers' health counters start again
 //! with each build, which is the price of never locking the request path.
 
+use crate::cli::{CliProvider, Toolbox};
 use crate::records::{
     split_route, Capabilities, Model, Order as OrderSpec, Provider, ProviderType, RouteSpec,
 };
@@ -151,7 +152,7 @@ impl Gateway {
     /// Never fails as a whole. A provider that cannot be built is left out and reported in
     /// [`Gateway::problems`]; a route that cannot be used is left out of its set and reported
     /// in [`Served::unavailable`]. One bad row must not take every other name offline.
-    pub fn build(snapshot: &Snapshot) -> Gateway {
+    pub fn build(snapshot: &Snapshot, tools: &Arc<Toolbox>) -> Gateway {
         let mut providers = BTreeMap::new();
         let mut problems = Vec::new();
 
@@ -164,7 +165,7 @@ impl Gateway {
                 .iter()
                 .filter(|m| m.provider_id == record.id)
                 .collect();
-            match build_provider(record, credential.as_deref(), &rows) {
+            match build_provider(record, credential.as_deref(), &rows, tools) {
                 Ok(built) => {
                     providers.insert(record.id.clone(), built);
                 }
@@ -320,7 +321,10 @@ pub fn registry(record: &Provider, rows: &[&Model]) -> Registry {
         ProviderType::Anthropic => Some(anthropic::api::shipped_registry()),
         ProviderType::Openai => Some(openai::api::shipped_registry()),
         ProviderType::Gemini => Some(gemini::api::shipped_registry()),
-        ProviderType::OpenaiCompatible => None,
+        ProviderType::OpenaiCompatible
+        | ProviderType::ClaudeCode
+        | ProviderType::Codex
+        | ProviderType::GeminiCli => None,
     };
     let reach = record
         .effective_reach()
@@ -365,7 +369,34 @@ pub fn build_provider(
     record: &Provider,
     credential: Option<&str>,
     rows: &[&Model],
+    tools: &Arc<Toolbox>,
 ) -> Result<Built, String> {
+    if let Some(tool) = record.provider_type.tool() {
+        let key = credential.ok_or("no credential is set, and this provider type needs one")?;
+        // Whatever the panel named. Capabilities are not asked for: through a command line
+        // tool every model is text in, text out.
+        let serves = rows.iter().map(|m| m.model_id.clone()).collect();
+        let prices = record.base_url.is_none().then(|| match tool {
+            crate::cli::Tool::ClaudeCode => anthropic::api::shipped_prices(),
+            crate::cli::Tool::Codex => openai::api::shipped_prices(),
+            crate::cli::Tool::GeminiCli => gemini::api::shipped_prices(),
+        });
+        return Ok(Built {
+            provider: Arc::new(CliProvider::new(
+                record.id.clone(),
+                tool,
+                Secret::new("provider-credential", key),
+                record.base_url.clone(),
+                serves,
+                Duration::from_secs(record.timeout_secs),
+                tools.clone(),
+            )),
+            provider_type: record.provider_type,
+            reach: llmr::Reach::LocalCli,
+            prices: prices.map(Arc::new),
+        });
+    }
+
     let info = record.provider_type.info();
     let base_url = record
         .effective_base_url()
@@ -411,6 +442,9 @@ pub fn build_provider(
             )),
             own_endpoint.then(gemini::api::shipped_prices),
         ),
+        ProviderType::ClaudeCode | ProviderType::Codex | ProviderType::GeminiCli => {
+            return Err("a command line provider is built above".into())
+        }
         ProviderType::Openai | ProviderType::OpenaiCompatible => (
             Arc::new(openai::api::at(
                 // The protocol's own name, for its spans and messages. A fixed string rather
@@ -566,6 +600,14 @@ mod tests {
         serde_json::from_value(serde_json::json!({ "routes": routes })).unwrap()
     }
 
+    /// No command line tools: these tests are about API providers.
+    fn no_tools() -> Arc<Toolbox> {
+        Arc::new(Toolbox::new(
+            std::path::PathBuf::from("/nonexistent"),
+            std::path::Path::new("/nonexistent"),
+        ))
+    }
+
     fn snapshot() -> Snapshot {
         Snapshot {
             providers: vec![provider("local", true), provider("off", false)],
@@ -590,7 +632,7 @@ mod tests {
 
     #[test]
     fn a_route_set_keeps_what_can_serve_and_says_why_the_rest_cannot() {
-        let gateway = Gateway::build(&snapshot());
+        let gateway = Gateway::build(&snapshot(), &no_tools());
         let served = gateway.served().next().unwrap();
         let names: Vec<String> = served.router.routes().map(|(name, _)| name).collect();
         assert_eq!(names, vec!["local/small".to_string()]);
@@ -608,7 +650,7 @@ mod tests {
 
     #[test]
     fn only_enabled_models_on_enabled_providers_resolve_directly() {
-        let gateway = Gateway::build(&snapshot());
+        let gateway = Gateway::build(&snapshot(), &no_tools());
         assert!(matches!(gateway.resolve("default"), Resolution::Found(..)));
         assert!(matches!(
             gateway.resolve("local/small"),
@@ -637,7 +679,7 @@ mod tests {
         broken.provider_type = ProviderType::Anthropic; // needs a credential it does not have
         snapshot.providers.push((broken, None));
 
-        let gateway = Gateway::build(&snapshot);
+        let gateway = Gateway::build(&snapshot, &no_tools());
         assert_eq!(gateway.problems().len(), 1);
         assert!(gateway.problems()[0].1.contains("credential"));
         assert!(matches!(
@@ -658,7 +700,7 @@ mod tests {
             models: vec![],
             routes: vec![],
         };
-        let gateway = Gateway::build(&snapshot);
+        let gateway = Gateway::build(&snapshot, &no_tools());
         let million = llmr::Usage::absent().with_input(1_000_000).with_output(0);
 
         // Priced from the vendor's published rate, even under a dated alias it answered with.
@@ -720,7 +762,7 @@ mod tests {
             models: vec![model("anthropic", "claude-sonnet-5", true, false)],
             routes: vec![("default".into(), spec(&["anthropic/claude-sonnet-5"]))],
         };
-        let gateway = Gateway::build(&snapshot);
+        let gateway = Gateway::build(&snapshot, &no_tools());
         let served = gateway.served().next().unwrap();
         assert!(served.unavailable.is_empty(), "{:?}", served.unavailable);
     }

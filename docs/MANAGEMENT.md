@@ -22,6 +22,10 @@ call needs `Authorization: Bearer <token>` (or `x-api-key`); without it, nothing
 | `GET` `PUT` `DELETE` | `/manage/routes/{name}` | One route set |
 | `GET` `DELETE` | [`/manage/usage`](#usage) | Totals over a time range, overall or grouped; forget old rows |
 | `GET` | `/manage/usage/requests` | Single requests, newest first |
+| `GET` | [`/manage/clis`](#command-line-tools) | Claude Code, Codex, Gemini CLI: installed version, where it came from, the newest |
+| `GET` | `/manage/clis/{name}` | One of them |
+| `POST` | `/manage/clis/{name}/update` | Install a version inside the container |
+| `POST` | `/manage/clis/{name}/reset` | Go back to the version in the image |
 
 ## Status
 
@@ -62,6 +66,12 @@ until the problem is fixed; everything else keeps serving.
 | `openai` | OpenAI's API | required |
 | `gemini` | Google's Gemini API | required |
 | `openai-compatible` | Ollama, vLLM, LM Studio, Groq, Together, OpenRouter, LiteLLM, anything on `/v1/chat/completions` | optional |
+| `claude-code` | Claude Code, run inside the container ([below](#command-line-providers)) | an Anthropic API key |
+| `codex` | OpenAI's Codex, run inside the container | an OpenAI API key |
+| `gemini-cli` | Google's Gemini CLI, run inside the container | a Gemini API key |
+
+`transport` is `api` for a provider llmr calls over HTTP, and `cli` for one it runs as a
+program inside the container.
 
 `priced` says whether llmr knows the provider's published prices, which is what a route
 set's `order: "cheapest"` compares. A provider with a `base_url` of its own is unpriced.
@@ -127,6 +137,41 @@ Rotating a key is `PATCH {"credential": "sk-new..."}`. The next request uses it.
 `DELETE /manage/providers/{id}` → `204`. Its model settings go with it. Route sets that name
 it stay, with those routes reported as unavailable.
 
+## Command line providers
+
+`claude-code`, `codex` and `gemini-cli` run the vendor's own command line tool inside the
+container, one process per request. The tools are installed in the image, ready; which
+version each is at, and how to change it, is under [Command line tools](#command-line-tools).
+
+```sh
+curl -X POST localhost:8080/manage/providers -d '{
+  "id": "claude-code", "type": "claude-code", "credential": "sk-ant-api..."
+}'
+curl -X PUT localhost:8080/manage/providers/claude-code/models/claude-sonnet-5 -d '{"enabled": true}'
+```
+
+What is different from an API provider:
+
+| | |
+|---|---|
+| `credential` | The vendor's API key, required. Calls are billed to it at the vendor's API rates, and priced with them |
+| `base_url` | Optional. Points the tool at a gateway or proxy that speaks the vendor's API; the provider is then unpriced |
+| `reach` | Always `local-cli`: the tool runs here, and the prompt goes to the vendor |
+| Models | Named by you, with the ids the tool accepts (`claude-sonnet-5`, `gpt-5.1`, `gemini-2.5-pro`). A tool cannot list them, so `listed` is `null` |
+| Capabilities | None, and none may be set: text in, text out. A request with tools, an image or a schema skips these routes |
+| Streaming | A streamed request works, and the reply arrives in one piece when the tool finishes |
+| Speed | A process starts per request: a fraction of a second for Claude Code and Codex, about two for Gemini CLI |
+| Concurrency | At most `LLMR_CLI_CONCURRENCY` calls (8 unless set) run at once, across every tool; the rest wait, and fall through to the next route if none frees in time |
+
+**What a call can do.** Every tool is run with its own tools switched off: it cannot read
+files, run commands, search the web or start sub agents, whatever the prompt asks. Each call
+runs in an empty directory of its own that is removed afterwards, with only its own key in
+its environment. The tool's own retries are off too, so a rate limit or an outage falls
+through to the next route at once rather than being retried inside the tool.
+
+**Testing one.** The free test can only say the tool is installed; no tool can check a key
+without making a call. `{"model": "...", "live": true}` proves the key with one short request.
+
 ## Testing a provider
 
 `POST /manage/providers/{id}/test`, with an optional body. Works on a disabled provider, so a
@@ -154,6 +199,9 @@ key can be checked before anything is switched on.
 | `ready` | Nothing found that would stop a call |
 | `denied` | The provider said no: a rejected key, a model this account cannot reach. It stays no until somebody fixes it. `detail` says what was said |
 | `unknown` | Nothing could be established: a timeout, a 503, a provider that cannot list its models. Not a refusal |
+
+A command line provider's report also carries `cli`: the tool's version and where it came
+from, as in [Command line tools](#command-line-tools).
 
 ## Models
 
@@ -357,6 +405,55 @@ and this one can be joined.
 `DELETE /manage/usage?before=1782604800` removes rows recorded before that time and answers
 `{"deleted": 18231}`. `before` is required.
 
+## Command line tools
+
+The image carries Claude Code, Codex and Gemini CLI at the versions the release was tested
+with. Any of them can be moved to another version from npm, inside the running container:
+the new copy is installed onto the data volume, checked, then swapped in, and it survives
+restarts and upgrades of the image until it is reset.
+
+`GET /manage/clis`
+
+```json
+{ "data": [
+  { "name": "claude-code", "title": "Claude Code", "program": "claude",
+    "package": "@anthropic-ai/claude-code", "provider_type": "claude-code",
+    "installed": true, "version": "2.1.283", "source": "image", "image_version": "2.1.283" },
+  { "name": "codex", "...": "...", "version": "0.158.0", "source": "updated", "image_version": "0.157.1" }
+] }
+```
+
+`source` is `image` for the tested version the image carries, `updated` for one installed
+through this API. Add `?check_latest=true` to ask npm for the newest version as well; each
+tool then carries `latest` and `update_available`, or `latest_error` when the registry could
+not be reached. `GET /manage/clis/{name}` is one tool, with the same parameter.
+
+### Updating
+
+`POST /manage/clis/{name}/update`
+
+```json
+{ "version": "latest" }
+```
+
+`version` is `latest` (the default, when there is no body) or a version number such as
+`2.1.290`; anything else is refused. The call returns when the install is done, usually within
+a minute, with the tool as above plus `previous_version` and `took_ms`. The next request runs
+the new copy; requests already running finish on the old one.
+
+A version other than the image's has not been tested with this release. The tools change the
+shape of what they print from time to time, and a version llmr cannot read shows up as failed
+requests on its routes, not as a failed update. Update one provider's tool, send a live test,
+and reset if it fails.
+
+One update runs at a time; a second while one runs is a `409`. The container needs to reach
+the npm registry, or the one in `LLMR_NPM_REGISTRY`.
+
+### Going back
+
+`POST /manage/clis/{name}/reset` removes the copy on the volume, so the image's version is
+used again. `removed_update` says whether there was one.
+
 ## Errors
 
 | Status | `code` | |
@@ -364,5 +461,6 @@ and this one can be joined.
 | 400 | `invalid_request` | A field is missing or wrong; `param` names it |
 | 401 | `invalid_api_key` | `LLMR_TOKEN` is set and the call did not present it |
 | 404 | `not_found` | No such provider, model setting or route set |
-| 409 | `conflict` | A provider with that id exists already |
+| 409 | `conflict` | A provider with that id exists already, or a tool update is already running |
+| 502 | `update_failed` | npm could not install the version, or the installed tool did not start. The copy in use is unchanged |
 | 500 | `internal_error` | The database could not be read or written |

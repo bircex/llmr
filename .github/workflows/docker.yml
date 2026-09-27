@@ -74,4 +74,14 @@ jobs:
             sleep 1
           done
           docker exec llmr-ci /usr/local/bin/llmr healthcheck
+          # The command line tools are in the image and start.
+          docker exec llmr-ci /opt/llmr/cli/claude-code/bin/claude --version
+          docker exec llmr-ci /opt/llmr/cli/codex/bin/codex --version
+          docker exec -e HOME=/tmp llmr-ci /opt/llmr/cli/gemini-cli/bin/gemini --version
+          # A process of llmr's user, which is what a tool is, cannot read the master key out
+          # of llmr. (Only llmr's processes are read: `docker exec` itself is given the
+          # container's environment.)
+          if docker exec llmr-ci sh -c 'for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = llmr ] && cat $p/environ; done' 2>/dev/null | tr '\0' '\n' | grep -q LLMR_MASTER_KEY; then
+            echo "::error::the master key is readable from /proc"; exit 1
+          fi
           docker logs llmr-ci

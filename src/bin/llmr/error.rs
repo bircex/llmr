@@ -93,6 +93,16 @@ impl ApiError {
         )
     }
 
+    /// Something this gateway depends on failed: npm, a registry, a tool.
+    pub fn bad_gateway(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            code,
+            message.into(),
+        )
+    }
+
     /// The caller presented no key, or a wrong one.
     pub fn unauthorized() -> Self {
         Self::new(

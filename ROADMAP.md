@@ -19,8 +19,8 @@ publishing, docs.rs or a public API, that is what the project did then.
 
 | | |
 |---|---:|
-| Source | 19,109 lines across 47 files, the service included |
-| Tests | 444 passing, all features · 270 on the default set |
+| Source | 22,880 lines across 50 files, the service included |
+| Tests | 469 passing, all features · 270 on the default set |
 | Distributed as | The Docker image, for amd64 and arm64, from `main` and from `v*` tags |
 | CI on GitHub | every pull request, including building and starting the image |
 
@@ -40,23 +40,23 @@ cargo test
 ## Next
 
 **Done, not yet tagged:** the service (#76), its documentation (#77), REST management with the
-encrypted store (#78), and usage with cost (this change). Before the first tag: bump `version` in `Cargo.toml`, turn
+encrypted store (#78), usage with cost (#79), and the command line tools in the image (this
+change). Before the first tag: bump `version` in `Cargo.toml`, turn
 the changelog's Unreleased section into that version's, and tag. The release workflow and the
 image's `X.Y.Z` tags have not run yet, so watch the first one.
 
 In order:
 
-1. **Command line providers in the image.** Claude Code and Codex installed in the container,
-   their versions reported and updatable over the management API, their credentials (an API
-   key or a subscription token) stored sealed like any other. The image grows from about
-   50 MB to about 300 MB, because both need Node.
-2. **The product site** on GitHub Pages: what llmr is and how to run it, not the code.
-3. Per caller limits: spending caps and rate limits, now that usage is recorded. The engine's
+1. **The product site** on GitHub Pages: what llmr is and how to run it, not the code.
+2. Per caller limits: spending caps and rate limits, now that usage is recorded. The engine's
    `Budget` is per process lifetime, which a long running service cannot use as is.
-4. An Anthropic Messages endpoint beside the OpenAI one, so prompt caching and thinking
+3. An Anthropic Messages endpoint beside the OpenAI one, so prompt caching and thinking
    signatures can cross; Bedrock (needs a SigV4 signing transport); embeddings.
-5. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
+4. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
    the client API therefore refuses.
+5. **Open:** signing a command line tool in with a subscription (Claude Pro or Max, ChatGPT)
+   instead of an API key. Left out on purpose, see docs/DESIGN.md: it is a question about the
+   vendors' terms for a shared router before it is a question about code.
 
 ---
 

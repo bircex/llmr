@@ -19,6 +19,12 @@ pub enum ProviderType {
     /// Anything else speaking `/v1/chat/completions`: Ollama, vLLM, LM Studio, Groq,
     /// OpenRouter.
     OpenaiCompatible,
+    /// Anthropic's Claude Code, run inside the container.
+    ClaudeCode,
+    /// OpenAI's Codex, run inside the container.
+    Codex,
+    /// Google's Gemini CLI, run inside the container.
+    GeminiCli,
 }
 
 /// What a panel needs to know to offer a provider type in a form.
@@ -26,9 +32,10 @@ pub enum ProviderType {
 pub struct TypeInfo {
     pub id: ProviderType,
     pub name: &'static str,
-    /// How it is reached: `api` today; `cli` for a command line tool inside the container.
+    /// How it is reached: `api`, or `cli` for a command line tool inside the container.
     pub transport: &'static str,
-    /// Where it answers unless told otherwise. `None` means a base URL is required.
+    /// Where it answers unless told otherwise. `None` on an `api` type means a base URL is
+    /// required; a `cli` type takes one only to point the tool somewhere else.
     pub default_base_url: Option<&'static str>,
     /// Whether `reach` must be given, because nothing on the wire says where it runs.
     pub reach_required: bool,
@@ -43,11 +50,14 @@ pub struct TypeInfo {
 }
 
 impl ProviderType {
-    pub const ALL: [ProviderType; 4] = [
+    pub const ALL: [ProviderType; 7] = [
         ProviderType::Anthropic,
         ProviderType::Openai,
         ProviderType::Gemini,
         ProviderType::OpenaiCompatible,
+        ProviderType::ClaudeCode,
+        ProviderType::Codex,
+        ProviderType::GeminiCli,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -56,6 +66,19 @@ impl ProviderType {
             ProviderType::Openai => "openai",
             ProviderType::Gemini => "gemini",
             ProviderType::OpenaiCompatible => "openai-compatible",
+            ProviderType::ClaudeCode => "claude-code",
+            ProviderType::Codex => "codex",
+            ProviderType::GeminiCli => "gemini-cli",
+        }
+    }
+
+    /// The command line tool this type runs, for a `cli` type.
+    pub fn tool(self) -> Option<crate::cli::Tool> {
+        match self {
+            ProviderType::ClaudeCode => Some(crate::cli::Tool::ClaudeCode),
+            ProviderType::Codex => Some(crate::cli::Tool::Codex),
+            ProviderType::GeminiCli => Some(crate::cli::Tool::GeminiCli),
+            _ => None,
         }
     }
 
@@ -108,6 +131,18 @@ impl ProviderType {
                 credential: "optional",
                 lists_models: true,
                 priced: false,
+            },
+            // A tool calls its vendor's API with an API key, so the vendor's prices apply.
+            ProviderType::ClaudeCode | ProviderType::Codex | ProviderType::GeminiCli => TypeInfo {
+                id: self,
+                name: self.tool().map_or("", crate::cli::Tool::title),
+                transport: "cli",
+                default_base_url: None,
+                reach_required: false,
+                default_reach: Some(Reach::LocalCli),
+                credential: "required",
+                lists_models: false,
+                priced: true,
             },
         }
     }
