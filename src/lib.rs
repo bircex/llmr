@@ -24,6 +24,12 @@ pub mod cost;
 #[cfg(feature = "embeddings")]
 pub mod embed;
 
+#[cfg(feature = "image-generation")]
+pub mod image;
+
+#[cfg(feature = "audio")]
+pub mod audio;
+
 pub mod error;
 pub mod model;
 mod observe;

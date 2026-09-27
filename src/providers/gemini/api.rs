@@ -496,7 +496,7 @@ fn read_stop(reason: Option<&str>) -> StopReason {
     }
 }
 
-fn read_usage(value: Option<&Value>) -> Usage {
+pub(crate) fn read_usage(value: Option<&Value>) -> Usage {
     let Some(usage) = value else {
         return Usage::absent();
     };

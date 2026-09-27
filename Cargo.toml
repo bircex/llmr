@@ -38,6 +38,11 @@ reqwest = ["dep:reqwest"]
 # is not. `docs/DESIGN.md` records the argument and what a separate crate would have cost.
 embeddings = []
 
+# Pictures from a prompt, and speech both ways. Their own traits for the reason embeddings
+# are, and their own features so a build that only chats compiles none of it.
+image-generation = []
+audio = []
+
 # The contract suite, for anyone writing a provider of their own.
 testkit = []
 
@@ -62,6 +67,9 @@ server = [
     "reqwest",
     "retry",
     "tracing",
+    "embeddings",
+    "image-generation",
+    "audio",
     "dep:axum",
     "dep:tracing-subscriber",
     "dep:rusqlite",
@@ -88,7 +96,7 @@ toml        = "1.1"
 reqwest     = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio       = { version = "1", optional = true, default-features = false }
 tracing     = { version = "0.1", optional = true, default-features = false, features = ["std"] }
-axum        = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio", "query"] }
+axum        = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio", "query", "multipart"] }
 tracing-subscriber = { version = "0.3", optional = true, default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json"] }
 # The gateway's own state: providers, models, routes and usage, in one file on the data volume.
 # `bundled` compiles SQLite in, so the image needs no system library and every build runs the

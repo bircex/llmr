@@ -21,6 +21,61 @@ pub enum ProviderType {
     OpenaiCompatible,
 }
 
+/// What a model is for, which decides the endpoint that serves it.
+///
+/// A property of the model row rather than of the provider: OpenAI serves all five from one
+/// key, and a chat model asked for vectors is a request that cannot be sent at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+    /// `/v1/chat/completions`.
+    #[default]
+    Chat,
+    /// `/v1/embeddings`.
+    Embedding,
+    /// `/v1/images/generations`.
+    Image,
+    /// `/v1/audio/speech`: text read aloud.
+    Speech,
+    /// `/v1/audio/transcriptions`: a recording written down.
+    Transcription,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 5] = [
+        Kind::Chat,
+        Kind::Embedding,
+        Kind::Image,
+        Kind::Speech,
+        Kind::Transcription,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Chat => "chat",
+            Kind::Embedding => "embedding",
+            Kind::Image => "image",
+            Kind::Speech => "speech",
+            Kind::Transcription => "transcription",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|k| k.as_str() == text)
+    }
+
+    /// Where a client sends a request for a model of this kind.
+    pub fn endpoint(self) -> &'static str {
+        match self {
+            Kind::Chat => "/v1/chat/completions",
+            Kind::Embedding => "/v1/embeddings",
+            Kind::Image => "/v1/images/generations",
+            Kind::Speech => "/v1/audio/speech",
+            Kind::Transcription => "/v1/audio/transcriptions",
+        }
+    }
+}
+
 /// What a panel needs to know to offer a provider type in a form.
 #[derive(Debug, Clone, Serialize)]
 pub struct TypeInfo {
@@ -40,6 +95,8 @@ pub struct TypeInfo {
     pub lists_models: bool,
     /// Whether this release knows the provider's published prices.
     pub priced: bool,
+    /// What its models may be for.
+    pub kinds: &'static [Kind],
 }
 
 impl ProviderType {
@@ -75,6 +132,8 @@ impl ProviderType {
                 credential: "required",
                 lists_models: true,
                 priced: true,
+                // The Messages API chats and does nothing else.
+                kinds: &[Kind::Chat],
             },
             ProviderType::Openai => TypeInfo {
                 id: self,
@@ -86,6 +145,7 @@ impl ProviderType {
                 credential: "required",
                 lists_models: true,
                 priced: true,
+                kinds: &Kind::ALL,
             },
             ProviderType::Gemini => TypeInfo {
                 id: self,
@@ -97,6 +157,9 @@ impl ProviderType {
                 credential: "required",
                 lists_models: true,
                 priced: true,
+                // No transcription endpoint: a recording is written down by a chat model
+                // that takes audio.
+                kinds: &[Kind::Chat, Kind::Embedding, Kind::Image, Kind::Speech],
             },
             ProviderType::OpenaiCompatible => TypeInfo {
                 id: self,
@@ -108,6 +171,8 @@ impl ProviderType {
                 credential: "optional",
                 lists_models: true,
                 priced: false,
+                // Whichever of the five the server behind it answers.
+                kinds: &Kind::ALL,
             },
         }
     }
@@ -222,6 +287,7 @@ impl Capabilities {
 pub struct Model {
     pub provider_id: String,
     pub model_id: String,
+    pub kind: Kind,
     pub enabled: bool,
     /// Set when the panel said what the model can do; otherwise the release's table answers.
     pub capabilities: Option<Capabilities>,
@@ -352,6 +418,14 @@ mod tests {
         assert!(!valid_id(""));
         assert!(!valid_id("a/b"));
         assert!(!valid_id("has space"));
+    }
+
+    #[test]
+    fn every_kind_reads_back_from_its_name_and_serialises_the_same() {
+        for kind in Kind::ALL {
+            assert_eq!(Kind::parse(kind.as_str()), Some(kind));
+            assert_eq!(serde_json::to_value(kind).unwrap(), kind.as_str());
+        }
     }
 
     #[test]

@@ -75,6 +75,12 @@ jobs:
       # mistake in either `cfg(all(...))`.
       - run: cargo build --no-default-features --features openai,embeddings
       - run: cargo build --no-default-features --features gemini,embeddings
+      - run: cargo build --no-default-features --features image-generation
+      - run: cargo build --no-default-features --features audio
+      - run: cargo build --no-default-features --features openai,image-generation
+      - run: cargo build --no-default-features --features openai,audio
+      - run: cargo build --no-default-features --features gemini,image-generation
+      - run: cargo build --no-default-features --features gemini,audio
       - run: cargo build --no-default-features --features testkit
       - run: cargo build --no-default-features --features retry
       - run: cargo build --no-default-features --features tracing

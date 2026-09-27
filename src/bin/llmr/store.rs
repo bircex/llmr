@@ -9,7 +9,7 @@
 //! only inside that closure, so no lock is ever held across an await.
 
 use crate::crypto::MasterKey;
-use crate::records::{Capabilities, Model, Provider, ProviderType, RouteSpec};
+use crate::records::{Capabilities, Kind, Model, Provider, ProviderType, RouteSpec};
 use crate::usage::{Cost, Grouping, Outcome, Tokens, UsageFilter, UsageRecord, UsageTotals};
 use llmr::Reach;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -116,8 +116,12 @@ CREATE INDEX IF NOT EXISTS usage_provider ON usage (provider_id, at);
 const CLI_PROVIDERS_V3: &str =
     "DELETE FROM providers WHERE type IN ('claude-code', 'codex', 'gemini-cli')";
 
+/// Version 4: what each model is for — chat, embedding, image, speech or transcription —
+/// which decides the endpoint that serves it. Every model before this one was a chat model.
+const MODEL_KINDS_V4: &str = "ALTER TABLE models ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'";
+
 /// The schema version this build writes. Raised with a migration, never edited in place.
-const VERSION: i64 = 3;
+const VERSION: i64 = 4;
 
 /// What is sealed into `meta` so a wrong master key is caught at startup.
 const KEY_CHECK: &[u8] = b"llmr-master-key-check";
@@ -179,6 +183,9 @@ impl Store {
                     "removed the command line tool providers: llmr no longer runs command line tools"
                 );
             }
+        }
+        if version < 4 {
+            conn.execute_batch(MODEL_KINDS_V4)?;
         }
         conn.pragma_update(None, "user_version", VERSION)?;
 
@@ -352,9 +359,13 @@ impl Store {
 
     fn read_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<Model> {
         let capabilities: Option<String> = row.get("capabilities")?;
+        let kind: String = row.get("kind")?;
         Ok(Model {
             provider_id: row.get("provider_id")?,
             model_id: row.get("model_id")?,
+            // A kind this build does not know is a row from a newer llmr. Read as chat, the
+            // one kind every provider serves, and the gateway treats it like any other.
+            kind: Kind::parse(&kind).unwrap_or_default(),
             enabled: row.get("enabled")?,
             capabilities: capabilities.and_then(|c| serde_json::from_str::<Capabilities>(&c).ok()),
             updated_at: row.get("updated_at")?,
@@ -378,14 +389,15 @@ impl Store {
             .transpose()
             .map_err(|e| StoreError::Failed(e.to_string()))?;
         self.conn.execute(
-            "INSERT INTO models (provider_id, model_id, enabled, capabilities, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5) \
+            "INSERT INTO models (provider_id, model_id, kind, enabled, capabilities, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
              ON CONFLICT (provider_id, model_id) DO UPDATE SET \
-             enabled = excluded.enabled, capabilities = excluded.capabilities, \
-             updated_at = excluded.updated_at",
+             kind = excluded.kind, enabled = excluded.enabled, \
+             capabilities = excluded.capabilities, updated_at = excluded.updated_at",
             params![
                 model.provider_id,
                 model.model_id,
+                model.kind.as_str(),
                 model.enabled,
                 capabilities,
                 now()
@@ -761,6 +773,7 @@ mod tests {
             .put_model(&Model {
                 provider_id: "a".into(),
                 model_id: "m".into(),
+                kind: crate::records::Kind::Chat,
                 enabled: true,
                 capabilities: Some(Capabilities {
                     tools: true,
@@ -786,6 +799,7 @@ mod tests {
         let result = store.put_model(&Model {
             provider_id: "nobody".into(),
             model_id: "m".into(),
+            kind: crate::records::Kind::Chat,
             enabled: true,
             capabilities: None,
             updated_at: 0,

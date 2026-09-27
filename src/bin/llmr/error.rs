@@ -73,6 +73,22 @@ impl ApiError {
         error
     }
 
+    /// A model or route set of one kind, asked for at another kind's endpoint.
+    pub fn wrong_endpoint(model: &str, kind: crate::records::Kind) -> Self {
+        let mut error = Self::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "wrong_endpoint",
+            format!(
+                "{model:?} is a {} model; send it to {}",
+                kind.as_str(),
+                kind.endpoint()
+            ),
+        );
+        error.param = Some("model".into());
+        error
+    }
+
     /// No such thing, on the management API.
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(
