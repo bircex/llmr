@@ -256,6 +256,26 @@ impl Store {
     }
 
     /// The credential in the clear, for building the provider that uses it.
+    /// Replaces a provider's credential with `after`, if it still is `before`. `false` when
+    /// it has changed meanwhile, which is the panel replacing it, and then it is left alone.
+    ///
+    /// For a sign in a command line tool refreshed: the hint stays as it was.
+    pub fn swap_credential(&mut self, id: &str, before: &str, after: &str) -> StoreResult<bool> {
+        let provider = self.provider(id)?;
+        if self.open_credential(&provider)?.as_deref() != Some(before) {
+            return Ok(false);
+        }
+        let sealed = self
+            .key
+            .seal(after.as_bytes())
+            .map_err(StoreError::Failed)?;
+        let changed = self.conn.execute(
+            "UPDATE providers SET credential = ?2 WHERE id = ?1",
+            params![id, sealed],
+        )?;
+        Ok(changed == 1)
+    }
+
     pub fn open_credential(&self, provider: &Provider) -> StoreResult<Option<String>> {
         let Some(sealed) = &provider.credential else {
             return Ok(None);
@@ -511,6 +531,7 @@ impl Store {
              SUM(latency_ms), \
              SUM(cost_status = 'priced'), SUM(cost_status = 'partial'), \
              SUM(cost_status = 'unpriced'), SUM(cost_status = 'free'), \
+             SUM(cost_status = 'subscription'), \
              currency, SUM(cost_micros) \
              FROM usage WHERE {where_} \
              GROUP BY key, currency ORDER BY key",
@@ -539,9 +560,10 @@ impl Store {
                     partial: row.get::<_, Option<i64>>(13)?.unwrap_or(0),
                     unpriced: row.get::<_, Option<i64>>(14)?.unwrap_or(0),
                     free: row.get::<_, Option<i64>>(15)?.unwrap_or(0),
+                    subscription: row.get::<_, Option<i64>>(16)?.unwrap_or(0),
                     cost: match (
-                        row.get::<_, Option<String>>(16)?,
-                        row.get::<_, Option<i64>>(17)?,
+                        row.get::<_, Option<String>>(17)?,
+                        row.get::<_, Option<i64>>(18)?,
                     ) {
                         (Some(currency), Some(micros)) => vec![(currency, micros)],
                         _ => Vec::new(),

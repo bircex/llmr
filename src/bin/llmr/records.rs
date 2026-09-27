@@ -161,6 +161,9 @@ fn reach_name<S: serde::Serializer>(
 
 pub const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
+/// The hint stored for a subscription's sign in, in place of its last four characters.
+pub const SUBSCRIPTION_HINT: &str = "subscription";
+
 /// One stored provider. The credential never leaves the store in the clear; the API shows
 /// only whether there is one and its last four characters.
 #[derive(Debug, Clone)]
@@ -201,7 +204,13 @@ impl Provider {
             "reach": self.effective_reach().map(Reach::as_str),
             "timeout_secs": self.timeout_secs,
             "enabled": self.enabled,
-            "credential": self.credential_hint.as_ref().map(|hint| format!("…{hint}")),
+            // A subscription's sign in has no last four characters worth showing.
+            "credential": self.credential_hint.as_ref().map(|hint| {
+                if hint == SUBSCRIPTION_HINT { hint.clone() } else { format!("…{hint}") }
+            }),
+            "auth": self.provider_type.tool().and(self.credential_hint.as_ref()).map(|hint| {
+                if hint == SUBSCRIPTION_HINT { "subscription" } else { "api-key" }
+            }),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         })

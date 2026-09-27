@@ -1298,10 +1298,38 @@ way an API provider's status is: a 401 is a rejected credential that is not retr
 falls through. Without that every failure would be transient, and a revoked key would be
 retried on every request.
 
-**The key is an API key.** A subscription login (Claude Pro or Max, ChatGPT) is for a
-person's own use of the tool, and a router serving other callers is not that. Claude Code's
-`--bare` mode, which keeps a call from reading hooks, plugins and memory, reads only an API
-key in any case.
+**A subscription is the point.** llmr is run by whoever installs it, for their own projects,
+and a flat plan is what makes calling a model through a command line tool worth it: at API
+rates it would be the same model with a process in front. So each tool takes its own
+subscription's sign in, and an API key as the fallback.
+
+**The tool's own sign in, not a copy of its protocol.** llmr never speaks the vendors'
+OAuth. It hands each tool what that tool writes after signing in (Claude Code's token in
+`CLAUDE_CODE_OAUTH_TOKEN`, Codex's `auth.json`, Gemini CLI's `oauth_creds.json`) where the
+tool reads it, and lets the tool refresh it. A copy of a refresh flow breaks the day the
+vendor changes it; the tool is updated with the vendor.
+
+**A refreshed sign in is read back, because the old one stops working.** Codex's refresh
+token is replaced on every refresh, so a call that refreshed leaves the only valid copy in
+its directory. The file is read before the directory goes, and sealed into the store in
+place of the old, compared first against what the store holds, so a credential the panel
+changed meanwhile is not overwritten with the old account's.
+
+**A Codex call that will refresh runs alone.** Two calls refreshing at once would both spend
+one refresh token, and the second would be refused. Codex refreshes when its access token has
+under five minutes left (measured against 0.157.1), so a call inside six minutes of that takes
+the provider's sign in to itself, and every other call shares it. Gemini CLI's refresh token
+does not change, so its calls always share.
+
+**Claude Code's full mode for a subscription.** `--bare` reads only an API key. Without it
+Claude Code would read hooks, plugins, memory and `CLAUDE.md`, but the empty home and working
+directory have none, and MCP servers are shut out with `--strict-mcp-config`.
+
+**The request's system prompt replaces the tool's.** Claude Code and Gemini CLI otherwise
+send their own agent instructions, over twenty kilobytes each, on every call: spent from the
+plan, and the voice of a coding agent in every answer. Codex keeps its own, because the
+ChatGPT backend accepts only those; the system prompt goes at the top of the conversation
+instead.
 
 **Usage is read in each tool's own words.** Codex's input count includes the cached part and
 its output count includes reasoning; Gemini CLI's prompt count includes the cached part and

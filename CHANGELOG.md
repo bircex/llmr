@@ -51,6 +51,15 @@ is published as a crate any more.
   npm with `?check_latest=true`; `POST /manage/clis/{name}/update` installs another version
   onto the volume inside the running container; `POST /manage/clis/{name}/reset` goes back
   to the image's. `LLMR_NPM_REGISTRY` for a mirror.
+- Command line tools signed in with your own subscription: Claude Code with the token
+  `claude setup-token` prints, Codex with its `auth.json`, Gemini CLI with its
+  `oauth_creds.json`, told apart from an API key by their shape. Their calls cost
+  `subscription` (covered by the plan) rather than a per token price. A sign in the tool
+  refreshes is read back and sealed into the database, a Codex call about to refresh runs
+  alone so two calls never spend one refresh token, and a credential changed through the API
+  wins over a refresh in flight. Providers show `"auth": "subscription"` or `"api-key"`.
+- Claude Code and Gemini CLI are given the request's system prompt in place of their own
+  agent instructions, which were tens of kilobytes on every call.
 
 ### Changed
 

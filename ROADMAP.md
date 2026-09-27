@@ -54,9 +54,9 @@ In order:
    signatures can cross; Bedrock (needs a SigV4 signing transport); embeddings.
 4. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
    the client API therefore refuses.
-5. **Open:** signing a command line tool in with a subscription (Claude Pro or Max, ChatGPT)
-   instead of an API key. Left out on purpose, see docs/DESIGN.md: it is a question about the
-   vendors' terms for a shared router before it is a question about code.
+5. Signing a command line tool in from the panel: the tool's own sign in run inside the
+   container and driven over the API (a device code for Codex, a pasted code for Claude Code
+   and Gemini CLI), so nobody has to run it elsewhere and paste the result.
 
 ---
 

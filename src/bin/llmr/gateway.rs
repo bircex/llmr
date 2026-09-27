@@ -73,6 +73,8 @@ pub struct Built {
     /// The vendor's published prices, when the endpoint is the vendor's own. A price book
     /// for OpenAI's API says nothing about what Groq charges for the same shape.
     pub prices: Option<Arc<PriceBook>>,
+    /// A command line tool signed in with a subscription: its calls are covered by the plan.
+    pub subscription: bool,
 }
 
 /// Everything the store holds, read in one go, with credentials opened.
@@ -276,6 +278,9 @@ impl Gateway {
         if built.reach.is_on_device() {
             return Cost::Free;
         }
+        if built.subscription {
+            return Cost::Subscription;
+        }
         let Some(book) = &built.prices else {
             return Cost::Unpriced;
         };
@@ -372,28 +377,34 @@ pub fn build_provider(
     tools: &Arc<Toolbox>,
 ) -> Result<Built, String> {
     if let Some(tool) = record.provider_type.tool() {
-        let key = credential.ok_or("no credential is set, and this provider type needs one")?;
+        let credential =
+            credential.ok_or("no credential is set, and this provider type needs one")?;
         // Whatever the panel named. Capabilities are not asked for: through a command line
         // tool every model is text in, text out.
         let serves = rows.iter().map(|m| m.model_id.clone()).collect();
-        let prices = record.base_url.is_none().then(|| match tool {
+        let provider = CliProvider::new(
+            record.id.clone(),
+            tool,
+            credential,
+            record.base_url.clone(),
+            serves,
+            Duration::from_secs(record.timeout_secs),
+            tools.clone(),
+        )?;
+        let subscription = provider.subscription();
+        // A subscription is covered by its plan; an API key pays the vendor's API rates, on
+        // the vendor's own endpoint.
+        let prices = (!subscription && record.base_url.is_none()).then(|| match tool {
             crate::cli::Tool::ClaudeCode => anthropic::api::shipped_prices(),
             crate::cli::Tool::Codex => openai::api::shipped_prices(),
             crate::cli::Tool::GeminiCli => gemini::api::shipped_prices(),
         });
         return Ok(Built {
-            provider: Arc::new(CliProvider::new(
-                record.id.clone(),
-                tool,
-                Secret::new("provider-credential", key),
-                record.base_url.clone(),
-                serves,
-                Duration::from_secs(record.timeout_secs),
-                tools.clone(),
-            )),
+            provider: Arc::new(provider),
             provider_type: record.provider_type,
             reach: llmr::Reach::LocalCli,
             prices: prices.map(Arc::new),
+            subscription,
         });
     }
 
@@ -470,6 +481,7 @@ pub fn build_provider(
         provider_type: record.provider_type,
         reach,
         prices: prices.map(Arc::new),
+        subscription: false,
     })
 }
 

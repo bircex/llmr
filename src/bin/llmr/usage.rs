@@ -10,7 +10,7 @@
 //!
 //! # What a cost is
 //!
-//! Four answers, and none of them is a zero standing in for "nobody knows":
+//! Five answers, and none of them is a zero standing in for "nobody knows":
 //!
 //! | `cost_status` | |
 //! |---|---|
@@ -18,6 +18,7 @@
 //! | `partial` | Priced, but some usage fields were not reported, so it is a floor |
 //! | `unpriced` | A paid provider with no known rate for the model, or no usage reported |
 //! | `free` | A self hosted model: tokens are counted and nothing is charged |
+//! | `subscription` | A command line tool signed in with a subscription: tokens are counted and the plan covers them |
 //!
 //! A request that failed before any provider answered has no cost at all.
 
@@ -126,6 +127,8 @@ pub enum Cost {
     },
     Unpriced,
     Free,
+    /// Covered by a subscription's flat fee: nothing is charged per call.
+    Subscription,
     /// No provider answered, so there is nothing to cost.
     None,
 }
@@ -146,6 +149,7 @@ impl Cost {
             Cost::Priced { partial: true, .. } => Some("partial"),
             Cost::Unpriced => Some("unpriced"),
             Cost::Free => Some("free"),
+            Cost::Subscription => Some("subscription"),
             Cost::None => None,
         }
     }
@@ -172,6 +176,7 @@ impl Cost {
                 partial: s == "partial",
             },
             (Some("free"), ..) => Cost::Free,
+            (Some("subscription"), ..) => Cost::Subscription,
             (Some(_), ..) => Cost::Unpriced,
             (None, ..) => Cost::None,
         }
@@ -307,6 +312,7 @@ pub struct UsageTotals {
     pub partial: i64,
     pub unpriced: i64,
     pub free: i64,
+    pub subscription: i64,
     /// One amount per currency, in micros. Never summed across currencies.
     pub cost: Vec<(String, i64)>,
 }
@@ -325,6 +331,7 @@ impl UsageTotals {
         self.partial += other.partial;
         self.unpriced += other.unpriced;
         self.free += other.free;
+        self.subscription += other.subscription;
         for (currency, micros) in other.cost {
             match self.cost.iter_mut().find(|(c, _)| *c == currency) {
                 Some((_, total)) => *total = total.saturating_add(micros),
@@ -356,6 +363,7 @@ impl UsageTotals {
             "partial": self.partial,
             "unpriced": self.unpriced,
             "free": self.free,
+            "subscription": self.subscription,
         });
         if let Some(name) = key_name {
             view[name] = json!(self.key);
