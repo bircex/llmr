@@ -22,10 +22,12 @@
 //! swapped in, so the next request sees it. A credential is write only: it goes in on a
 //! `POST` or `PATCH` and comes back as its last four characters.
 
-use crate::cli::{Tool, Toolbox, UpdateError};
+use crate::cli::{Auth, Tool, Toolbox, UpdateError};
 use crate::error::ApiError;
 use crate::gateway::{build_provider, registry, Gateway, Snapshot};
-use crate::records::{valid_id, Capabilities, Model, Provider, ProviderType, RouteSpec};
+use crate::records::{
+    valid_id, Capabilities, Model, Provider, ProviderType, RouteSpec, SUBSCRIPTION_HINT,
+};
 use crate::server::AppState;
 use crate::usage::{Grouping, UsageFilter, UsageTotals};
 use axum::extract::{Path, Query, State};
@@ -216,6 +218,19 @@ fn read_timeout(secs: u64) -> Result<u64, ApiError> {
     }
 }
 
+/// Checks a credential against its type. For a subscription's sign in, the hint to store in
+/// place of its last four characters, which would be the end of a JSON document.
+fn read_credential(provider_type: ProviderType, plain: &str) -> Result<Option<String>, ApiError> {
+    let Some(tool) = provider_type.tool() else {
+        return Ok(None);
+    };
+    match Auth::of(tool, plain) {
+        Ok(Auth::Subscription) => Ok(Some(SUBSCRIPTION_HINT.to_string())),
+        Ok(Auth::ApiKey) => Ok(None),
+        Err(why) => Err(ApiError::invalid_param("credential", why)),
+    }
+}
+
 /// Whether a provider as it stands can be built, said the way a panel shows it.
 fn complete(provider: &Provider) -> Result<(), ApiError> {
     let info = provider.provider_type.info();
@@ -295,6 +310,10 @@ async fn create_provider(State(state): Shared, raw: axum::body::Bytes) -> Answer
     let reach = new.reach.as_deref().map(read_reach).transpose()?;
     let timeout_secs = read_timeout(new.timeout_secs.unwrap_or(120))?;
     let credential = new.credential.filter(|c| !c.trim().is_empty());
+    let hint = match &credential {
+        Some(plain) => read_credential(provider_type, plain)?,
+        None => None,
+    };
 
     // Checked before anything is written, against the provider as it would be stored: the
     // credential only matters here as present or absent.
@@ -316,9 +335,9 @@ async fn create_provider(State(state): Shared, raw: axum::body::Bytes) -> Answer
         .db
         .run(move |store| {
             if let Some(plain) = credential {
-                let (sealed, hint) = store.seal_credential(plain.trim())?;
+                let (sealed, last_four) = store.seal_credential(plain.trim())?;
                 provider.credential = Some(sealed);
-                provider.credential_hint = Some(hint);
+                provider.credential_hint = Some(hint.unwrap_or(last_four));
             }
             store.insert_provider(&provider)?;
             store.provider(&provider.id)
@@ -354,6 +373,18 @@ async fn update_provider(
         None => None,
     };
     let timeout_secs = change.timeout_secs.map(read_timeout).transpose()?;
+    let hint = match &change.credential {
+        Some(Some(plain)) if !plain.trim().is_empty() => {
+            let lookup = id.clone();
+            let provider_type = state
+                .db
+                .run(move |store| store.provider(&lookup))
+                .await?
+                .provider_type;
+            read_credential(provider_type, plain)?
+        }
+        _ => None,
+    };
 
     let after = state
         .db
@@ -373,9 +404,9 @@ async fn update_provider(
             }
             match change.credential {
                 Some(Some(plain)) if !plain.trim().is_empty() => {
-                    let (sealed, hint) = store.seal_credential(plain.trim())?;
+                    let (sealed, last_four) = store.seal_credential(plain.trim())?;
                     after.credential = Some(sealed);
-                    after.credential_hint = Some(hint);
+                    after.credential_hint = Some(hint.unwrap_or(last_four));
                 }
                 Some(_) => {
                     after.credential = None;
@@ -1854,6 +1885,69 @@ mod tests {
         )
         .await;
         assert!(status.is_client_error(), "{status}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_subscription_is_told_apart_from_a_key_and_its_calls_cost_nothing_per_call() {
+        let (app, root) = gateway_with_claude_code("subscription");
+
+        // A sign in file that is not the tool's is refused, not stored as a key.
+        let (status, refused) = call(
+            &app,
+            "POST",
+            "/manage/providers",
+            Some(json!({ "id": "cx", "type": "codex", "credential": "{\"access_token\": \"x\"}" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(refused["error"]["param"], "credential");
+
+        let (status, created) = call(
+            &app,
+            "POST",
+            "/manage/providers",
+            Some(
+                json!({ "id": "max", "type": "claude-code", "credential": "sk-ant-oat01-secret" }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert_eq!(created["auth"], "subscription");
+        assert_eq!(created["credential"], "subscription");
+        let (_, keyed) = call(
+            &app,
+            "POST",
+            "/manage/providers",
+            Some(json!({ "id": "metered", "type": "claude-code", "credential": "sk-ant-api03-abcd" })),
+        )
+        .await;
+        assert_eq!(keyed["auth"], "api-key");
+        assert_eq!(keyed["credential"], "…abcd");
+
+        call(
+            &app,
+            "PUT",
+            "/manage/providers/max/models/claude-haiku-4-5",
+            Some(json!({ "enabled": true })),
+        )
+        .await;
+        let (status, reply) = call(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({ "model": "max/claude-haiku-4-5", "messages": [{ "role": "user", "content": "hi" }] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_eq!(reply["llmr_cost"], json!({ "status": "subscription" }));
+
+        let totals = usage_after(&app, "", 1).await;
+        assert_eq!(totals["total"]["subscription"], 1);
+        assert_eq!(totals["total"]["cost"], json!([]));
+        // Covered by a plan is known, not missing: the total is complete.
+        assert_eq!(totals["total"]["cost_complete"], true);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -80,9 +80,12 @@ status, is in [docs/MANAGEMENT.md](docs/MANAGEMENT.md).
 ## Command line tools
 
 Claude Code, Codex and Gemini CLI are installed in the image and can be providers like any
-other: `"type": "claude-code"` with an Anthropic API key, `codex` with an OpenAI key,
-`gemini-cli` with a Gemini key. Each request runs the tool once, in an empty directory of its
-own, with its own tools switched off: it answers the prompt and can do nothing else.
+other: `"type": "claude-code"`, `codex` or `gemini-cli`, **signed in with your own
+subscription** (Claude Pro or Max, ChatGPT, a Google account) so calls are covered by the plan
+instead of charged per token, or with an API key. Each request runs the tool once, in an empty
+directory of its own, with its own tools switched off: it answers the prompt and can do
+nothing else. How to get each sign in is in
+[docs/MANAGEMENT.md](docs/MANAGEMENT.md#signing-in-with-a-subscription).
 
 ```sh
 curl localhost:8080/manage/clis?check_latest=true                    # versions, and the newest on npm
@@ -139,8 +142,9 @@ curl "localhost:8080/manage/usage?group_by=model&from=$(date -d yesterday +%s)"
 ```
 
 Cost is the provider's published rate times the usage it reported, one amount per currency.
-A self hosted model is `free`; a paid provider llmr has no rate for is `unpriced`, and a total
-that includes one says it is incomplete rather than presenting a floor as the bill.
+A self hosted model is `free`; a command line tool signed in with a subscription is
+`subscription`, covered by the plan; a paid provider llmr has no rate for is `unpriced`, and a
+total that includes one says it is incomplete rather than presenting a floor as the bill.
 
 ## Documentation
 
@@ -156,8 +160,8 @@ that includes one says it is incomplete rather than presenting a floor as the bi
 
 ## Not there yet
 
-- **Signing a command line tool in with a subscription** (Claude Pro or Max, ChatGPT)
-  instead of an API key.
+- **Signing a command line tool in from the panel**, without running the tool's own sign in
+  somewhere else first.
 - Bedrock (needs a SigV4 signing transport), an Anthropic Messages endpoint (`/v1/messages`),
   and embeddings.
 

@@ -210,6 +210,8 @@ async fn serve() -> ExitCode {
         .unwrap_or(32);
 
     let db = Db::new(store);
+    // Where a command line tool's refreshed sign in is written back to.
+    tools.attach(db.clone());
     let (recorder, writer) = usage::Recorder::start(db.clone());
     let state = Arc::new(AppState {
         live: Live::new(gateway),

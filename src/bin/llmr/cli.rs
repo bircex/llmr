@@ -21,6 +21,22 @@
 //!
 //! The tool runs in its own process group, and the whole group is killed when the call ends,
 //! times out or is abandoned, so a wrapper's children do not outlive it.
+//!
+//! # API key or subscription
+//!
+//! Each tool takes either the vendor's API key or the sign in of a subscription:
+//!
+//! | Tool | Subscription credential | How it reaches the tool |
+//! |---|---|---|
+//! | Claude Code | the token `claude setup-token` prints, `sk-ant-oat…` | `CLAUDE_CODE_OAUTH_TOKEN` |
+//! | Codex | the `auth.json` `codex login` writes | `$CODEX_HOME/auth.json` |
+//! | Gemini CLI | the `oauth_creds.json` a Google sign in writes | `~/.gemini/oauth_creds.json` |
+//!
+//! Codex and Gemini CLI refresh their tokens themselves and write them back to the file, and
+//! Codex's refresh token changes every time. So the file is read back after every call, and a
+//! new one is sealed into the store in place of the old; a call started with the old refresh
+//! token after that would fail. A Codex call that will refresh (its access token has less than
+//! six minutes left) runs alone, so two calls cannot spend the same refresh token.
 
 use crate::records::ProviderType;
 use async_trait::async_trait;
@@ -86,15 +102,6 @@ impl Tool {
             Tool::ClaudeCode => "@anthropic-ai/claude-code",
             Tool::Codex => "@openai/codex",
             Tool::GeminiCli => "@google/gemini-cli",
-        }
-    }
-
-    /// Where the tool reads its API key from.
-    fn key_variable(self) -> &'static str {
-        match self {
-            Tool::ClaudeCode => "ANTHROPIC_API_KEY",
-            Tool::Codex => "CODEX_API_KEY",
-            Tool::GeminiCli => "GEMINI_API_KEY",
         }
     }
 
@@ -179,17 +186,201 @@ const CODEX_FEATURES_OFF: [&str; 19] = [
     "memories",
 ];
 
-/// Gemini CLI's settings for a call: API key auth, no tools, one attempt.
+/// Gemini CLI's settings for a call: the sign in to use, no tools, one attempt.
 ///
 /// `tools.core` is an allow list, so an empty one also covers tools a later version adds.
-const GEMINI_SETTINGS: &str = r#"{
-  "security": { "auth": { "selectedType": "gemini-api-key" } },
-  "tools": { "core": [] },
-  "general": { "maxAttempts": 1, "disableAutoUpdate": true, "disableUpdateNag": true },
-  "privacy": { "usageStatisticsEnabled": false },
-  "telemetry": { "enabled": false }
+fn gemini_settings(subscription: bool) -> String {
+    let auth = if subscription {
+        "oauth-personal"
+    } else {
+        "gemini-api-key"
+    };
+    serde_json::json!({
+        "security": { "auth": { "selectedType": auth } },
+        "tools": { "core": [] },
+        "general": { "maxAttempts": 1, "disableAutoUpdate": true, "disableUpdateNag": true },
+        "privacy": { "usageStatisticsEnabled": false },
+        "telemetry": { "enabled": false }
+    })
+    .to_string()
 }
-"#;
+
+/// The system prompt a call gets when its request has none. Without one, Claude Code and
+/// Gemini CLI send their own, which is tens of kilobytes of instructions for an agent that
+/// edits code: spent from the subscription on every call, and the wrong voice for an answer.
+const DEFAULT_SYSTEM: &str = "You are a helpful assistant.";
+
+/// How long before its access token expires a Codex call refreshes it. Measured: 0.157.1
+/// refreshes with four minutes left and not with seven. A call inside this window runs alone.
+const CODEX_REFRESH_WINDOW_SECS: i64 = 360;
+
+/// A tool's credential: the vendor's API key, or a subscription's sign in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Auth {
+    ApiKey,
+    Subscription,
+}
+
+impl Auth {
+    /// Which kind a credential is, from its shape.
+    ///
+    /// # Errors
+    ///
+    /// When it looks like a sign in file and is not the one this tool writes.
+    pub fn of(tool: Tool, credential: &str) -> Result<Auth, String> {
+        let credential = credential.trim();
+        let json = credential.starts_with('{');
+        match tool {
+            Tool::ClaudeCode if credential.starts_with("sk-ant-oat") => Ok(Auth::Subscription),
+            Tool::ClaudeCode if json => Err(
+                "a Claude Code credential is an API key, or the token `claude setup-token` prints"
+                    .into(),
+            ),
+            Tool::Codex if json => {
+                let doc: Value = serde_json::from_str(credential)
+                    .map_err(|e| format!("this is not the auth.json `codex login` writes: {e}"))?;
+                let tokens = &doc["tokens"];
+                if tokens["access_token"].is_string() && tokens["refresh_token"].is_string() {
+                    Ok(Auth::Subscription)
+                } else {
+                    Err(
+                        "this JSON has no tokens.access_token and tokens.refresh_token: paste the \
+                         auth.json `codex login` writes"
+                            .into(),
+                    )
+                }
+            }
+            Tool::GeminiCli if json => {
+                let doc: Value = serde_json::from_str(credential).map_err(|e| {
+                    format!("this is not the oauth_creds.json a Google sign in writes: {e}")
+                })?;
+                if doc["refresh_token"].is_string() {
+                    Ok(Auth::Subscription)
+                } else {
+                    Err(
+                        "this JSON has no refresh_token: paste the oauth_creds.json a Google \
+                         sign in writes"
+                            .into(),
+                    )
+                }
+            }
+            _ => Ok(Auth::ApiKey),
+        }
+    }
+}
+
+/// A subscription sign in kept in a file the tool rewrites: Codex's and Gemini CLI's.
+///
+/// One per provider, shared by every call and every rebuild of the gateway, because the file
+/// a call hands back can hold a new refresh token that the next call has to use.
+pub struct Login {
+    provider: String,
+    /// Shared by calls; taken alone by a call that is going to refresh.
+    turn: tokio::sync::RwLock<()>,
+    /// What the store held when this was last in step with it, and the newest file.
+    state: std::sync::Mutex<(String, String)>,
+}
+
+impl Login {
+    fn current(&self) -> String {
+        self.state().1.clone()
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, (String, String)> {
+        match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Replaces the sign in with the one a call refreshed it to, if it is still the one the
+    /// call started with. `false` when something replaced it meanwhile.
+    fn advance(&self, before: &str, after: &str) -> bool {
+        let mut state = self.state();
+        if state.1 != before {
+            return false;
+        }
+        state.1 = after.to_string();
+        true
+    }
+
+    /// Records what the store now holds.
+    fn settle(&self, stored: &str) {
+        self.state().0 = stored.to_string();
+    }
+}
+
+/// Whether a Codex `auth.json`'s access token is close enough to expiry that the call will
+/// refresh it. Unreadable counts as yes: running alone is the safe side.
+fn codex_refresh_due(auth_json: &str, now: i64) -> bool {
+    use base64::Engine;
+    let exp = serde_json::from_str::<Value>(auth_json)
+        .ok()
+        .and_then(|doc| doc["tokens"]["access_token"].as_str().map(String::from))
+        .and_then(|jwt| jwt.split('.').nth(1).map(String::from))
+        .and_then(|payload| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload.trim_end_matches('='))
+                .ok()
+        })
+        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+        .and_then(|claims| claims["exp"].as_i64());
+    exp.is_none_or(|exp| exp - now < CODEX_REFRESH_WINDOW_SECS)
+}
+
+/// The file a tool left behind, if it is a sign in worth keeping in place of `before`.
+///
+/// Codex writes its whole `auth.json`. Gemini CLI writes what Google returned on a refresh,
+/// which need not repeat the refresh token, so that is carried over.
+fn refreshed(tool: Tool, before: &str, after: &str) -> Option<String> {
+    let mut doc: Value = serde_json::from_str(after).ok()?;
+    match tool {
+        Tool::Codex => {
+            doc["tokens"]["refresh_token"].as_str()?;
+        }
+        Tool::GeminiCli => {
+            doc["access_token"].as_str()?;
+            if !doc["refresh_token"].is_string() {
+                let old: Value = serde_json::from_str(before).ok()?;
+                doc["refresh_token"] = old["refresh_token"].clone();
+                doc["refresh_token"].as_str()?;
+            }
+        }
+        Tool::ClaudeCode => return None,
+    }
+    let old: Value = serde_json::from_str(before).ok()?;
+    (doc != old).then(|| doc.to_string())
+}
+
+/// Where a subscription's sign in file goes inside a call's home.
+fn login_file(tool: Tool) -> Option<&'static str> {
+    match tool {
+        Tool::Codex => Some(".codex/auth.json"),
+        Tool::GeminiCli => Some(".gemini/oauth_creds.json"),
+        Tool::ClaudeCode => None,
+    }
+}
+
+/// Everything one call of a tool needs.
+struct Invocation<'a> {
+    tool: Tool,
+    auth: Auth,
+    /// The API key, the Claude Code token, or the sign in file's contents.
+    secret: &'a str,
+    base_url: Option<&'a str>,
+    model: &'a str,
+    system: &'a str,
+    prompt: &'a str,
+    timeout: Duration,
+}
+
+/// A finished call, and the sign in file as the tool left it.
+#[derive(Debug)]
+struct Ran {
+    captured: Captured,
+    login_after: Option<String>,
+}
 
 /// Why an update did not happen.
 #[derive(Debug)]
@@ -220,6 +411,10 @@ pub struct Toolbox {
     /// Calls running at once, across every tool. Each is a process of a few hundred MB.
     slots: tokio::sync::Semaphore,
     concurrency: usize,
+    /// Subscription sign ins kept in files, by provider id.
+    logins: std::sync::Mutex<std::collections::HashMap<String, Arc<Login>>>,
+    /// Where a refreshed sign in is written back. Unset in tests that need no store.
+    db: std::sync::OnceLock<crate::store::Db>,
 }
 
 /// Calls that may run at once unless `LLMR_CLI_CONCURRENCY` says otherwise.
@@ -254,6 +449,74 @@ impl Toolbox {
             updating: tokio::sync::Mutex::new(()),
             slots: tokio::sync::Semaphore::new(concurrency),
             concurrency,
+            logins: std::sync::Mutex::new(std::collections::HashMap::new()),
+            db: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Gives the toolbox the store that refreshed sign ins are written back to.
+    pub fn attach(&self, db: crate::store::Db) {
+        let _ = self.db.set(db);
+    }
+
+    /// The sign in a provider's calls share, in step with what the store holds.
+    ///
+    /// The store is the panel's word: when it holds something other than what this was last
+    /// in step with, the panel changed the credential, and that replaces whatever the calls
+    /// had refreshed to.
+    pub fn login(&self, provider: &str, stored: &str) -> Arc<Login> {
+        let mut logins = match self.logins.lock() {
+            Ok(logins) => logins,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let login = logins
+            .entry(provider.to_string())
+            .or_insert_with(|| {
+                Arc::new(Login {
+                    provider: provider.to_string(),
+                    turn: tokio::sync::RwLock::new(()),
+                    state: std::sync::Mutex::new((stored.to_string(), stored.to_string())),
+                })
+            })
+            .clone();
+        let mut state = login.state();
+        if state.0 != stored {
+            *state = (stored.to_string(), stored.to_string());
+        }
+        drop(state);
+        login
+    }
+
+    /// Keeps a sign in a call refreshed: in memory for the next call, and in the store. Neither
+    /// when it was replaced while the call ran, which is the panel changing the credential.
+    async fn keep(&self, login: &Login, before: String, after: String) {
+        if !login.advance(&before, &after) {
+            tracing::info!(
+                provider = %login.provider,
+                "a refreshed sign in was not kept: the credential was replaced meanwhile"
+            );
+            return;
+        }
+        let Some(db) = self.db.get() else {
+            login.settle(&after);
+            return;
+        };
+        let provider = login.provider.clone();
+        let written = after.clone();
+        match db
+            .run_mut(move |store| store.swap_credential(&provider, &before, &written))
+            .await
+        {
+            Ok(true) => login.settle(&after),
+            Ok(false) => tracing::info!(
+                provider = %login.provider,
+                "a refreshed sign in was not written back: the credential was replaced meanwhile"
+            ),
+            Err(e) => tracing::warn!(
+                provider = %login.provider,
+                error = %e,
+                "a refreshed sign in could not be written back; the next call uses it from memory"
+            ),
         }
     }
 
@@ -332,15 +595,8 @@ impl Toolbox {
     }
 
     /// Runs one call of a tool, with the prompt on standard input.
-    async fn call(
-        &self,
-        tool: Tool,
-        key: &str,
-        base_url: Option<&str>,
-        model: &str,
-        prompt: &str,
-        timeout: Duration,
-    ) -> llmr::Result<Captured> {
+    async fn call(&self, run: &Invocation<'_>) -> llmr::Result<Ran> {
+        let tool = run.tool;
         let installed = self.installed(tool).ok_or_else(|| {
             llmr::Error::Unsupported(format!(
                 "{} is not installed; POST /manage/clis/{}/update installs it",
@@ -351,27 +607,27 @@ impl Toolbox {
         // Waiting for a slot counts against the call's own time. A call that cannot get one in
         // time is transient, so the route set moves on rather than queueing without end.
         let started = std::time::Instant::now();
-        let _slot = match tokio::time::timeout(timeout, self.slots.acquire()).await {
+        let _slot = match tokio::time::timeout(run.timeout, self.slots.acquire()).await {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) | Err(_) => {
                 return Err(llmr::Error::Transient(format!(
                 "all {} command line slots stayed busy for {}s; LLMR_CLI_CONCURRENCY sets how many",
                 self.concurrency,
-                timeout.as_secs()
+                run.timeout.as_secs()
             )))
             }
         };
-        let timeout = timeout.saturating_sub(started.elapsed());
+        let timeout = run.timeout.saturating_sub(started.elapsed());
         let home = self.run_dir().map_err(|e| {
             llmr::Error::Transient(format!("preparing a directory for the call: {e}"))
         })?;
-        prepare_home(tool, &home.0).map_err(|e| {
+        prepare_home(run, &home.0).map_err(|e| {
             llmr::Error::Transient(format!("preparing a directory for the call: {e}"))
         })?;
 
         let mut env = self.base_env(installed.program.parent(), &home.0);
-        env.extend(tool_env(tool, key, base_url, &home.0));
-        let args = arguments(tool, model, base_url);
+        env.extend(tool_env(run, &home.0));
+        let args = arguments(run, &home.0);
 
         let mut command = tokio::process::Command::new(&installed.program);
         command
@@ -379,10 +635,18 @@ impl Toolbox {
             .current_dir(&home.0)
             .env_clear()
             .envs(env);
-        let captured = capture(command, prompt.as_bytes(), timeout).await;
+        let captured = capture(command, run.prompt.as_bytes(), timeout).await;
+        // Read before the directory goes: the tool may have refreshed its sign in.
+        let login_after = match (run.auth, login_file(tool)) {
+            (Auth::Subscription, Some(file)) => std::fs::read_to_string(home.0.join(file)).ok(),
+            _ => None,
+        };
         drop(home);
         match captured {
-            Ok(captured) => Ok(captured),
+            Ok(captured) => Ok(Ran {
+                captured,
+                login_after,
+            }),
             Err(Failure::NotFound) => Err(llmr::Error::Unsupported(format!(
                 "{} could not be started from {}",
                 tool.title(),
@@ -626,75 +890,101 @@ impl Drop for RunDir {
     }
 }
 
-fn prepare_home(tool: Tool, home: &Path) -> std::io::Result<()> {
-    match tool {
+fn prepare_home(run: &Invocation<'_>, home: &Path) -> std::io::Result<()> {
+    let subscription = run.auth == Auth::Subscription;
+    match run.tool {
         Tool::GeminiCli => {
             std::fs::create_dir_all(home.join(".gemini"))?;
-            std::fs::write(home.join(".gemini/settings.json"), GEMINI_SETTINGS)
+            std::fs::write(
+                home.join(".gemini/settings.json"),
+                gemini_settings(subscription),
+            )?;
         }
-        Tool::Codex => std::fs::create_dir_all(home.join(".codex")),
-        Tool::ClaudeCode => Ok(()),
+        Tool::Codex => std::fs::create_dir_all(home.join(".codex"))?,
+        Tool::ClaudeCode => {}
     }
+    if let (true, Some(file)) = (subscription, login_file(run.tool)) {
+        std::fs::write(home.join(file), run.secret)?;
+    }
+    // Codex keeps its own instructions: the ChatGPT backend accepts only those, so the system
+    // prompt goes into the conversation instead.
+    if run.tool != Tool::Codex {
+        std::fs::write(home.join("system.md"), run.system)?;
+    }
+    Ok(())
 }
 
-fn tool_env(tool: Tool, key: &str, base_url: Option<&str>, home: &Path) -> Vec<(String, String)> {
-    let mut env = vec![(tool.key_variable().to_string(), key.to_string())];
-    match tool {
+fn tool_env(run: &Invocation<'_>, home: &Path) -> Vec<(String, String)> {
+    let subscription = run.auth == Auth::Subscription;
+    let mut env: Vec<(String, String)> = Vec::new();
+    let mut set = |name: &str, value: String| env.push((name.to_string(), value));
+    match run.tool {
         Tool::ClaudeCode => {
-            env.push(("CLAUDE_CODE_MAX_RETRIES".into(), "0".into()));
-            env.push((
-                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(),
-                "1".into(),
-            ));
-            env.push(("DISABLE_AUTOUPDATER".into(), "1".into()));
-            if let Some(url) = base_url {
-                env.push(("ANTHROPIC_BASE_URL".into(), url.to_string()));
+            if subscription {
+                set("CLAUDE_CODE_OAUTH_TOKEN", run.secret.to_string());
+            } else {
+                set("ANTHROPIC_API_KEY", run.secret.to_string());
+            }
+            set("CLAUDE_CODE_MAX_RETRIES", "0".into());
+            set("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1".into());
+            set("DISABLE_AUTOUPDATER", "1".into());
+            if let Some(url) = run.base_url {
+                set("ANTHROPIC_BASE_URL", url.to_string());
             }
         }
         Tool::Codex => {
-            env.push((
-                "CODEX_HOME".into(),
-                home.join(".codex").display().to_string(),
-            ));
+            if !subscription {
+                set("CODEX_API_KEY", run.secret.to_string());
+            }
+            set("CODEX_HOME", home.join(".codex").display().to_string());
         }
         Tool::GeminiCli => {
-            if let Some(url) = base_url {
-                env.push(("GOOGLE_GEMINI_BASE_URL".into(), url.to_string()));
+            if subscription {
+                if let Some(url) = run.base_url {
+                    set("CODE_ASSIST_ENDPOINT", url.to_string());
+                }
+            } else {
+                set("GEMINI_API_KEY", run.secret.to_string());
+                if let Some(url) = run.base_url {
+                    set("GOOGLE_GEMINI_BASE_URL", url.to_string());
+                }
             }
+            set(
+                "GEMINI_SYSTEM_MD",
+                home.join("system.md").display().to_string(),
+            );
         }
     }
     env
 }
 
 /// The arguments for one non interactive call, with the prompt on standard input.
-fn arguments(tool: Tool, model: &str, base_url: Option<&str>) -> Vec<String> {
+fn arguments(run: &Invocation<'_>, home: &Path) -> Vec<String> {
+    let subscription = run.auth == Auth::Subscription;
     let mut args: Vec<String> = Vec::new();
     let mut push = |items: &[&str]| args.extend(items.iter().map(|s| (*s).to_string()));
-    match tool {
+    match run.tool {
         Tool::ClaudeCode => {
-            // `--bare` skips hooks, plugins, memory and CLAUDE.md discovery; `--tools ""`
-            // leaves the model nothing to run.
+            // `--tools ""` leaves the model nothing to run. `--bare` also skips hooks, plugins,
+            // memory and CLAUDE.md discovery, and reads only an API key; a subscription token
+            // needs the full mode, where the empty home has none of those to find anyway.
             push(&[
                 "-p",
                 "--output-format",
                 "json",
-                "--bare",
                 "--tools",
                 "",
                 "--no-session-persistence",
-                "--model",
-                model,
+                "--strict-mcp-config",
+                "--exclude-dynamic-system-prompt-sections",
             ]);
+            if !subscription {
+                push(&["--bare"]);
+            }
+            let system = home.join("system.md").display().to_string();
+            push(&["--system-prompt-file", &system, "--model", run.model]);
         }
         Tool::Codex => {
-            // A provider of our own rather than the built in one, because only a configured
-            // provider's retries can be switched off.
-            let url = base_url.unwrap_or(crate::records::OPENAI_BASE_URL);
-            let provider = format!(
-                "model_providers.llmr={{name=\"llmr\",base_url=\"{}\",env_key=\"CODEX_API_KEY\",\
-                 wire_api=\"responses\",request_max_retries=0,stream_max_retries=0}}",
-                toml_escape(url)
-            );
             push(&[
                 "exec",
                 "--json",
@@ -704,23 +994,39 @@ fn arguments(tool: Tool, model: &str, base_url: Option<&str>) -> Vec<String> {
                 "never",
                 "--sandbox",
                 "read-only",
-                "-c",
-                "model_provider=\"llmr\"",
-                "-c",
             ]);
-            args.push(provider);
-            for feature in CODEX_FEATURES_OFF {
-                args.push("-c".into());
-                args.push(format!("features.{feature}=false"));
+            // A provider of our own, because only a configured provider's retries can be
+            // switched off. A subscription with no base URL keeps Codex's own, which is the
+            // one that knows the ChatGPT backend.
+            let provider = match (subscription, run.base_url) {
+                (false, url) => Some(format!(
+                    "model_providers.llmr={{name=\"llmr\",base_url=\"{}\",env_key=\"CODEX_API_KEY\",\
+                     wire_api=\"responses\",request_max_retries=0,stream_max_retries=0}}",
+                    toml_escape(url.unwrap_or(crate::records::OPENAI_BASE_URL))
+                )),
+                (true, Some(url)) => Some(format!(
+                    "model_providers.llmr={{name=\"llmr\",base_url=\"{}\",requires_openai_auth=true,\
+                     wire_api=\"responses\",request_max_retries=0,stream_max_retries=0}}",
+                    toml_escape(url)
+                )),
+                (true, None) => None,
+            };
+            if let Some(provider) = provider {
+                push(&["-c", "model_provider=\"llmr\"", "-c", &provider]);
             }
-            args.extend(
-                ["-c", "web_search=\"disabled\"", "-m", model, "-"]
-                    .iter()
-                    .map(|s| (*s).to_string()),
-            );
+            for feature in CODEX_FEATURES_OFF {
+                push(&["-c", &format!("features.{feature}=false")]);
+            }
+            push(&["-c", "web_search=\"disabled\"", "-m", run.model, "-"]);
         }
         Tool::GeminiCli => {
-            push(&["--output-format", "json", "--skip-trust", "--model", model]);
+            push(&[
+                "--output-format",
+                "json",
+                "--skip-trust",
+                "--model",
+                run.model,
+            ]);
         }
     }
     args
@@ -1070,7 +1376,12 @@ fn read_gemini(out: &Captured) -> llmr::Result<Answer> {
         .ok()
         .or_else(|| trailing_object(&out.stderr));
     let Some(doc) = doc else {
-        return Err(unreadable(tool, out));
+        // A sign in that fails before the JSON output starts says so only in its exit code.
+        return Err(match out.exit_code {
+            Some(41) => failure(tool, Some(401), &first_line(&out.stderr)),
+            Some(42) => failure(tool, Some(400), &first_line(&out.stderr)),
+            _ => unreadable(tool, out),
+        });
     };
 
     if let Some(error) = doc.get("error").filter(|e| !e.is_null()) {
@@ -1120,7 +1431,7 @@ fn read_gemini(out: &Captured) -> llmr::Result<Answer> {
 pub struct CliProvider {
     id: String,
     tool: Tool,
-    key: Secret,
+    credential: Credential,
     base_url: Option<String>,
     /// The models the panel named. A tool cannot be asked what it serves.
     serves: BTreeSet<String>,
@@ -1128,32 +1439,115 @@ pub struct CliProvider {
     toolbox: Arc<Toolbox>,
 }
 
+/// What a provider calls its tool with.
+enum Credential {
+    /// An API key, or Claude Code's subscription token: neither changes.
+    Fixed(Auth, Secret),
+    /// A sign in file the tool rewrites.
+    File(Arc<Login>),
+}
+
 impl CliProvider {
+    /// # Errors
+    ///
+    /// When the credential is a sign in file this tool does not write.
     pub fn new(
         id: String,
         tool: Tool,
-        key: Secret,
+        credential: &str,
         base_url: Option<String>,
         serves: BTreeSet<String>,
         timeout: Duration,
         toolbox: Arc<Toolbox>,
-    ) -> CliProvider {
-        CliProvider {
+    ) -> Result<CliProvider, String> {
+        let auth = Auth::of(tool, credential)?;
+        let credential = match (auth, login_file(tool)) {
+            (Auth::Subscription, Some(_)) => {
+                Credential::File(toolbox.login(&id, credential.trim()))
+            }
+            _ => Credential::Fixed(auth, Secret::new("provider-credential", credential.trim())),
+        };
+        Ok(CliProvider {
             id,
             tool,
-            key,
+            credential,
             base_url,
             serves,
             timeout,
             toolbox,
+        })
+    }
+
+    /// Whether this provider is signed in with a subscription rather than an API key.
+    pub fn subscription(&self) -> bool {
+        match &self.credential {
+            Credential::Fixed(auth, _) => *auth == Auth::Subscription,
+            Credential::File(_) => true,
+        }
+    }
+
+    /// Runs one call, with a sign in file taken in turn and kept when the tool refreshed it.
+    async fn run(&self, model: &str, system: &str, prompt: &str) -> llmr::Result<Captured> {
+        let call = |auth, secret| Invocation {
+            tool: self.tool,
+            auth,
+            secret,
+            base_url: self.base_url.as_deref(),
+            model,
+            system,
+            prompt,
+            timeout: self.timeout,
+        };
+        match &self.credential {
+            Credential::Fixed(auth, secret) => {
+                let secret = secret
+                    .expose_str()
+                    .map_err(|_| llmr::Error::Auth("the stored credential is not text".into()))?;
+                Ok(self.toolbox.call(&call(*auth, secret)).await?.captured)
+            }
+            Credential::File(login) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+                // A Codex call that will refresh runs alone: its refresh token is spent by the
+                // refresh, and a second call holding it would be refused.
+                let alone = self.tool == Tool::Codex && codex_refresh_due(&login.current(), now);
+                let _turn = if alone {
+                    Turn::Alone(login.turn.write().await)
+                } else {
+                    Turn::Shared(login.turn.read().await)
+                };
+                // Read after the turn is taken: a call that ran alone may have just replaced it.
+                let before = login.current();
+                let ran = self
+                    .toolbox
+                    .call(&call(Auth::Subscription, &before))
+                    .await?;
+                if let Some(after) = ran
+                    .login_after
+                    .as_deref()
+                    .and_then(|after| refreshed(self.tool, &before, after))
+                {
+                    self.toolbox.keep(login, before, after).await;
+                }
+                Ok(ran.captured)
+            }
         }
     }
 }
 
-/// The conversation as one prompt, turns labelled so the model can tell who said what.
-fn prompt(request: &ChatRequest) -> String {
+/// A call's hold on a sign in: one of many, or the only one.
+#[allow(dead_code)]
+enum Turn<'a> {
+    Shared(tokio::sync::RwLockReadGuard<'a, ()>),
+    Alone(tokio::sync::RwLockWriteGuard<'a, ()>),
+}
+
+/// The conversation as one prompt, turns labelled so the model can tell who said what. The
+/// system prompt leads it only for a tool that cannot be given one separately.
+fn prompt(request: &ChatRequest, with_system: bool) -> String {
     let mut out = String::new();
-    if let Some(system) = &request.system {
+    if let (true, Some(system)) = (with_system, &request.system) {
         out.push_str(system);
         out.push_str("\n\n");
     }
@@ -1205,19 +1599,12 @@ impl llmr::Provider for CliProvider {
                 request.model
             )));
         }
-        let key = self
-            .key
-            .expose_str()
-            .map_err(|_| llmr::Error::Auth("the stored credential is not text".into()))?;
+        let system = request.system.as_deref().unwrap_or(DEFAULT_SYSTEM);
         let captured = self
-            .toolbox
-            .call(
-                self.tool,
-                key,
-                self.base_url.as_deref(),
+            .run(
                 request.model.as_str(),
-                &prompt(&request),
-                self.timeout,
+                system,
+                &prompt(&request, self.tool == Tool::Codex),
             )
             .await?;
         let answer = read(self.tool, &captured)?;
@@ -1281,6 +1668,33 @@ pub fn fake_tool(image: &Path, tool: Tool, script: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Claude Code call with an API key, for tests about running rather than signing in.
+    fn key_call(timeout: Duration) -> Invocation<'static> {
+        Invocation {
+            tool: Tool::ClaudeCode,
+            auth: Auth::ApiKey,
+            secret: "k",
+            base_url: None,
+            model: "m",
+            system: DEFAULT_SYSTEM,
+            prompt: "hi",
+            timeout,
+        }
+    }
+
+    fn invocation(tool: Tool, auth: Auth, base_url: Option<&'static str>) -> Invocation<'static> {
+        Invocation {
+            tool,
+            auth,
+            secret: "the-secret",
+            base_url,
+            model: "the-model",
+            system: DEFAULT_SYSTEM,
+            prompt: "hi",
+            timeout: Duration::from_secs(1),
+        }
+    }
 
     fn recorded(stdout: &str, stderr: &str, exit_code: i32) -> Captured {
         Captured {
@@ -1369,6 +1783,19 @@ mod tests {
     }
 
     #[test]
+    fn a_gemini_sign_in_refused_before_any_output_is_a_credential_failure() {
+        let refused = recorded(
+            "",
+            "Error authenticating: FatalAuthenticationError: Manual authorization is required\n",
+            41,
+        );
+        assert!(matches!(
+            read(Tool::GeminiCli, &refused),
+            Err(llmr::Error::Auth(_))
+        ));
+    }
+
+    #[test]
     fn output_nobody_can_read_is_transient_when_the_tool_failed_and_unreadable_when_not() {
         for tool in Tool::ALL {
             let crashed = recorded("", "Segmentation fault\n", 139);
@@ -1444,14 +1871,35 @@ mod tests {
 
     #[test]
     fn every_tool_runs_with_its_actions_and_retries_off() {
-        let claude = arguments(Tool::ClaudeCode, "claude-sonnet-5", None);
-        let at = claude.iter().position(|a| a == "--tools").unwrap();
-        assert_eq!(claude[at + 1], "");
-        assert!(claude.contains(&"--bare".to_string()));
+        let home = Path::new("/h");
+        for auth in [Auth::ApiKey, Auth::Subscription] {
+            let claude = arguments(&invocation(Tool::ClaudeCode, auth, None), home);
+            let at = claude.iter().position(|a| a == "--tools").unwrap();
+            assert_eq!(claude[at + 1], "");
+            assert!(claude.contains(&"--strict-mcp-config".to_string()));
+            let at = claude
+                .iter()
+                .position(|a| a == "--system-prompt-file")
+                .unwrap();
+            assert_eq!(claude[at + 1], "/h/system.md");
+            // `--bare` reads only an API key.
+            assert_eq!(claude.contains(&"--bare".to_string()), auth == Auth::ApiKey);
 
-        let codex = arguments(Tool::Codex, "gpt-5.1", Some("http://up\"stream"));
-        assert!(codex.contains(&"features.shell_tool=false".to_string()));
-        assert!(codex.contains(&"web_search=\"disabled\"".to_string()));
+            let codex = arguments(&invocation(Tool::Codex, auth, None), home);
+            assert!(codex.contains(&"features.shell_tool=false".to_string()));
+            assert!(codex.contains(&"web_search=\"disabled\"".to_string()));
+            assert_eq!(codex.last().map(String::as_str), Some("-"));
+
+            let settings: Value =
+                serde_json::from_str(&gemini_settings(auth == Auth::Subscription)).unwrap();
+            assert_eq!(settings["tools"]["core"], serde_json::json!([]));
+            assert_eq!(settings["general"]["maxAttempts"], 1);
+        }
+
+        let codex = arguments(
+            &invocation(Tool::Codex, Auth::ApiKey, Some("http://up\"stream")),
+            home,
+        );
         let provider = codex
             .iter()
             .find(|a| a.starts_with("model_providers.llmr="))
@@ -1460,11 +1908,129 @@ mod tests {
         assert!(provider.contains("stream_max_retries=0"));
         // A quote in a URL cannot end the TOML string early.
         assert!(provider.contains("base_url=\"http://up\\\"stream\""));
-        assert_eq!(codex.last().map(String::as_str), Some("-"));
+    }
 
-        let settings: Value = serde_json::from_str(GEMINI_SETTINGS).unwrap();
-        assert_eq!(settings["tools"]["core"], serde_json::json!([]));
-        assert_eq!(settings["general"]["maxAttempts"], 1);
+    #[test]
+    fn a_credential_is_an_api_key_or_the_sign_in_its_tool_writes() {
+        let codex_login = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"a","refresh_token":"r","id_token":"i","account_id":"x"}}"#;
+        let google_login = r#"{"access_token":"ya29","refresh_token":"1//r","expiry_date":1}"#;
+        let cases = [
+            (Tool::ClaudeCode, "sk-ant-api03-abc", Ok(Auth::ApiKey)),
+            (Tool::ClaudeCode, "sk-ant-oat01-abc", Ok(Auth::Subscription)),
+            (Tool::Codex, "sk-proj-abc", Ok(Auth::ApiKey)),
+            (Tool::Codex, codex_login, Ok(Auth::Subscription)),
+            (Tool::GeminiCli, "AIzaSyabc", Ok(Auth::ApiKey)),
+            (Tool::GeminiCli, google_login, Ok(Auth::Subscription)),
+        ];
+        for (tool, credential, expected) in cases {
+            assert_eq!(
+                Auth::of(tool, credential),
+                expected,
+                "{tool:?} {credential}"
+            );
+        }
+        // The wrong file, or a broken one, is refused rather than sent as a key.
+        assert!(Auth::of(Tool::Codex, google_login).is_err());
+        assert!(Auth::of(Tool::GeminiCli, codex_login).is_err());
+        assert!(Auth::of(Tool::GeminiCli, "{not json").is_err());
+        assert!(Auth::of(Tool::ClaudeCode, codex_login).is_err());
+    }
+
+    #[test]
+    fn each_sign_in_reaches_its_tool_where_the_tool_reads_it() {
+        let home = Path::new("/h");
+        let env = |tool, auth, base| {
+            tool_env(&invocation(tool, auth, base), home)
+                .into_iter()
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        let claude = env(Tool::ClaudeCode, Auth::Subscription, None);
+        assert_eq!(claude["CLAUDE_CODE_OAUTH_TOKEN"], "the-secret");
+        assert!(!claude.contains_key("ANTHROPIC_API_KEY"));
+        let claude = env(Tool::ClaudeCode, Auth::ApiKey, None);
+        assert_eq!(claude["ANTHROPIC_API_KEY"], "the-secret");
+        assert!(!claude.contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+
+        // Codex and Gemini CLI read a subscription from a file, never the environment.
+        let codex = env(Tool::Codex, Auth::Subscription, None);
+        assert!(!codex.values().any(|v| v == "the-secret"));
+        assert_eq!(
+            env(Tool::Codex, Auth::ApiKey, None)["CODEX_API_KEY"],
+            "the-secret"
+        );
+        let gemini = env(Tool::GeminiCli, Auth::Subscription, Some("http://ca"));
+        assert!(!gemini.values().any(|v| v == "the-secret"));
+        assert_eq!(gemini["CODE_ASSIST_ENDPOINT"], "http://ca");
+        assert_eq!(gemini["GEMINI_SYSTEM_MD"], "/h/system.md");
+        let gemini = env(Tool::GeminiCli, Auth::ApiKey, Some("http://g"));
+        assert_eq!(gemini["GEMINI_API_KEY"], "the-secret");
+        assert_eq!(gemini["GOOGLE_GEMINI_BASE_URL"], "http://g");
+
+        // A subscription keeps Codex's own provider, the one that knows the ChatGPT backend,
+        // unless it is pointed somewhere else.
+        let home = Path::new("/h");
+        let own = arguments(&invocation(Tool::Codex, Auth::Subscription, None), home);
+        assert!(!own.iter().any(|a| a.contains("model_provider")));
+        let pointed = arguments(
+            &invocation(Tool::Codex, Auth::Subscription, Some("http://m/v1")),
+            home,
+        );
+        let provider = pointed
+            .iter()
+            .find(|a| a.starts_with("model_providers.llmr="))
+            .unwrap();
+        assert!(provider.contains("requires_openai_auth=true"));
+        assert!(!provider.contains("env_key"));
+    }
+
+    fn codex_login(access_expires_in: i64, refresh: &str) -> String {
+        use base64::Engine;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let claims = serde_json::json!({ "exp": now + access_expires_in });
+        let jwt = format!(
+            "e30.{}.sig",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string())
+        );
+        serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": { "access_token": jwt, "refresh_token": refresh, "id_token": "i", "account_id": "a" },
+            "last_refresh": "2026-09-27T00:00:00Z",
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_codex_call_runs_alone_only_when_it_will_refresh() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert!(!codex_refresh_due(&codex_login(86_400, "r"), now));
+        assert!(!codex_refresh_due(&codex_login(600, "r"), now));
+        assert!(codex_refresh_due(&codex_login(200, "r"), now));
+        assert!(codex_refresh_due(&codex_login(-60, "r"), now));
+        assert!(codex_refresh_due("{}", now));
+    }
+
+    #[test]
+    fn a_refreshed_sign_in_is_kept_whole() {
+        let before = codex_login(10, "rt-1");
+        let after = codex_login(86_400, "rt-2");
+        assert_eq!(refreshed(Tool::Codex, &before, &after), Some(after.clone()));
+        assert_eq!(refreshed(Tool::Codex, &before, &before), None);
+        assert_eq!(refreshed(Tool::Codex, &before, "{}"), None);
+
+        // Google does not repeat the refresh token on a refresh; the old one still holds.
+        let google_before = r#"{"access_token":"a1","refresh_token":"1//r","expiry_date":1}"#;
+        let google_after = r#"{"access_token":"a2","expiry_date":2}"#;
+        let kept: Value =
+            serde_json::from_str(&refreshed(Tool::GeminiCli, google_before, google_after).unwrap())
+                .unwrap();
+        assert_eq!(kept["access_token"], "a2");
+        assert_eq!(kept["refresh_token"], "1//r");
     }
 
     #[cfg(unix)]
@@ -1497,12 +2063,13 @@ printf '{"response":"%s|%s|%s|%s|%s","stats":{"models":{}}}' "$PWD" "$HOME" "$GE
         let provider = CliProvider::new(
             "gem".into(),
             Tool::GeminiCli,
-            Secret::new("provider-credential", "key-for-gem"),
+            "key-for-gem",
             None,
             BTreeSet::from(["gemini-2.5-flash".to_string()]),
             Duration::from_secs(20),
             toolbox.clone(),
-        );
+        )
+        .unwrap();
         let reply = llmr::Provider::chat(
             &provider,
             ChatRequest::new("gemini-2.5-flash", vec![Message::user("hello there")]),
@@ -1525,6 +2092,121 @@ printf '{"response":"%s|%s|%s|%s|%s","stats":{"models":{}}}' "$PWD" "$HOME" "$GE
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A Codex that answers with the refresh token it was given, then refreshes it: what a
+    /// real one does when its access token is about to expire.
+    #[cfg(unix)]
+    const REFRESHING_CODEX: &str = r#"cat > /dev/null
+seen=$(sed 's/.*"refresh_token":"\([^"]*\)".*/\1/' "$CODEX_HOME/auth.json")
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "$seen"
+printf '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n'
+sed "s/\"refresh_token\":\"$seen\"/\"refresh_token\":\"$seen+\"/" "$CODEX_HOME/auth.json" > "$CODEX_HOME/next"
+mv "$CODEX_HOME/next" "$CODEX_HOME/auth.json""#;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refreshed_sign_in_is_used_next_and_written_back_unless_replaced() {
+        use crate::records::{Provider, ProviderType};
+        let root = scratch("refresh");
+        let image = root.join("image");
+        fake_tool(&image, Tool::Codex, REFRESHING_CODEX);
+        let toolbox = Arc::new(Toolbox::new(image, &root.join("data")));
+        toolbox.prepare().unwrap();
+
+        let key =
+            crate::crypto::MasterKey::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .unwrap();
+        let db = crate::store::Db::new(crate::store::Store::in_memory(key).unwrap());
+        let first = codex_login(86_400, "rt");
+        let stored = first.clone();
+        db.run_mut(move |store| {
+            let (sealed, _) = store.seal_credential(&stored)?;
+            store.insert_provider(&Provider {
+                id: "cx".into(),
+                provider_type: ProviderType::Codex,
+                base_url: None,
+                reach: None,
+                timeout_secs: 20,
+                enabled: true,
+                credential: Some(sealed),
+                credential_hint: Some("subscription".into()),
+                created_at: 0,
+                updated_at: 0,
+            })
+        })
+        .await
+        .unwrap();
+        toolbox.attach(db.clone());
+
+        let build = |credential: &str| {
+            CliProvider::new(
+                "cx".into(),
+                Tool::Codex,
+                credential,
+                None,
+                BTreeSet::from(["gpt-5.1".to_string()]),
+                Duration::from_secs(20),
+                toolbox.clone(),
+            )
+            .unwrap()
+        };
+        let ask = |provider: CliProvider| async move {
+            llmr::Provider::chat(
+                &provider,
+                ChatRequest::new("gpt-5.1", vec![Message::user("hi")]),
+            )
+            .await
+            .unwrap()
+            .text()
+        };
+        let stored_now = || {
+            let db = db.clone();
+            async move {
+                db.run(|store| {
+                    let provider = store.provider("cx")?;
+                    store.open_credential(&provider)
+                })
+                .await
+                .unwrap()
+                .unwrap()
+            }
+        };
+
+        // Each call hands the next the token the last one refreshed to: the same provider,
+        // and a gateway rebuilt from the store, which now holds it.
+        let provider = build(&first);
+        let hi = || ChatRequest::new("gpt-5.1", vec![Message::user("hi")]);
+        let answer = llmr::Provider::chat(&provider, hi()).await.unwrap();
+        assert_eq!(answer.text(), "rt");
+        let answer = llmr::Provider::chat(&provider, hi()).await.unwrap();
+        assert_eq!(answer.text(), "rt+");
+        assert!(stored_now().await.contains("\"rt++\""));
+        assert_eq!(ask(build(&stored_now().await)).await, "rt++");
+
+        // The panel replaces the sign in while a call holding the old one runs. The rebuild
+        // takes the panel's, and the call finishing afterwards keeps neither its refresh in
+        // memory nor in the store.
+        let in_flight = stored_now().await;
+        let replaced = codex_login(86_400, "panel");
+        let written = replaced.clone();
+        db.run_mut(move |store| {
+            let mut provider = store.provider("cx")?;
+            let (sealed, _) = store.seal_credential(&written)?;
+            provider.credential = Some(sealed);
+            store.update_provider(&provider)
+        })
+        .await
+        .unwrap();
+        let login = toolbox.login("cx", &replaced);
+        toolbox
+            .keep(&login, in_flight.clone(), codex_login(86_400, "late"))
+            .await;
+        assert_eq!(login.current(), replaced);
+        assert_eq!(stored_now().await, replaced);
+        assert_eq!(ask(build(&replaced)).await, "panel");
+        assert!(stored_now().await.contains("\"panel+\""));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_tool_that_hangs_is_killed_with_everything_it_started() {
@@ -1538,16 +2220,7 @@ printf '{"response":"%s|%s|%s|%s|%s","stats":{"models":{}}}' "$PWD" "$HOME" "$GE
         );
         let toolbox = Toolbox::new(image, &root.join("data"));
         toolbox.prepare().unwrap();
-        let outcome = toolbox
-            .call(
-                Tool::ClaudeCode,
-                "k",
-                None,
-                "m",
-                "hi",
-                Duration::from_millis(500),
-            )
-            .await;
+        let outcome = toolbox.call(&key_call(Duration::from_millis(500))).await;
         assert!(matches!(outcome, Err(llmr::Error::Timeout { .. })));
         let pid: i32 = std::fs::read_to_string(&marker)
             .unwrap()
@@ -1584,30 +2257,10 @@ printf '{"response":"%s|%s|%s|%s|%s","stats":{"models":{}}}' "$PWD" "$HOME" "$GE
         toolbox.prepare().unwrap();
         let busy = {
             let toolbox = toolbox.clone();
-            tokio::spawn(async move {
-                toolbox
-                    .call(
-                        Tool::ClaudeCode,
-                        "k",
-                        None,
-                        "m",
-                        "hi",
-                        Duration::from_secs(10),
-                    )
-                    .await
-            })
+            tokio::spawn(async move { toolbox.call(&key_call(Duration::from_secs(10))).await })
         };
         tokio::time::sleep(Duration::from_millis(300)).await;
-        let waited = toolbox
-            .call(
-                Tool::ClaudeCode,
-                "k",
-                None,
-                "m",
-                "hi",
-                Duration::from_millis(300),
-            )
-            .await;
+        let waited = toolbox.call(&key_call(Duration::from_millis(300))).await;
         assert!(
             matches!(&waited, Err(llmr::Error::Transient(why)) if why.contains("slots")),
             "{waited:?}"

@@ -145,17 +145,48 @@ version each is at, and how to change it, is under [Command line tools](#command
 
 ```sh
 curl -X POST localhost:8080/manage/providers -d '{
-  "id": "claude-code", "type": "claude-code", "credential": "sk-ant-api..."
+  "id": "claude", "type": "claude-code", "credential": "sk-ant-oat01-..."
 }'
-curl -X PUT localhost:8080/manage/providers/claude-code/models/claude-sonnet-5 -d '{"enabled": true}'
+curl -X PUT localhost:8080/manage/providers/claude/models/claude-sonnet-5 -d '{"enabled": true}'
 ```
 
-What is different from an API provider:
+### Signing in with a subscription
+
+Each tool takes the sign in of your own subscription (Claude Pro or Max, ChatGPT Plus or Pro,
+a Google account with Gemini) as its `credential`, and its calls are then covered by the plan
+rather than charged per token. An API key works too; llmr tells them apart by their shape.
+
+| Type | Subscription `credential` | How to get it |
+|---|---|---|
+| `claude-code` | The token that starts `sk-ant-oat` | `claude setup-token` on any machine with Claude Code, then paste what it prints. Valid for a year |
+| `codex` | The whole `auth.json`, as JSON text | `CODEX_HOME=$(mktemp -d) codex login` (add `--device-auth` on a machine with no browser), then paste `$CODEX_HOME/auth.json`. Sign in apart from your own Codex, as shown: the refresh token changes on every refresh, so two copies of one sign in log each other out |
+| `gemini-cli` | The whole `oauth_creds.json`, as JSON text | Run `gemini`, choose "Login with Google", then paste `~/.gemini/oauth_creds.json` |
+
+```sh
+curl -X POST localhost:8080/manage/providers -d "$(jq -n --rawfile c "$CODEX_HOME/auth.json" \
+  '{id: "codex", type: "codex", credential: $c}')"
+```
+
+A provider shows which it has: `"auth": "subscription"` (and `"credential": "subscription"`
+in place of the last four characters) or `"auth": "api-key"`. A file that is not the one its
+tool writes is refused with `param: "credential"` rather than stored as a key.
+
+Codex and Gemini CLI refresh their sign in themselves. llmr gives each call the newest one,
+reads it back when the call ends, and seals a refreshed one into the database in place of
+the old. A Codex call that is about to refresh runs on its own, so two calls never spend the
+same refresh token. Changing the credential through the API always wins over a refresh that
+was in flight.
+
+When a plan's limit is reached, the vendor answers with a rate limit, and the request falls
+through to the next route in its set: put an API key provider after a subscription to keep
+serving past the limit.
+
+What else is different from an API provider:
 
 | | |
 |---|---|
-| `credential` | The vendor's API key, required. Calls are billed to it at the vendor's API rates, and priced with them |
-| `base_url` | Optional. Points the tool at a gateway or proxy that speaks the vendor's API; the provider is then unpriced |
+| `credential` | A subscription's sign in, or the vendor's API key. Required. Subscription calls cost nothing per call (`subscription`); API key calls are priced at the vendor's API rates |
+| `base_url` | Optional. Points the tool at a gateway or proxy that speaks the vendor's API; an API key provider is then unpriced |
 | `reach` | Always `local-cli`: the tool runs here, and the prompt goes to the vendor |
 | Models | Named by you, with the ids the tool accepts (`claude-sonnet-5`, `gpt-5.1`, `gemini-2.5-pro`). A tool cannot list them, so `listed` is `null` |
 | Capabilities | None, and none may be set: text in, text out. A request with tools, an image or a schema skips these routes |
@@ -352,7 +383,7 @@ background, so they appear a moment after the reply.
     "latency_ms_avg": 1840,
     "cost": [{ "currency": "USD", "amount": "14.281950" }],
     "cost_complete": false,
-    "priced": 1150, "partial": 0, "unpriced": 12, "free": 39
+    "priced": 1150, "partial": 0, "unpriced": 12, "free": 39, "subscription": 0
   },
   "data": [
     { "model": "anthropic/claude-sonnet-5", "requests": 1150, "...": "..." },
@@ -371,6 +402,7 @@ How to read the cost:
 | `partial` | Priced, but the provider left some usage fields out, so the amount is a floor |
 | `unpriced` | Answered by a paid provider llmr has no rate for (a custom `base_url`, an `openai-compatible` host, a model newer than the price table), or whose provider reported no usage |
 | `free` | Answered by a `self-hosted` provider: tokens are counted, nothing is charged |
+| `subscription` | Answered by a command line tool signed in with a subscription: tokens are counted, the plan covers them |
 | `cost_complete` | `true` only when no request was `partial` or `unpriced`. Otherwise the amounts are what is known, and the real bill is higher |
 | `usage_missing` | Answered requests whose provider reported no token counts at all |
 

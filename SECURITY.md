@@ -77,6 +77,10 @@ each call is held in:
   environment would hold the master key in a process that cannot be marked, so llmr is its
   own init. Do not run the image with `--init`.
 
+**Subscription sign ins** are sealed like any credential. A call gets its own copy in its
+directory, and a sign in the tool refreshed is read back and sealed into the database before
+the directory is removed; the plain file never outlives the call.
+
 What is not contained: the prompt and the key go to the vendor, which is what the tool is
 for, and a tool can still read what any process of llmr's user can read in the container, the
 database on the volume included (its credentials are sealed). An update installs whatever npm
