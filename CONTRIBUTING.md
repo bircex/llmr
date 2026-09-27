@@ -71,9 +71,6 @@ deployment that upgrades.
 src/
   bin/llmr/      the gateway
     main.rs        command line, startup, shutdown, logging, `check` and `healthcheck`
-    init.rs        process 1 in the container: reaping, passing signals on
-    cli.rs         Claude Code, Codex, Gemini CLI: running one, reading it, updating it
-    recorded/      what each of those printed, recorded against a local endpoint
     records.rs     what is stored: provider types, providers, models, route sets
     store.rs       the SQLite database, and every query
     crypto.rs      credentials at rest, sealed with the master key
@@ -86,9 +83,8 @@ src/
   cost/          what it consumed and what that is worth: usage, pricing, ledger
   providers/
     api/         the shared machinery for reaching over the network: ApiProvider + Protocol
-    cli/         the shared machinery for a subprocess: LocalCli + Envelope
-    anthropic/   api.rs the Messages protocol, cli.rs the Claude Code preset
-    openai/      api.rs the chat completions shape, cli.rs the Codex preset, embed.rs
+    anthropic/   api.rs the Messages protocol
+    openai/      api.rs the chat completions shape, embed.rs
     gemini/      api.rs generateContent, embed.rs
     bedrock/     api.rs InvokeModel, reusing the Messages translation
   model.rs       Reach, ModelId, ModelCapabilities
@@ -110,11 +106,10 @@ Dockerfile, docker-compose.yml, .env.example
 
 Two groupings in the engine, doing two jobs. **What is shared follows the reach**, because
 reach is what decides how a model is spoken to: everything an API provider does apart from
-writing JSON is identical, and so is everything a subprocess does apart from its arguments.
-**What is chosen follows the vendor**, because that is what a caller picks, and the same
+writing JSON is identical. **What is chosen follows the vendor**, because that is what a caller picks, and the same
 models turn up behind more than one reach.
 
-So `anthropic/api.rs` and `anthropic/cli.rs` are short. The machinery is not in them.
+So `anthropic/api.rs` is short. The machinery is not in it.
 
 Everything else stays flat. A directory holding one file is a directory that exists to look
 organised.
@@ -162,26 +157,14 @@ The six above, plus two you would not usually run by hand:
 
 ## Writing a provider
 
-You are almost certainly writing a **protocol** or a **preset**, not a client.
+You are almost certainly writing a **protocol**, not a client.
 
-For something over the network, implement `providers::api::Protocol`: what URL, what headers,
-what JSON goes out, what comes back. The transport, the credential, the status codes and the
-error mapping are `ApiProvider`'s. There is nowhere to hold state, and that is on purpose.
+Implement `providers::api::Protocol`: what URL, what headers, what JSON goes out, what comes
+back. The transport, the credential, the status codes and the error mapping are
+`ApiProvider`'s. There is nowhere to hold state, and that is on purpose.
 
-For a command line tool, write a preset on `providers::cli::LocalCli`: a program name, its
-arguments, and an `Envelope` saying where in its output the answer and the usage are. The
-spawning, the deadline, the kill on drop and the difference between a missing binary and a
-silent one are `LocalCli`'s.
-
-A tool the image ships is different: the gateway runs those itself, in `src/bin/llmr/cli.rs`,
-because a tool in a shared container needs its environment, directory and own tools taken
-away, which `LocalCli` does not do. Adding one there is a `Tool`, its arguments with every
-acting feature off and its retries off, a reader for what it prints (recorded from a real run
-against a local endpoint, into `recorded/`), and an install line in the `Dockerfile`.
-
-Either one goes in a file under **whoever you reach and whoever the credential pays** —
-`providers::<who>::api` or `providers::<who>::cli` — beside whatever other reaches that node
-already has. For a first party API that is the vendor. For a gateway serving several vendors'
+It goes in a file under **whoever you reach and whoever the credential pays** —
+`providers::<who>::api` — beside whatever other reaches that node already has. For a first party API that is the vendor. For a gateway serving several vendors'
 models over one credential, such as Bedrock, it is the gateway: `providers::bedrock::api`,
 not `providers::anthropic::bedrock`. Claude through Bedrock is not Anthropic answering, and
 the import line should not suggest it is.
@@ -245,31 +228,6 @@ Set `LLMR_RECORD` to a directory and it writes what came back, so a real reply b
 fixture in this repository rather than staying in your terminal. Commit that with the
 provider. The `Against a real endpoint` workflow does the same thing on a runner and is
 dispatched by hand, never on a push.
-
-### A command line preset needs a recorded run
-
-A preset is four claims about somebody else's program: what to run, where the answer is in
-the JSON, what the usage fields are called, and what the probe proves. `LocalCli` does the
-rest, so the file is small. Three of those four cannot be checked from here.
-
-So do not open one without a recording. Two commands on a machine with the tool:
-
-```sh
-echo "say ok" | your-tool --output-format json
-your-tool --version
-```
-
-Put the envelope in `tests/recorded/` and add a case to
-`tests/what_a_command_line_tool_prints.rs`, which drives the preset through a runner that
-replays it. Everything about the provider stays real except the program.
-
-**The one to get right is whether the tool's prompt count is the whole prompt or the uncached
-remainder.** `Usage::input_tokens` means the remainder. Get it backwards and the numbers
-arrive, they look plausible, and every cost report built on them is wrong with nothing
-downstream able to tell.
-
-`--version` establishes that the tool is installed and nothing about the login inside it. If
-your tool has a sign in command that answers for free, probe with that instead and say so.
 
 ## Model tables and prices
 

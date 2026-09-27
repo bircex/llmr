@@ -29,9 +29,6 @@ gemini    = ["dep:base64"]
 # same JSON, and two copies would disagree the first time one was fixed.
 bedrock   = ["anthropic"]
 
-# A command line tool as a subprocess. No network code at all.
-cli = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/time"]
-
 # The bundled `reqwest` transport, and the `from_env` constructors that need one. Opt in
 # when you would rather not wire your own client.
 reqwest = ["dep:reqwest"]
@@ -69,16 +66,12 @@ server = [
     "dep:tracing-subscriber",
     "dep:rusqlite",
     "dep:chacha20poly1305",
-    "dep:nix",
     "tokio/rt-multi-thread",
     "tokio/macros",
     "tokio/net",
     "tokio/signal",
     "tokio/sync",
     "tokio/io-util",
-    "tokio/process",
-    "tokio/fs",
-    "tokio/time",
 ]
 
 [dependencies]
@@ -103,12 +96,9 @@ tracing-subscriber = { version = "0.3", optional = true, default-features = fals
 rusqlite    = { version = "0.37", optional = true, features = ["bundled"] }
 # Credentials at rest. An AEAD with a 192-bit nonce, so a random nonce per value is safe.
 chacha20poly1305 = { version = "0.10", optional = true, default-features = false, features = ["alloc", "getrandom"] }
-# Process groups for the command line tools, and keeping them out of the gateway's memory.
-# Safe wrappers, since this crate forbids `unsafe`.
-nix         = { version = "0.30", optional = true, default-features = false, features = ["process", "signal"] }
 
 [dev-dependencies]
-tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
 async-trait = "0.1"
 tower       = { version = "0.5", default-features = false, features = ["util"] }
 

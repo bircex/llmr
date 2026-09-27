@@ -16,9 +16,6 @@
 //! | `LLMR_TOKEN` | Optional. Tokens callers must present, comma separated. Unset: no check |
 //! | `LLMR_LISTEN` | Address and port. `0.0.0.0:8080` |
 //! | `LLMR_MAX_BODY_MB` | Largest request body. `32` |
-//! | `LLMR_CLI_DIR` | Where the image keeps the command line tools. `/opt/llmr/cli` |
-//! | `LLMR_NPM_REGISTRY` | Optional. An npm registry to update the tools from |
-//! | `LLMR_CLI_CONCURRENCY` | Command line calls running at once, across tools. `8` |
 //! | `RUST_LOG`, `LLMR_LOG_FORMAT` | Log filter, and `json` for one object per line |
 
 #![deny(clippy::unwrap_used)]
@@ -28,12 +25,9 @@
 #![deny(clippy::unimplemented)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-mod cli;
 mod crypto;
 mod error;
 mod gateway;
-#[cfg(target_os = "linux")]
-mod init;
 mod manage;
 mod openai;
 mod records;
@@ -57,26 +51,9 @@ fn listen_address() -> String {
     std::env::var("LLMR_LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".into())
 }
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // The container's first process: stay it, as an init, and serve from a child.
-    #[cfg(target_os = "linux")]
-    if std::process::id() == 1
-        && matches!(args.as_slice(), [] | [_])
-        && args.iter().all(|a| a == "serve")
-    {
-        return init::supervise(&args);
-    }
-    match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime.block_on(run(args)),
-        Err(e) => fail(&format!("cannot start the runtime: {e}")),
-    }
-}
-
-async fn run(args: Vec<String>) -> ExitCode {
     match args
         .iter()
         .map(String::as_str)
@@ -104,7 +81,7 @@ async fn run(args: Vec<String>) -> ExitCode {
     }
 }
 
-pub(crate) fn fail(message: &str) -> ExitCode {
+fn fail(message: &str) -> ExitCode {
     eprintln!("llmr: {message}");
     ExitCode::FAILURE
 }
@@ -160,7 +137,6 @@ async fn survey(gateway: Arc<Gateway>) {
 }
 
 async fn serve() -> ExitCode {
-    guard_memory();
     let key = match std::env::var("LLMR_MASTER_KEY") {
         Ok(text) if !text.trim().is_empty() => match MasterKey::from_base64(&text) {
             Ok(key) => key,
@@ -181,20 +157,13 @@ async fn serve() -> ExitCode {
             dir.display()
         ));
     }
-    let tools = Arc::new(cli::Toolbox::from_env(&dir));
-    if let Err(e) = tools.prepare() {
-        return fail(&format!(
-            "cannot prepare {} for the command line tools: {e}",
-            dir.display()
-        ));
-    }
     let path = dir.join("llmr.db");
     let store = match Store::open(&path, key) {
         Ok(store) => store,
         Err(e) => return fail(&format!("{}: {e}", path.display())),
     };
     let gateway = match Snapshot::read(&store) {
-        Ok(snapshot) => Gateway::build(&snapshot, &tools),
+        Ok(snapshot) => Gateway::build(&snapshot),
         Err(e) => return fail(&format!("{}: {e}", path.display())),
     };
 
@@ -210,8 +179,6 @@ async fn serve() -> ExitCode {
         .unwrap_or(32);
 
     let db = Db::new(store);
-    // Where a command line tool's refreshed sign in is written back to.
-    tools.attach(db.clone());
     let (recorder, writer) = usage::Recorder::start(db.clone());
     let state = Arc::new(AppState {
         live: Live::new(gateway),
@@ -219,7 +186,6 @@ async fn serve() -> ExitCode {
         keys,
         started: std::time::Instant::now(),
         recorder,
-        tools,
     });
     let app = server::app(state.clone(), max_body_mb * 1024 * 1024);
 
@@ -262,25 +228,6 @@ async fn serve() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => fail(&format!("server error: {e}")),
-    }
-}
-
-/// Keeps the command line tools out of this process's memory and environment.
-///
-/// A tool runs as the same user as llmr, and that user can read `/proc/<pid>/environ` and
-/// `/proc/<pid>/mem` of its own processes: the master key and the tokens are in there. A
-/// process that is not dumpable has those files owned by root, so a tool, or anything a
-/// prompt talks a tool into running, cannot read them. `execve` resets the flag, so every
-/// llmr process sets it for itself, the init in `init.rs` included.
-pub(crate) fn guard_memory() {
-    #[cfg(target_os = "linux")]
-    {
-        if let Err(error) = nix::sys::prctl::set_dumpable(false) {
-            tracing::warn!(
-                error = %error,
-                "could not make the process undumpable; command line tools could read its environment"
-            );
-        }
     }
 }
 

@@ -37,15 +37,8 @@ impl std::fmt::Display for ModelId {
 /// How a model is reached.
 ///
 /// This is the axis that decides where your prompt goes and whose credential pays for it.
-/// It answers two questions that are easy to confuse, and a single boolean gets one of them
-/// wrong:
-///
-/// * [`Reach::is_on_device`] asks whether the data stays on your hardware.
-/// * [`Reach::uses_local_credential`] asks whether the key lives on this machine.
-///
-/// A vendor CLI is the case that separates them. It signs in on your laptop and still sends
-/// every prompt to the vendor. Code that treats "local credential" as "local data" will send
-/// a customer record to a third party and log it as private.
+/// The question it answers is where a prompt goes: [`Reach::is_on_device`] says whether the
+/// data stays on your hardware. Everything but a self hosted model sends it to somebody.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Reach {
@@ -55,19 +48,16 @@ pub enum Reach {
     CloudPartner,
     /// A private deployment you control, reached over the network.
     PrivateEndpoint,
-    /// A vendor command line tool on this machine, using the login it already has.
-    LocalCli,
     /// Weights you run yourself. The only reach where nothing leaves the hardware.
     SelfHosted,
 }
 
 impl Reach {
     /// Every reach this crate knows, in the order above.
-    pub const ALL: [Reach; 5] = [
+    pub const ALL: [Reach; 4] = [
         Reach::FirstPartyApi,
         Reach::CloudPartner,
         Reach::PrivateEndpoint,
-        Reach::LocalCli,
         Reach::SelfHosted,
     ];
 
@@ -76,28 +66,22 @@ impl Reach {
         matches!(self, Reach::SelfHosted)
     }
 
-    /// Whether the credential is local even though the data is not.
-    pub fn uses_local_credential(self) -> bool {
-        matches!(self, Reach::LocalCli | Reach::SelfHosted)
-    }
-
     /// How a reach is written down, in configuration and in records.
     ///
     /// One spelling in one place. Two copies of this mapping is two chances for a config
-    /// file and a database column to disagree about what `local-cli` means.
+    /// file and a database column to disagree about what `self-hosted` means.
     pub fn as_str(self) -> &'static str {
         match self {
             Reach::FirstPartyApi => "first-party-api",
             Reach::CloudPartner => "cloud-partner",
             Reach::PrivateEndpoint => "private-endpoint",
-            Reach::LocalCli => "local-cli",
             Reach::SelfHosted => "self-hosted",
         }
     }
 
     /// Reads a reach from its written form.
     ///
-    /// Accepts the short forms `api` and `cli`, and treats underscores and hyphens as the
+    /// Accepts the short form `api`, and treats underscores and hyphens as the
     /// same character, because configuration files disagree about which one to use.
     pub fn parse(name: &str) -> Option<Reach> {
         let name = name.trim().to_ascii_lowercase().replace('_', "-");
@@ -105,7 +89,6 @@ impl Reach {
             "first-party-api" | "api" => Reach::FirstPartyApi,
             "cloud-partner" => Reach::CloudPartner,
             "private-endpoint" => Reach::PrivateEndpoint,
-            "local-cli" | "cli" => Reach::LocalCli,
             "self-hosted" => Reach::SelfHosted,
             _ => return None,
         })
@@ -124,8 +107,8 @@ impl std::fmt::Display for Reach {
 /// what is missing by asking, rather than by sending a request and reading the error.
 ///
 /// Capabilities belong to the pair of model and reach, not to the model alone. The same
-/// model behind a vendor CLI often cannot take a tool schema or return a cache breakpoint,
-/// because the CLI does not expose those, and the model has nothing to do with it.
+/// model behind a gateway often cannot take a tool schema or return a cache breakpoint,
+/// because the gateway does not expose those, and the model has nothing to do with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ModelCapabilities {
@@ -148,7 +131,7 @@ pub struct ModelCapabilities {
     pub images: bool,
     /// Whether the reply can be read as it arrives rather than all at once.
     ///
-    /// A fact about the pairing, not the model. A command line tool that prints one JSON
+    /// A fact about the pairing, not the model. An endpoint that answers with one JSON
     /// document when it finishes cannot stream whatever model is behind it.
     pub streaming: bool,
     /// Where this pairing runs.
@@ -230,12 +213,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_local_cli_keeps_the_key_and_still_sends_the_data_away() {
-        assert!(Reach::LocalCli.uses_local_credential());
-        assert!(!Reach::LocalCli.is_on_device());
-    }
-
-    #[test]
     fn only_self_hosted_keeps_the_data() {
         for reach in Reach::ALL {
             assert_eq!(reach.is_on_device(), reach == Reach::SelfHosted);
@@ -251,9 +228,9 @@ mod tests {
 
     #[test]
     fn configuration_may_spell_it_either_way() {
-        assert_eq!(Reach::parse("local_cli"), Some(Reach::LocalCli));
-        assert_eq!(Reach::parse("  Local-CLI "), Some(Reach::LocalCli));
-        assert_eq!(Reach::parse("cli"), Some(Reach::LocalCli));
+        assert_eq!(Reach::parse("self_hosted"), Some(Reach::SelfHosted));
+        assert_eq!(Reach::parse("  Self-Hosted "), Some(Reach::SelfHosted));
+        assert_eq!(Reach::parse("api"), Some(Reach::FirstPartyApi));
     }
 
     #[test]

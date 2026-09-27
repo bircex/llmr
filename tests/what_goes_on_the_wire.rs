@@ -845,6 +845,6 @@ fn a_request_carrying_an_image_says_so_before_it_is_sent() {
     let needs = with_an_image().needs();
     assert!(needs.images);
 
-    let text_only = ModelCapabilities::none(Reach::LocalCli);
+    let text_only = ModelCapabilities::none(Reach::SelfHosted);
     assert_eq!(needs.unmet_by(&text_only), vec!["images"]);
 }

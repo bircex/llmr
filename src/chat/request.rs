@@ -287,7 +287,7 @@ mod tests {
             }])
             .with_thinking(Thinking::On(Effort::High));
 
-        let plain = ModelCapabilities::none(Reach::LocalCli);
+        let plain = ModelCapabilities::none(Reach::SelfHosted);
         assert_eq!(request.needs().unmet_by(&plain), vec!["tools", "thinking"]);
     }
 

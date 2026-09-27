@@ -122,8 +122,8 @@ impl Entry {
 /// A table of models for one reach.
 ///
 /// The reach belongs to the table rather than the row, because the same model reached two
-/// ways is two sets of capabilities. A vendor CLI usually cannot take a tool schema even
-/// when the model behind it can.
+/// ways is two sets of capabilities. A cloud partner may not take a tool schema even when
+/// the model behind it can.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Registry {
@@ -268,7 +268,7 @@ verified_at = "2026-08-28"
 
     #[test]
     fn a_row_reads_back_as_capabilities_for_the_tables_reach() {
-        let registry = Registry::parse(ONE_ROW).unwrap_or(Registry::empty("x", Reach::LocalCli));
+        let registry = Registry::parse(ONE_ROW).unwrap_or(Registry::empty("x", Reach::SelfHosted));
         let caps = registry.capabilities(&"test-model".into());
         assert_eq!(caps.map(|c| c.reach), Some(Reach::FirstPartyApi));
         assert_eq!(caps.map(|c| c.tools), Some(true));
@@ -277,7 +277,7 @@ verified_at = "2026-08-28"
 
     #[test]
     fn a_model_the_table_does_not_have_is_none() {
-        let registry = Registry::parse(ONE_ROW).unwrap_or(Registry::empty("x", Reach::LocalCli));
+        let registry = Registry::parse(ONE_ROW).unwrap_or(Registry::empty("x", Reach::SelfHosted));
         assert_eq!(registry.capabilities(&"nothing".into()), None);
     }
 
@@ -302,14 +302,14 @@ verified_at = "2026-08-28"
 
     #[test]
     fn a_table_reports_what_the_vendor_stopped_serving() {
-        let registry = Registry::parse(ONE_ROW).unwrap_or(Registry::empty("x", Reach::LocalCli));
+        let registry = Registry::parse(ONE_ROW).unwrap_or(Registry::empty("x", Reach::SelfHosted));
         assert_eq!(registry.stale(&[]), vec!["test-model"]);
         assert_eq!(registry.stale(&["test-model".into()]), Vec::<&str>::new());
     }
 
     #[test]
     fn a_table_reports_what_the_vendor_added() {
-        let registry = Registry::parse(ONE_ROW).unwrap_or(Registry::empty("x", Reach::LocalCli));
+        let registry = Registry::parse(ONE_ROW).unwrap_or(Registry::empty("x", Reach::SelfHosted));
         let served = vec![ModelId::from("test-model"), ModelId::from("brand-new")];
         assert_eq!(
             registry.unlisted(&served),
@@ -319,7 +319,7 @@ verified_at = "2026-08-28"
 
     #[test]
     fn an_empty_registry_answers_nothing_rather_than_guessing() {
-        let empty = Registry::empty("test", Reach::LocalCli);
+        let empty = Registry::empty("test", Reach::SelfHosted);
         assert_eq!(empty.capabilities(&"anything".into()), None);
     }
 }

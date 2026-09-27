@@ -64,8 +64,8 @@ pub enum Unpriced {
     Refused,
     /// Used, and counted as one call whose cost is unknown.
     ///
-    /// The right answer when the unpriced routes are subscription command line tools, whose
-    /// calls genuinely add nothing to a per-call bill. [`Spending::unmeasured`] counts them,
+    /// The right answer when the unpriced routes are self hosted models, whose calls
+    /// genuinely add nothing to a per-call bill. [`Spending::unmeasured`] counts them,
     /// so [`Spending::spent`] can be read as the floor it is.
     Allowed,
 }

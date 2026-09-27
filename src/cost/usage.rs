@@ -53,8 +53,7 @@ impl std::fmt::Display for UsageCoverage {
 /// The tokens one call consumed.
 ///
 /// Every field is optional because providers differ in what they report, and a missing
-/// number is a fact worth keeping. A subscription command line tool usually reports nothing
-/// at all, and writing zero in its place turns an unknown cost into a free one.
+/// number is a fact worth keeping. Some servers report nothing at all, and writing zero in its place turns an unknown cost into a free one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Usage {
@@ -124,8 +123,7 @@ impl Usage {
 
     /// Marks these numbers as counted here rather than reported by the provider.
     ///
-    /// The case is a subscription command line tool: it answers, it was billed, and it says
-    /// nothing about tokens. A caller with a token counter can produce a number, and this is
+    /// The case is a server that answers and says nothing about tokens. A caller with a token counter can produce a number, and this is
     /// how that number is kept apart from one a vendor reported.
     ///
     /// ```

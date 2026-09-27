@@ -19,8 +19,8 @@ publishing, docs.rs or a public API, that is what the project did then.
 
 | | |
 |---|---:|
-| Source | 22,880 lines across 50 files, the service included |
-| Tests | 469 passing, all features · 270 on the default set |
+| Source | 19,112 lines across 45 files, the service included |
+| Tests | 407 passing, all features · 265 on the default set |
 | Distributed as | The Docker image, for amd64 and arm64, from `main` and from `v*` tags |
 | CI on GitHub | every pull request, including building and starting the image |
 
@@ -40,9 +40,8 @@ cargo test
 ## Next
 
 **0.3.0, the first release as a service:** the service (#76), its documentation (#77), REST
-management with the encrypted store (#78), usage with cost (#79), the command line tools in
-the image (#80) and their subscription sign in (#81). It is the first release the release
-workflow and the image's `X.Y.Z` tags run for as a service.
+management with the encrypted store (#78) and usage with cost (#79). It is the first release
+the release workflow and the image's `X.Y.Z` tags run for as a service.
 
 In order:
 
@@ -53,9 +52,8 @@ In order:
    signatures can cross; Bedrock (needs a SigV4 signing transport); embeddings.
 4. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
    the client API therefore refuses.
-5. Signing a command line tool in from the panel: the tool's own sign in run inside the
-   container and driven over the API (a device code for Codex, a pasted code for Claude Code
-   and Gemini CLI), so nobody has to run it elsewhere and paste the result.
+5. Media: images and other non-text inputs and outputs over the API, beyond the image a
+   prompt can already carry.
 
 ---
 
@@ -63,13 +61,13 @@ In order:
 
 Two things that are cheap before publish and breaking after it.
 
-**The tree separates what is shared from what is chosen.** `providers/api/` and
-`providers/cli/` hold the machinery, which follows the reach because reach is what decides
+**The tree separates what is shared from what is chosen.** `providers/api/` holds the
+machinery, which follows the reach because reach is what decides
 how a model is spoken to. `providers/anthropic/`, `providers/openai/`, `providers/gemini/`
 and `providers/bedrock/` hold the providers, which follow **who you reach and whose
 credential pays** — the vendor for a first party API, the gateway for a gateway. That is what
 a caller picks, and the same models turn up behind more than one of them: Anthropic's answer
-over the Messages API, through Claude Code, and through Amazon. `chat/` is what a call is made of,
+over the Messages API and through Amazon. `chat/` is what a call is made of,
 `cost/` is what it consumed and what that is worth. Everything else is flat, deliberately: a
 directory holding one file is a directory that exists to look organised.
 
@@ -79,9 +77,7 @@ answered "may this prompt go there".
 
 **A provider writes a protocol, not a client.** `ApiProvider` does the transport, the
 credential, the status codes and the error mapping. A vendor supplies `Protocol`: what URL,
-what headers, what JSON goes out, what comes back. On the command line side `LocalCli` does
-the spawning and the deadline, and a vendor preset is a program name, its arguments, and the
-shape of what it prints.
+what headers, what JSON goes out, what comes back.
 
 **Adding this crate used to cost 105 crates and now costs 31.** The providers never needed
 `reqwest`; only `from_env` did. Protocols and the bundled client are separate features.
@@ -100,7 +96,7 @@ a boolean collapses them. `Router::preflight` asks every route once at startup, 
 prunes nothing.
 
 It cost the Anthropic provider a `catalogue()` implementation, which is what it now asks for
-free, and the command line providers a `with_probe`. The contract suite checks both halves,
+free. The contract suite checks both halves,
 and `assert_a_bad_credential_is_denied` is a second entry point because the suite cannot
 break your credential for you.
 
@@ -147,9 +143,8 @@ different situation from a call that failed, and the `Event` type has to be able
 
 ### Providers
 
-Anthropic and the OpenAI shape both speak server sent events. The command line providers
-cannot, and should say so through the capability they already have rather than by failing at
-the call.
+Anthropic and the OpenAI shape both speak server sent events. A provider that cannot should
+say so through the capability it already has rather than by failing at the call.
 
 ### Done when
 
@@ -281,21 +276,19 @@ Not planned in detail, and roughly in this order.
 | ~~Gemini~~ · **done** | `providers::gemini::api`. Writing it found two holes in `Protocol`: `chat_url` had no model, and nothing could say the streaming URL differs |
 | ~~Bedrock~~ · **done** | `providers::bedrock::api`, under the gateway as #29 decided, and the first use of `CloudPartner`. SigV4 is the transport's, not the protocol's |
 | ~~Images~~ · **done** | `ContentBlock::Image`, refused rather than stripped where a reach cannot carry one |
-| More CLI presets | Gemini CLI and whatever else appears (#24, #46). A preset is a file and it goes beside its vendor's other reaches — but it needs a recorded `--output-format json` sample first, because inventing the usage field names reports a number that looks right and is not |
 | ~~Cost accumulation~~ · **done** | `cost::ledger::Ledger`, with a total that says when it is a floor, and refuses to be one number when the run mixes currencies |
 | ~~Embeddings~~ · **done** | `embed`, behind a feature, as #26 decided. A vector carries the model that made it and `similarity` refuses across two — the currency rule in a different type. Two implementations, agreeing on nothing at the wire and passing one contract |
 
-## After 0.1.0: twelve issues, and where each got to
+## After 0.1.0: the issues, and where each got to
 
 Filed once 0.1.0 was cut, ordered by what an agentic layer that executes work and returns
-what it cost actually needs. **Ten shipped in 0.2.0.** Two are finished as far as anything in
-this repository can take them, and both are blocked on the same thing: a machine with a key or
-a tool on it.
+what it cost actually needs. **Ten shipped in 0.2.0.** The other is finished as far as
+anything in this repository can take it, and is blocked on a machine with a key.
 
 | | State |
 |---|---|
 | #37 No provider has ever met a real endpoint | **suite in, calls not made.** `tests/against_a_real_endpoint.rs` and a dispatched workflow exist. Nobody has run them with a key |
-| #38 A CLI run's cost is always a floor | **done.** `UsageCoverage::Estimated`, `Total::About`, `Ledger::record_subscription`, `Provider::subscription`, `Ledger::summary` |
+| #38 A run with unmeasured calls is always a floor | **done.** `UsageCoverage::Estimated`, `Total::About`, `Ledger::summary` |
 | #39 Ship dated registry and price tables | **done.** OpenAI and Gemini tables read off vendor pages, plus `PriceBook::age` and `needs_rechecking` so staleness is findable |
 | #40 Budget | **done.** `Router::within`, refusing before the money goes, with what it cannot promise written down |
 | #41 `Router::stream` | **done.** Falls through before the first event and never after it |
@@ -303,7 +296,6 @@ a tool on it.
 | #43 `preflight` answers and nothing reads it | **done.** `Denied` rests a route, `Unknown` still changes nothing |
 | #44 Selection is list order and nothing else | **done.** `Order::Cheapest` and `Order::Healthiest`, with an unpriced route sorted last rather than free |
 | #45 No deadline across the whole attempt | **done.** `Router::within_deadline`, answering `Error::Timeout` |
-| #46 More command line presets | **half done.** Claude Code is now checked against a real recorded envelope, which found a stop reason bug. Codex and Gemini CLI still need a recorded run |
 | #47 Bedrock has no way to be called | **done.** `docs/BEDROCK.md`, and the wrapper as a compiled doctest |
 | #48 Hedging, and the ledger surviving it | **done.** `Ledger::record_cancelled`, and the decision written down |
 
@@ -314,25 +306,6 @@ against_a_real_endpoint -- --ignored --nocapture`, or the `Against a real endpoi
 with the secrets set. Set `LLMR_RECORD` and commit what comes back. Until somebody does,
 "the providers work" is a claim nobody has tested, and that is the largest remaining risk in
 the crate.
-
-**#46 needs the tools.** One recorded run each:
-
-```sh
-echo "say ok" | codex exec --json
-echo "say ok" | gemini --output-format json
-```
-
-Paste them into `tests/recorded/`, add a case to
-`tests/what_a_command_line_tool_prints.rs`, and fix whatever the presets turn out to have
-been reading wrongly. Claude Code's recording found one bug in three fields, so assume the
-others have one too. Guessing is not an option: the numbers arrive, they look plausible, and
-every cost report built on them is wrong.
-
-**One thing the Claude Code recording turned up and nobody has decided about.** Its envelope
-carries `total_cost_usd`, a figure the tool worked out itself. Nothing reads it, because
-there is nowhere in `ChatResponse` to put a cost that did not come from a `PriceBook`, and
-adding one is a larger decision than a preset: it would be a second source of truth for the
-one number this crate exists to get right.
 
 ### What 0.2.0 also carried
 
@@ -348,25 +321,23 @@ before they could ship.
 
 ### The test debt, carried deliberately
 
-Five gaps found by auditing which public items no executable test ever touches. All labelled
+Four gaps found by auditing which public items no executable test ever touches. All labelled
 `test`, none of them blocking a release, all of them real:
 
 | | |
 |---|---|
 | #67 | `Breaker` and `Budget` are the only mutable state and `tests/concurrency.rs` ignores both |
 | #68 | Nothing notices when a shipped price table goes stale, including the one with an announced expiry |
-| #71 | `Spawning` is the only `ProcessRunner` anybody uses and the only one with no test |
 | #72 | `temperature` and `top_p` are written by three protocols and checked by no test |
 | #73 | The `Retry-After` header path is untested, half implemented, and copied twice |
 
-#72 and #73 are the two worth doing first. Both are the same shape as #46: a wrong key or an
+#72 and #73 are the two worth doing first. Both are the same shape as #37: a wrong key or an
 unparsed header does not fail, it quietly drops what the caller asked for, and the reply looks
 correct all the way down.
 
 ## Things known to be missing from the engine
 
-Reranking and completion endpoints, audio and documents, and a model catalogue on the command
-line providers, which cannot be asked what they serve. Bedrock does not stream, because its
+Reranking and completion endpoints, audio and documents. Bedrock does not stream, because its
 event framing is not server sent events. The gateway's own gaps are listed in the README; if
 you fix one, take it out of that list in the same commit.
 

@@ -189,10 +189,6 @@ verified_at = "2026-08-30"
         .expect("a model it serves");
     assert_eq!(caps.reach, Reach::CloudPartner);
     assert!(!caps.reach.is_on_device());
-    assert!(
-        !caps.reach.uses_local_credential(),
-        "an Amazon credential is not a local one"
-    );
 }
 
 #[tokio::test]

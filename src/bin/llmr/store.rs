@@ -109,8 +109,15 @@ CREATE INDEX IF NOT EXISTS usage_route ON usage (route, at);
 CREATE INDEX IF NOT EXISTS usage_provider ON usage (provider_id, at);
 "#;
 
+/// Version 3: llmr is an API router, and the command line tool providers a build before this
+/// one ran are gone. Their rows cannot be built any more, and read as another type they would
+/// send a sign in to the wrong place, so they are removed with their models. Route sets that
+/// named them report those routes as unavailable, and their usage rows stay as history.
+const CLI_PROVIDERS_V3: &str =
+    "DELETE FROM providers WHERE type IN ('claude-code', 'codex', 'gemini-cli')";
+
 /// The schema version this build writes. Raised with a migration, never edited in place.
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 
 /// What is sealed into `meta` so a wrong master key is caught at startup.
 const KEY_CHECK: &[u8] = b"llmr-master-key-check";
@@ -163,6 +170,15 @@ impl Store {
         // (version 0) takes every step.
         if version < 2 {
             conn.execute_batch(USAGE_V2)?;
+        }
+        if version < 3 {
+            let removed = conn.execute(CLI_PROVIDERS_V3, [])?;
+            if removed > 0 {
+                tracing::warn!(
+                    removed,
+                    "removed the command line tool providers: llmr no longer runs command line tools"
+                );
+            }
         }
         conn.pragma_update(None, "user_version", VERSION)?;
 
@@ -256,26 +272,6 @@ impl Store {
     }
 
     /// The credential in the clear, for building the provider that uses it.
-    /// Replaces a provider's credential with `after`, if it still is `before`. `false` when
-    /// it has changed meanwhile, which is the panel replacing it, and then it is left alone.
-    ///
-    /// For a sign in a command line tool refreshed: the hint stays as it was.
-    pub fn swap_credential(&mut self, id: &str, before: &str, after: &str) -> StoreResult<bool> {
-        let provider = self.provider(id)?;
-        if self.open_credential(&provider)?.as_deref() != Some(before) {
-            return Ok(false);
-        }
-        let sealed = self
-            .key
-            .seal(after.as_bytes())
-            .map_err(StoreError::Failed)?;
-        let changed = self.conn.execute(
-            "UPDATE providers SET credential = ?2 WHERE id = ?1",
-            params![id, sealed],
-        )?;
-        Ok(changed == 1)
-    }
-
     pub fn open_credential(&self, provider: &Provider) -> StoreResult<Option<String>> {
         let Some(sealed) = &provider.credential else {
             return Ok(None);
@@ -531,7 +527,6 @@ impl Store {
              SUM(latency_ms), \
              SUM(cost_status = 'priced'), SUM(cost_status = 'partial'), \
              SUM(cost_status = 'unpriced'), SUM(cost_status = 'free'), \
-             SUM(cost_status = 'subscription'), \
              currency, SUM(cost_micros) \
              FROM usage WHERE {where_} \
              GROUP BY key, currency ORDER BY key",
@@ -560,10 +555,9 @@ impl Store {
                     partial: row.get::<_, Option<i64>>(13)?.unwrap_or(0),
                     unpriced: row.get::<_, Option<i64>>(14)?.unwrap_or(0),
                     free: row.get::<_, Option<i64>>(15)?.unwrap_or(0),
-                    subscription: row.get::<_, Option<i64>>(16)?.unwrap_or(0),
                     cost: match (
-                        row.get::<_, Option<String>>(17)?,
-                        row.get::<_, Option<i64>>(18)?,
+                        row.get::<_, Option<String>>(16)?,
+                        row.get::<_, Option<i64>>(17)?,
                     ) {
                         (Some(currency), Some(micros)) => vec![(currency, micros)],
                         _ => Vec::new(),
@@ -939,6 +933,46 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, VERSION);
+    }
+
+    #[test]
+    fn command_line_tool_providers_from_version_two_are_removed_with_their_models() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(USAGE_V2).unwrap();
+        for (id, kind) in [
+            ("claude", "claude-code"),
+            ("codex", "codex"),
+            ("local", "openai-compatible"),
+        ] {
+            conn.execute(
+                "INSERT INTO providers (id, type, timeout_secs, enabled, created_at, updated_at) \
+                 VALUES (?1, ?2, 120, 1, 0, 0)",
+                params![id, kind],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO models (provider_id, model_id, enabled, updated_at) VALUES (?1, 'm', 1, 0)",
+                params![id],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 2).unwrap();
+
+        let store = Store::setup(conn, key()).unwrap();
+        let ids: Vec<String> = store
+            .providers()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, vec!["local".to_string()]);
+        let models: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(models, 1);
     }
 
     #[test]

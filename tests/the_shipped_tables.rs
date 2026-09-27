@@ -131,7 +131,7 @@ fn a_shipped_book_is_not_already_stale_on_the_day_it_shipped() {
 
 #[test]
 fn a_call_nobody_measured_has_no_price_in_any_shipped_book() {
-    // What a subscription command line tool produces on every call. Zero would turn an
+    // What a provider that reports no usage produces on every call. Zero would turn an
     // unknown cost into a free one.
     for (name, registry, prices) in shipped() {
         for model in registry.ids() {

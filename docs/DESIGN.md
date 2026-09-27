@@ -31,27 +31,30 @@ security review was would be one only its author could use.
 
 ## Reach is a separate axis from provider
 
-`Reach` says where a model runs. It answers two questions that are easy to confuse:
+`Reach` says where a model runs: the vendor's own API, a cloud partner, a private endpoint
+you control, or weights you run yourself. The provider says who you are talking to; the reach
+says where the prompt ends up.
 
 ```rust
-Reach::LocalCli.uses_local_credential()  // true
-Reach::LocalCli.is_on_device()           // false
+Reach::FirstPartyApi.is_on_device()  // false
+Reach::SelfHosted.is_on_device()     // true
 ```
 
-A vendor command line tool signs in on your laptop and still sends every prompt to the
-vendor. Code that treats "the credential is local" as "the data is local" will send something
-private to a third party and record it as safe.
+The same protocol serves more than one reach. An OpenAI-shaped endpoint may be a hosted API
+or a model on your own hardware, and nothing in the wire format says which. Code that decides
+where a prompt may go by looking at the protocol will send something private to a third party
+and record it as safe.
 
-**If this became one boolean**, that case would be wrong in the direction nobody notices,
-because the wrong answer still looks like it worked.
+**If reach were folded into the provider**, that case would be wrong in the direction nobody
+notices, because the wrong answer still looks like it worked.
 
 ---
 
 ## Capabilities belong to the pair of model and reach
 
-The same model behind a command line tool usually cannot take a tool schema or return a cache
-breakpoint. That is a fact about the reach, not about the model, so `capabilities()` answers
-for the pairing.
+The same model behind a cloud partner or a self hosted server often cannot take everything
+its vendor's own API takes: a tool schema, a cache breakpoint, an image. That is a fact about
+the reach, not about the model, so `capabilities()` answers for the pairing.
 
 `ChatRequest::needs().unmet_by()` lists what a provider will drop before anything is sent.
 
@@ -70,8 +73,8 @@ Access::Denied { reason }  // the provider was asked and said no
 Access::Unknown { why }    // it could not be established
 ```
 
-`Unknown` is the answer a boolean loses, and it is the one that matters. A tool that is not
-installed is denied. A network that happened to be down while the check ran is not. Both
+`Unknown` is the answer a boolean loses, and it is the one that matters. A key that was
+rejected is denied. A network that happened to be down while the check ran is not. Both
 become `false`, and the second one takes a working provider out of a router for a reason that
 had cleared before anybody read the log.
 
@@ -92,20 +95,20 @@ The alternative has two channels carrying the same meaning: an `Err(Transient)` 
 handle one. Deciding which failures are "could not check" and which are "no" is the engine's
 job, because it is the crate that knows a 401 is settled and a 503 is not.
 
-The mapping therefore lives in one place. A rejected credential, a missing program and a model
-the vendor does not list are `Denied`. A timeout, a rate limit, a server fault, an
+The mapping therefore lives in one place. A rejected credential and a model the vendor does
+not list are `Denied`. A timeout, a rate limit, a server fault, an
 unreadable body and a provider with nothing free to ask are `Unknown`.
 
 ---
 
 ## A check that costs a call is a check nobody runs
 
-`validate` may not send a billable request. A provider with a model list asks for the list. A
-command line provider asks the program whether it is there. Nothing generates a token.
+`validate` may not send a billable request. A provider with a model list asks for the list.
+Nothing generates a token.
 
 A preflight that spends money gets called once, then wrapped in a flag, then skipped.
 
-Nothing caches the answer either. A credential rotates, a subscription lapses, an entitlement
+Nothing caches the answer either. A credential rotates, an account lapses, an entitlement
 is granted, and a validated-once flag is a claim about a moment that has passed. Providers
 hold no state anyway, which is what makes this easy rather than tempting.
 
@@ -117,15 +120,12 @@ almost always true.
 
 ## `Ready` says what was checked, not what will happen
 
-A check that costs nothing cannot prove everything, and how much it proves depends on the
-reach.
+A check that costs nothing cannot prove everything.
 
 An API provider that asked for the model list has established the credential and the
-entitlement, because those are what that endpoint answers with. A command line tool that ran
-and printed its version has established that it is installed, and nothing at all about the
-login inside it, because no vendor tool offers a free way to ask. A `Ready` from a CLI
-provider is therefore a weaker claim than a `Ready` from an API one, and
-`LocalCli::with_probe` exists for a tool that does have a sign in check worth running.
+entitlement, because those are what that endpoint answers with. It has established nothing
+about whether the account has credit left, whether a rate limit is about to be hit, or
+whether this particular request will be accepted, because no vendor offers a free way to ask.
 
 **This is said out loud** because the alternative is a caller reading `Ready` as a guarantee.
 It is the absence of a known blocker, which is all a free check can be, and it is still the
@@ -141,31 +141,21 @@ real model.
 
 `Usage` fields are all `Option`, and `UsageCoverage` travels with them.
 
-A subscription command line tool measures nothing. A zero written in its place becomes a free
-call in every report that adds it up, and no amount of care downstream can recover the
-difference between "nothing" and "nought".
+Some providers report nothing: a self hosted server that leaves `usage` out, a stream cut off
+before its last event. A zero written in its place becomes a free call in every report that
+adds it up, and no amount of care downstream can recover the difference between "nothing"
+and "nought".
 
 The same rule reaches into pricing: `PriceBook::price` returns `None` for a call with no
-usage, rather than a cost of zero. And there is deliberately **no price row for the local
-command line reach**, because a rate applied to an invented token count produces a number that
-looks like a receipt.
+usage, rather than a cost of zero, because a rate applied to an invented token count produces
+a number that looks like a receipt.
 
 ---
 
-## A run of subscription calls is out of scope, not unknown
+## An estimate is neither measured nor a floor
 
 `Usage::absent` says a call was not measured, and a `Ledger::total` containing one is a
-floor. Both are right, and together they made the crate useless on its own main path: a bot
-running a hundred `Reach::LocalCli` calls was told the run cost "at least 0.00". A layer
-whose promise is the cost cannot answer "I don't know" for everything it does.
-
-Three things fix it and none of them is a zero.
-
-**Read what the tool reports.** Some print token counts in their JSON envelope. `Envelope`
-already reads them and both shipped presets do. The trap is `UsageNames`: whether a tool's
-prompt count is the whole prompt or the uncached remainder is the difference between a number
-that is right and one that looks right, and `providers/openai/cli.rs` carries a comment
-saying which Codex reports for exactly that reason.
+floor. Both are right. What they leave out is a caller who counted the tokens themselves.
 
 **A counted token is not a reported one.** `UsageCoverage::Estimated` exists so a locally
 counted number can be added up without being folded into `Exact`, which would destroy the one
@@ -180,22 +170,9 @@ and one that is close produces numbers that look right and are not. `Usage::esti
 a count the caller produced. Bringing a tokeniser in would be the engine manufacturing
 exactly the confident wrong number every type in `cost` exists to prevent.
 
-**A flat fee is out of scope rather than unknown.** A call on a subscription added nothing to
-a per-call bill. `Ledger::record_subscription` records that, `unpriced()` stops counting it,
-and the total stops being a floor on account of it. The total never contains the fee: there
-is no division of a subscription into calls that means anything, so `subscribed()` and
-`plans()` go beside the figure and the person reading knows what they pay.
-
-**Nothing guesses that a tool is on a subscription.** The same program signed in one way is a
-flat fee and signed in another is metered against an API key, and no preset can tell which.
-`Provider::subscription` answers `None` everywhere in the engine until a caller says
-otherwise through `LocalCli::billed_by`. Getting it wrong writes a metered call down as
-costing nothing, which is the zero `Usage::absent` exists to prevent wearing a better name.
-The protection is that it cannot happen by accident: it takes typing a plan name.
-
-`Ledger::summary` is the sentence with all of it in: what was measured, what was estimated,
-what has no figure, and what a plan covers. It exists because every program that assembled
-that from the four accessors would leave one out.
+`Ledger::summary` is the sentence with all of it in: what was measured, what was estimated
+and what has no figure. It exists because every program that assembled that from the
+accessors would leave one out.
 
 ---
 
@@ -274,29 +251,27 @@ A protocol holds no state. Every method is a pure function over a request or a b
 
 ## The module tree groups by who you reach; the shared machinery groups by reach
 
-`providers::anthropic::{api, cli}` and `providers::openai::{api, cli}` are what a caller
-imports. `providers::api` and `providers::cli` are what a contributor builds on.
+`providers::anthropic::api`, `providers::openai::api` and `providers::gemini::api` are what a
+caller imports. `providers::api` is what a contributor builds on.
 
-This was the other way round once — `api::anthropic` beside `cli::claude` — on the reasoning
-that reach is the difference that matters. Reach *is* the difference that matters, and that
-turned out to be an argument for something else.
+This was the other way round once — `api::anthropic` and so on — on the reasoning that reach
+is the difference that matters. Reach *is* the difference that matters, and that turned out
+to be an argument for something else.
 
 **What is shared follows the reach.** Everything an API provider does apart from writing JSON
-is identical, and so is everything a subprocess does apart from its arguments. That is why
-`ApiProvider` and `LocalCli` exist and why they sit under `api/` and `cli/`. Reach is the
-axis the *code* is organised by, and it still is.
+is identical. That is why `ApiProvider` exists and why it sits under `api/`. Reach is the axis
+the *code* is organised by, and it still is.
 
 **What is chosen follows the vendor.** A caller knows which vendor before they know which
-reach, and the same models turn up behind more than one. Anthropic's answer over the Messages
-API and through Claude Code, and those differ in what they can carry rather than in what they
-are. Reach-first put that comparison two directories apart, and named the halves
-inconsistently while it was at it: `api::anthropic` for the company, `cli::claude` for the
-product. A caller weighing one against the other could not see there was a choice.
+reach, and the same models turn up behind more than one: Anthropic's over the Messages API
+and through Bedrock, and those differ in what they can carry rather than in what they are.
+Reach-first put that comparison directories apart, and a caller weighing one against the
+other could not see there was a choice.
 
 **If this became reach-first again**, the vendor files would have to move but nothing would
-break, because the engines are not in them — `anthropic/cli.rs` is forty lines. The cost is
-paid by the reader, not the compiler, which is exactly the kind of cost that goes unnoticed
-until somebody sends a prompt through the tool because they never saw the API beside it.
+break, because the engines are not in them. The cost is paid by the reader, not the compiler,
+which is exactly the kind of cost that goes unnoticed until somebody sends a prompt somewhere
+because they never saw the alternative beside it.
 
 ### What this does not mean
 
@@ -327,9 +302,7 @@ gateway is the gateway. Nothing moves; the sentence gets more accurate.
 
 That reading was always the real one. It is why `openai::api` takes its reach as a
 constructor argument — point it at Ollama and you are reaching your own machine, so the
-module cannot answer the question and asks instead. And it is why `anthropic::cli` sits
-under Anthropic despite being a subprocess: the credential is Claude Code's login, and the
-prompt still goes to Anthropic.
+module cannot answer the question and asks instead.
 
 **Option 2 is the one to argue with, because it is the friendly one.** A caller looking for
 Claude on Bedrock will look under `anthropic` first, and option 2 is where they would find
@@ -456,8 +429,8 @@ answers `stream` with the same text and the same usage, all at once. The alterna
 would each write it slightly differently.
 
 Whether a pairing *really* streams is `ModelCapabilities::streaming`, read before the call
-like every other capability. A command line tool that prints one JSON document when it
-finishes cannot stream whatever model is behind it, and it says so rather than failing.
+like every other capability. A provider that answers with one JSON document when it finishes
+cannot stream whatever model is behind it, and it says so rather than failing.
 
 The contract suite checks a streamed and a whole call agree about usage coverage. Two ways to
 ask the same question that disagree about what it cost make every cost report depend on which
@@ -1048,8 +1021,8 @@ variant appears. That is the pattern to copy, not to work around.
 `tests/every_provider_honours_the_contract.rs` runs it against all three of ours.
 
 A suite only outsiders have to pass is a suite nobody inside is held to. It has already earned
-this: applying it caught the command line provider claiming to know every model name, which
-turns a typo into a real model.
+this: applying it caught a provider claiming to know every model name, which turns a typo
+into a real model.
 
 `assert_a_bad_credential_is_denied` is a second entry point rather than part of the main
 suite, because the suite cannot break your credential for you: only you can build the
@@ -1066,13 +1039,12 @@ that never surfaces.
 |---|---:|---|
 | `anthropic`, `openai` | 31 | Both protocols. You supply the transport |
 | `+ reqwest` | 105 | And a bundled client, with `from_env` |
-| `cli` alone | 30 | A local tool as a subprocess, no network code |
 
 The first two are on by default and `reqwest` is not, so a build that reaches nothing
 compiles no network stack. The gateway's `server` feature turns on what it needs, and CI
 builds every feature alone so one that only compiles beside another is caught.
 
-**Count distinct crates, not lines of `cargo tree`.** These read 52, 250 and 53 for a while.
+**Count distinct crates, not lines of `cargo tree`.** These read 52 and 250 for a while.
 Those were `cargo tree | wc -l`, which prints a crate once per dependent that reaches it, so
 every figure was roughly 1.8x the truth. The argument held and the numbers did not, which is
 the more embarrassing half. `cargo tree --prefix none | sort -u` is what these are now.
@@ -1080,37 +1052,6 @@ the more embarrassing half. `cargo tree --prefix none | sort -u` is what these a
 Examples are gated with Cargo's `required-features` rather than a `cfg` attribute inside the
 file, so `cargo run --example` reports the missing feature instead of building a binary with
 nothing in it.
-
----
-
-## A command line preset is four claims about somebody else's program
-
-What to run, where the answer is in the JSON, what the usage fields are called, and what the
-probe proves. `LocalCli` does the spawning, the deadline, the kill on drop, the prompt
-assembly and the envelope reading, so a preset is a small file. Three of the four things in
-it cannot be checked from here.
-
-**A fixture written to match a preset proves the preset matches itself.** So the envelopes in
-`tests/recorded/` came off a real tool, and `ProcessRunner` replays one: everything about the
-provider stays real except the program, which is the one part that cannot be in a repository.
-That is also what finally puts the presets through the contract suite, which they had never
-been in, because without a runner they could not run at all.
-
-**Guessing the usage names is not an option.** Whether a tool's prompt count is the whole
-prompt or the uncached remainder decides whether a number is right or merely looks right, and
-`Usage::input_tokens` means the remainder. The recorded Claude Code run settles it: 4,685
-input beside 20,208 written to cache is a remainder, and a total would have read 24,893 and
-looked entirely reasonable.
-
-**The recording also found a bug the documentation had talked us out of looking for.** The
-preset reported `StopReason::Other` for every reply, with a comment saying a command line tool
-does not say why it stopped. This one does. `Other` is not `is_complete`, so every caller
-asking whether an answer had finished was told "no", forever. `Envelope::with_stop_reason`
-reads it where a recording shows one, and a tool that says nothing is still `Other`, because
-a truncated reply must not look finished.
-
-**A preset with no recording is a preset whose field names nobody has checked**, and this
-repository says which those are rather than implying they are all equal.
 
 ---
 
@@ -1262,91 +1203,6 @@ falling back to the route's model keeps a dated alias from turning a priced call
 
 **A cost uses the gateway the request started on.** A provider changed or removed while a
 stream runs does not reprice it against something it never used.
-
-## A command line tool in the image is a model behind a process, and nothing more
-
-Claude Code, Codex and Gemini CLI ship in the image, ready, and a provider of their type runs
-the tool once per request. The engine's `LocalCli` was written for a tool on a person's
-machine, signed in with its own login; a tool in a shared container, called by whoever holds
-the token, needed different answers, so the gateway runs them itself (`src/bin/llmr/cli.rs`).
-
-**Every tool the tool has is off.** These programs are agents: given a prompt they read files,
-run commands and search the web. Behind a router they are asked by callers who are not the
-operator, so each is started with all of it switched off, by the tool's own settings: `--tools
-""` for Claude Code, every acting feature disabled for Codex, an empty allow list for Gemini
-CLI. An allow list is preferred where there is one, because a tool added by a later version is
-then off too. Codex's features are switched off with `-c features.<name>=false` rather than
-`--disable`, which refuses a name the installed version does not know: an update must not
-turn a renamed feature into a provider that cannot start.
-
-**The environment is built, not inherited.** An empty environment, a home of its own, the
-proxy and certificate variables, one key. The master key and the tokens are in llmr's
-environment, and a child inherits it by default.
-
-**A call leaves nothing behind.** Its directory is its home, working directory and
-temporary directory, and it is removed when the call ends. A session file, a history or an
-error report from one caller's call would otherwise be there for the next caller's.
-
-**The tool does not retry.** Claude Code retries a 401 for minutes, Codex five times, Gemini
-CLI ten. Retrying and falling back is what a route set is configured for, and a tool that
-retries inside a request holds it while a fallback waits. Each is told not to.
-
-**Its failures are read as statuses.** A tool exits 1 for a bad key and for a timeout alike.
-Each prints the vendor's status somewhere (Claude Code's `api_error_status`, the status in
-Codex's `turn.failed` message, the `code` in Gemini CLI's error object), and it is mapped the
-way an API provider's status is: a 401 is a rejected credential that is not retried, a 429
-falls through. Without that every failure would be transient, and a revoked key would be
-retried on every request.
-
-**A subscription is the point.** llmr is run by whoever installs it, for their own projects,
-and a flat plan is what makes calling a model through a command line tool worth it: at API
-rates it would be the same model with a process in front. So each tool takes its own
-subscription's sign in, and an API key as the fallback.
-
-**The tool's own sign in, not a copy of its protocol.** llmr never speaks the vendors'
-OAuth. It hands each tool what that tool writes after signing in (Claude Code's token in
-`CLAUDE_CODE_OAUTH_TOKEN`, Codex's `auth.json`, Gemini CLI's `oauth_creds.json`) where the
-tool reads it, and lets the tool refresh it. A copy of a refresh flow breaks the day the
-vendor changes it; the tool is updated with the vendor.
-
-**A refreshed sign in is read back, because the old one stops working.** Codex's refresh
-token is replaced on every refresh, so a call that refreshed leaves the only valid copy in
-its directory. The file is read before the directory goes, and sealed into the store in
-place of the old, compared first against what the store holds, so a credential the panel
-changed meanwhile is not overwritten with the old account's.
-
-**A Codex call that will refresh runs alone.** Two calls refreshing at once would both spend
-one refresh token, and the second would be refused. Codex refreshes when its access token has
-under five minutes left (measured against 0.157.1), so a call inside six minutes of that takes
-the provider's sign in to itself, and every other call shares it. Gemini CLI's refresh token
-does not change, so its calls always share.
-
-**Claude Code's full mode for a subscription.** `--bare` reads only an API key. Without it
-Claude Code would read hooks, plugins, memory and `CLAUDE.md`, but the empty home and working
-directory have none, and MCP servers are shut out with `--strict-mcp-config`.
-
-**The request's system prompt replaces the tool's.** Claude Code and Gemini CLI otherwise
-send their own agent instructions, over twenty kilobytes each, on every call: spent from the
-plan, and the voice of a coding agent in every answer. Codex keeps its own, because the
-ChatGPT backend accepts only those; the system prompt goes at the top of the conversation
-instead.
-
-**Usage is read in each tool's own words.** Codex's input count includes the cached part and
-its output count includes reasoning; Gemini CLI's prompt count includes the cached part and
-its thinking is billed as output; Claude Code's are Anthropic's. Each is recorded from a run
-against a local endpoint (`src/bin/llmr/recorded/`), the way the engine's presets are.
-
-**The tested version ships; another is the operator's choice.** The image pins the versions
-the parsers were recorded against. An update installs from npm onto the volume, beside the
-copy in use, checks that it starts, and swaps it in with a rename, so a failed update changes
-nothing. Only a plain version number or `latest` reaches npm: a range, a tag, a URL or a path
-could install something other than the vendor's package.
-
-**llmr is its own init.** Process 1 has to reap what the tools leave behind. tini would, but
-tini is started with the master key in its environment and is not llmr's code, so it cannot
-be marked undumpable, and any process of the same user, a tool included, could read it from
-`/proc/1/environ`. So process 1 is llmr: undumpable, reaping, passing signals on, and running
-the gateway as its child.
 
 ---
 

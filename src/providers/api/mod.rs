@@ -780,7 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_answer_is_not_remembered_between_calls() {
-        // A credential rotates and a subscription lapses. An answer kept from earlier is a
+        // A credential rotates and an account lapses. An answer kept from earlier is a
         // claim about a moment that has passed, so the second call must ask again.
         let transport = Scripted::new(vec![status(401), listing(&["gpt-test"])]);
         let provider = provider(true, transport.clone());

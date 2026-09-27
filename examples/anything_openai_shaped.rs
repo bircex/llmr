@@ -52,8 +52,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         print!("{:<12} {:<16}", provider.id(), reach.to_string());
         if reach.is_on_device() {
             print!("  data stays here");
-        } else if reach.uses_local_credential() {
-            print!("  local key, data leaves");
         } else {
             print!("  data leaves");
         }

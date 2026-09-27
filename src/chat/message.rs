@@ -67,10 +67,9 @@ pub enum ContentBlock {
 
     /// An image, as part of a turn.
     ///
-    /// Not every reach can carry one at all. A command line tool takes text on standard
-    /// input, so an image through that reach is a path at best and a wrong answer at worst —
-    /// which is why this is a capability you can ask about before sending, and why a
-    /// provider that cannot carry it refuses rather than dropping it.
+    /// Not every model can take one at all, which is why this is a capability you can ask
+    /// about before sending, and why a provider that cannot carry it refuses rather than
+    /// dropping it.
     Image {
         /// The media type, as the provider will be told: `image/png`, `image/jpeg`.
         ///

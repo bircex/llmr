@@ -1,5 +1,5 @@
 name: Add a provider
-description: A vendor, an endpoint or a command line tool llmr cannot reach yet.
+description: A vendor or an endpoint llmr cannot reach yet.
 labels: ["provider"]
 body:
   - type: markdown
@@ -8,8 +8,8 @@ body:
         Two questions decide almost everything about how a provider is added here, and they
         are different questions.
 
-        **Which vendor** decides where the files go: `providers::<vendor>::api` or
-        `providers::<vendor>::cli`, beside whatever other reaches that vendor already has.
+        **Which vendor** decides where the files go: `providers::<vendor>::api`, beside
+        whatever other reaches that vendor already has.
 
         **Which reach** decides what it can carry, what it reports and whose credential
         pays. That is `Reach`, and it travels on `capabilities()` at runtime.
@@ -30,7 +30,6 @@ body:
         - first-party-api
         - cloud-partner
         - private-endpoint
-        - local-cli
         - self-hosted
     validations:
       required: true
@@ -45,7 +44,6 @@ body:
       options:
         - "It speaks the OpenAI chat completions shape"
         - "It has its own protocol"
-        - "It is a command line tool"
         - "Not sure"
     validations:
       required: true

@@ -3,7 +3,6 @@
 //! | Module | Reach | What it is |
 //! |---|---|---|
 //! | `api` | you say | Anything speaking `/v1/chat/completions` |
-//! | `cli` | [`crate::Reach::LocalCli`] | The Codex tool on this machine |
 //! | `embed` | you say | Anything speaking `/v1/embeddings` |
 //!
 //! # `api` is a shape, not a vendor
@@ -23,9 +22,6 @@
 
 #[cfg(feature = "openai")]
 pub mod api;
-
-#[cfg(feature = "cli")]
-pub mod cli;
 
 // Both features, because this is the embeddings trait spoken in the OpenAI shape and needs
 // each half. It is a sibling of `api` rather than something inside it: embeddings are a

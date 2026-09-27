@@ -330,25 +330,6 @@ async fn a_frame_that_is_neither_json_nor_the_sentinel_is_an_error() {
     );
 }
 
-// ---- Both ------------------------------------------------------------------------------
-
-#[cfg(feature = "cli")]
-#[tokio::test]
-async fn a_reach_that_cannot_stream_says_so_rather_than_failing_at_the_call() {
-    // The default path. A command line tool cannot stream, and the guarantee is that asking
-    // it to still produces the same reply rather than a refusal.
-    let cli = llmr::providers::anthropic::cli::provider(std::time::Duration::from_secs(1))
-        .serving(["claude-sonnet-5"]);
-    let caps = cli
-        .capabilities(&llmr::ModelId::from("claude-sonnet-5"))
-        .expect("a model it serves");
-    assert!(
-        !caps.streaming,
-        "a tool that prints one JSON document at the end cannot stream, and must say so \
-         rather than failing at the call"
-    );
-}
-
 // ---- Gemini ----------------------------------------------------------------------------
 
 #[cfg(feature = "gemini")]
