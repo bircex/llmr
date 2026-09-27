@@ -1,8 +1,9 @@
 # A release, from a tag rather than from somebody's laptop.
 #
-# llmr ships as a Docker image and nothing else. Pushing `v0.3.0` does two things:
+# llmr ships as a Docker image and nothing else. Versions are calendar versions,
+# YYYY.M.PATCH (CONTRIBUTING.md). Pushing `v2026.9.0` does two things:
 #
-#   * docker.yml publishes ghcr.io/<owner>/llmr:0.3.0 and :0.3 (amd64 and arm64), and
+#   * docker.yml publishes ghcr.io/<owner>/llmr:2026.9.0 and :2026.9 (amd64 and arm64), and
 #   * this workflow checks the tag and creates the GitHub release, with the changelog
 #     section as notes and the image to pull.
 #
@@ -45,6 +46,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # YYYY.M.PATCH with no leading zeros, which is also what Cargo and semver accept, and
+      # the year and month of the day it is pushed: a calendar version that names another
+      # month is a mistake, not a choice.
+      - name: The tag is a calendar version for this month
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if ! echo "$tag" | grep -Eq '^20[0-9]{2}\.(1[0-2]|[1-9])\.(0|[1-9][0-9]*)$'; then
+            echo "::error::v$tag is not a calendar version, YYYY.M.PATCH, such as v2026.9.0" >&2
+            exit 1
+          fi
+          month="$(date -u +%Y).$(date -u +%-m)"
+          if [ "${tag%.*}" != "$month" ]; then
+            echo "::error::v$tag names ${tag%.*}, and this month is $month" >&2
+            exit 1
+          fi
 
       - name: The tag matches the version in Cargo.toml
         run: |

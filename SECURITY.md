@@ -70,5 +70,5 @@ finished the work and billed for it.
 
 ## Supported versions
 
-The latest release: the newest `v*` tag and its image. The project is pre 1.0, so fixes go
+The latest release: the newest `v*` tag and its image. Fixes go
 into a new release rather than being backported.

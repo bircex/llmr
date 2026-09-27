@@ -20,6 +20,11 @@ call needs `Authorization: Bearer <token>` (or `x-api-key`); without it, nothing
 | `GET` | `/manage/models` | Every enabled model, across providers |
 | `GET` | [`/manage/routes`](#route-sets) | Every route set, with what is usable and what is resting |
 | `GET` `PUT` `DELETE` | `/manage/routes/{name}` | One route set |
+| `GET` | [`/manage/prices`](#prices) | The last price sync, prices held for you, prices set by hand |
+| `POST` | `/manage/prices/sync` | Read the price list now |
+| `POST` | `/manage/prices/held/{vendor}/{model}` | Accept or reject a held price |
+| `GET` | `/manage/providers/{id}/prices` | What a provider charges for each model, and where each price came from |
+| `PUT` `DELETE` | `/manage/providers/{id}/prices/{model}` | Set a price by hand; remove it |
 | `GET` `DELETE` | [`/manage/usage`](#usage) | Totals over a time range, overall or grouped; forget old rows |
 | `GET` | `/manage/usage/requests` | Single requests, newest first |
 
@@ -29,17 +34,19 @@ call needs `Authorization: Bearer <token>` (or `x-api-key`); without it, nothing
 
 ```json
 {
-  "version": "0.3.0",
+  "version": "2026.9.0",
   "uptime_secs": 3600,
   "auth": true,
   "providers": { "total": 3, "enabled": 2, "problems": [{ "provider": "groq", "problem": "no credential is set, and this provider type needs one" }] },
   "models_enabled": 5,
-  "route_sets": 2
+  "route_sets": 2,
+  "prices": { "sync": true, "last_success": 1790517075, "last_error": null, "held": 1 }
 }
 ```
 
 `problems` lists enabled providers that could not be built. Their routes are out of service
-until the problem is fixed; everything else keeps serving.
+until the problem is fixed; everything else keeps serving. `prices.held` counts synced prices
+waiting for you to [accept or reject](#held-prices).
 
 ## Provider types
 
@@ -362,6 +369,135 @@ stored and not used: there is no reordering by price or health, and a failing ro
 rested, so `resting` stays empty. A route whose provider has no endpoint for the kind is
 `unavailable`.
 
+## Prices
+
+A cost is a rate times what the provider reported. The rate comes from one of three places,
+each overruling the one before:
+
+| Source | | Book edition recorded |
+|---|---|---|
+| `shipped` | The tables in the image, read off the vendors' pricing pages when it was built | `anthropic-2026-09` |
+| `synced` | A public price list, read once a day | `synced-2026-09-27`, the day the price took effect |
+| `manual` | Set by you, per provider and model | `manual-2026-09-27`, the day it was set |
+
+Shipped and synced prices hold only for a provider on its vendor's own endpoint: an
+`anthropic`, `openai` or `gemini` provider with no `base_url`. What OpenAI charges for a
+model says nothing about what a proxy or Groq charges for the same name. A price set by hand
+holds for any provider, `openai-compatible` and `self-hosted` ones included; a self hosted
+model is `free` until you set one.
+
+Every priced cost names its edition (`llmr_cost.book` on a reply, `cost.book` on a usage
+row), so a price that changes later never re-prices the past.
+
+A rate is in dollars. The token fields are per million tokens; the others are for what is
+not sold by the token:
+
+| Field | Per | For |
+|---|---|---|
+| `input`, `output` | million tokens | Uncached input, and output (for an image model, the image tokens it reports) |
+| `cache_read`, `cache_write` | million tokens | Input read from and written to a prompt cache |
+| `image` | picture | An image model sold per picture rather than by its tokens |
+| `audio_second` | second of audio | A transcription model that reports the recording's length, such as `whisper-1` |
+| `character` | million characters | A text to speech model sold by the character, such as `tts-1` |
+
+A model priced by a unit its provider did not report (a speech model sold by the second,
+whose endpoint returns the recording and no length) is `unpriced`, not zero.
+
+### The sync
+
+Once a day (`LLMR_PRICE_SYNC_HOURS`), llmr reads [LiteLLM's price
+list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+(`LLMR_PRICE_SYNC_URL`) and takes the rows for Anthropic, OpenAI and Gemini. It never runs
+on the request path, and a restart does not read it again before the interval is up.
+
+- A new model's price, or a change of up to half, applies at once, and the change is logged
+  with the price before and after.
+- A change of more than half, either way, or a price dropping to nothing, is **held**: the
+  price that applied keeps applying until you accept or reject it. A list somebody else
+  maintains can be wrong, and a price falling to a third is as likely a typo as a cut.
+- A model priced one way below a context size and another above it (`gpt-5.5` above 272K
+  tokens, for instance) is left unpriced rather than priced right for short prompts and
+  wrong for long ones, as the shipped tables leave it.
+- A list that cannot be fetched or read changes nothing. The failure is kept in
+  `last_error` and the sync tries again within the hour.
+
+`POST /manage/prices/sync` reads the list now, whatever the schedule, and answers what it
+did, or `502 price_sync_failed` with the reason:
+
+```json
+{ "synced": { "seen": 163, "applied": 3, "changed": 1, "held": 1, "unchanged": 158, "skipped": 42 } }
+```
+
+`skipped` counts rows for the three vendors that are not a price llmr can charge: context
+bands, and kinds of model llmr does not serve.
+
+`GET /manage/prices`
+
+```json
+{
+  "sync": {
+    "enabled": true, "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+    "every_hours": 24, "last_attempt": 1790517075, "last_success": 1790517075, "last_error": null,
+    "last": { "seen": 163, "applied": 3, "changed": 1, "held": 1, "unchanged": 158, "skipped": 42 }
+  },
+  "synced_models": 160,
+  "held": [{
+    "vendor": "anthropic", "model": "claude-opus-5",
+    "applies": { "input": "5.000000", "cache_read": "0.500000", "cache_write": "6.250000", "output": "25.000000" },
+    "held": { "input": "1.000000", "cache_read": "0.100000", "cache_write": "1.250000", "output": "5.000000" },
+    "book": "synced-2026-09-27", "since": 1790517075,
+    "why": "input would go from 5.000000 to 1.000000"
+  }],
+  "manual": [{ "provider": "anthropic", "model": "claude-sonnet-5", "rate": { "...": "..." }, "note": "contract", "book": "manual-2026-09-20", "updated_at": 1789862400 }]
+}
+```
+
+### Held prices
+
+`POST /manage/prices/held/anthropic/claude-opus-5` with `{"decision": "accept"}` makes the
+held price the one that applies; `{"decision": "reject"}` keeps the one that applies, and the
+same price is not held again. A later sync that brings the list back to the price that
+applies drops the hold by itself. Either answers `204`; `404` when nothing is held.
+
+### What a provider charges
+
+`GET /manage/providers/anthropic/prices`: each model the provider has a row for, its rate,
+and where the rate came from. `?all=true` adds every model it has a price for.
+
+```json
+{
+  "provider": "anthropic",
+  "vendor_prices": true,
+  "data": [
+    { "model": "claude-sonnet-5", "rate": { "input": "2.000000", "cache_read": "0.200000", "cache_write": "2.500000", "output": "10.000000" }, "source": "synced", "book": "synced-2026-09-27", "note": null },
+    { "model": "claude-in-preview", "rate": null, "source": null, "book": null }
+  ]
+}
+```
+
+`vendor_prices` is `false` for a provider that shipped and synced prices do not reach.
+
+### Setting a price by hand
+
+`PUT /manage/providers/{id}/prices/{model}`
+
+```json
+{ "input": "1.80", "output": "9.00", "cache_read": "0.18", "note": "contract to 2027" }
+```
+
+Amounts are decimal text, never JSON numbers, so nothing is rounded on the way in; up to
+six decimal places. Every field is optional and at least one must be above zero. The answer
+is the price as stored, with `"source": "manual"`. It applies to the next request, and wins
+over the synced and shipped prices until `DELETE /manage/providers/{id}/prices/{model}`
+removes it. A price for your own hardware:
+
+```sh
+curl -X PUT localhost:8080/manage/providers/ollama/prices/llama3.1:8b \
+  -H 'content-type: application/json' -d '{"input": "0.05", "output": "0.05", "note": "power and amortisation"}'
+```
+
+Removing the provider removes its prices.
+
 ## Usage
 
 Every request the client API handles is recorded: answered, refused, failed or cut short.
@@ -407,8 +543,8 @@ How to read the cost:
 | `cost` | One amount per currency, never added across currencies |
 | `priced` | Requests priced in full: the provider's published rate times the usage it reported |
 | `partial` | Priced, but the provider left some usage fields out, so the amount is a floor |
-| `unpriced` | Answered by a paid provider llmr has no rate for (a custom `base_url`, an `openai-compatible` host, a model newer than the price table), or whose provider reported no usage |
-| `free` | Answered by a `self-hosted` provider: tokens are counted, nothing is charged |
+| `unpriced` | Answered by a paid provider llmr has no rate for (a custom `base_url` or an `openai-compatible` host with no [price set by hand](#setting-a-price-by-hand), a model no price list has yet), or whose provider reported no usage |
+| `free` | Answered by a `self-hosted` provider with no price set by hand: tokens are counted, nothing is charged |
 | `cost_complete` | `true` only when no request was `partial` or `unpriced`. Otherwise the amounts are what is known, and the real bill is higher |
 | `usage_missing` | Answered requests whose provider reported no token counts at all |
 
@@ -428,7 +564,7 @@ model.
     "served_model": "claude-sonnet-5", "stream": true, "outcome": "ok", "error_code": null,
     "stop_reason": "end_turn", "attempts": 1, "fell_through": 0, "latency_ms": 2210,
     "tokens": { "input": 812, "cache_read": 0, "cache_write": 0, "output": 64, "total": 876 },
-    "cost": { "status": "priced", "amount": "0.003396", "currency": "USD" }
+    "cost": { "status": "priced", "amount": "0.002264", "currency": "USD", "book": "anthropic-2026-09" }
   }],
   "next_before": 48212
 }

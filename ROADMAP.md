@@ -19,8 +19,8 @@ publishing, docs.rs or a public API, that is what the project did then.
 
 | | |
 |---|---:|
-| Source | 22,308 lines across 51 files, the service included |
-| Tests | 427 passing, all features · 270 on the default set |
+| Source | 24,761 lines across 52 files, the service included |
+| Tests | 450 passing, all features · 274 on the default set |
 | Distributed as | The Docker image, for amd64 and arm64, from `main` and from `v*` tags |
 | CI on GitHub | every pull request, including building and starting the image |
 
@@ -39,9 +39,9 @@ cargo test
 
 ## Next
 
-**0.3.0, the first release as a service:** the service (#76), its documentation (#77), REST
+**2026.9.0, the first release as a service** (and the first calendar version; there is no 0.3.0): the service (#76), its documentation (#77), REST
 management with the encrypted store (#78) and usage with cost (#79). It is the first release
-the release workflow and the image's `X.Y.Z` tags run for as a service.
+the release workflow and the image's `YYYY.M.PATCH` tags run for as a service.
 
 In order:
 

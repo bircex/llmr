@@ -105,7 +105,12 @@ impl std::ops::Add for Micros {
     }
 }
 
-/// What one model costs, per million tokens.
+/// What one model costs: per million tokens, and per unit for what is not sold by the token.
+///
+/// A chat model has only the token rates. An image, speech or transcription model may be
+/// sold by the picture, the second of audio or the character instead, and those rates are
+/// here beside the token ones rather than in a second table, so one lookup answers for any
+/// kind of model. A rate left at zero is one the vendor does not charge by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Rate {
@@ -117,6 +122,100 @@ pub struct Rate {
     pub cache_write: Micros,
     /// Tokens produced.
     pub output: Micros,
+    /// Each picture produced.
+    #[serde(default)]
+    pub image: Micros,
+    /// Each second of audio, heard or produced.
+    #[serde(default)]
+    pub audio_second: Micros,
+    /// Per million characters of text read aloud.
+    #[serde(default)]
+    pub character: Micros,
+}
+
+impl Rate {
+    /// A rate by the token: uncached input, cache reads, cache writes and output, each per
+    /// million tokens.
+    pub fn tokens(input: Micros, cache_read: Micros, cache_write: Micros, output: Micros) -> Rate {
+        Rate {
+            input,
+            cache_read,
+            cache_write,
+            output,
+            ..Rate::default()
+        }
+    }
+
+    /// The same rate, also charging this much for each picture.
+    #[must_use]
+    pub fn with_image(mut self, per_image: Micros) -> Rate {
+        self.image = per_image;
+        self
+    }
+
+    /// The same rate, also charging this much for each second of audio.
+    #[must_use]
+    pub fn with_audio_second(mut self, per_second: Micros) -> Rate {
+        self.audio_second = per_second;
+        self
+    }
+
+    /// The same rate, also charging this much per million characters.
+    #[must_use]
+    pub fn with_character(mut self, per_million: Micros) -> Rate {
+        self.character = per_million;
+        self
+    }
+
+    /// Whether any part of it is charged by the token.
+    pub fn by_token(&self) -> bool {
+        [self.input, self.cache_read, self.cache_write, self.output]
+            .iter()
+            .any(|m| m.0 != 0)
+    }
+}
+
+/// What a call produced or consumed that is not counted in tokens.
+///
+/// Each is `None` when nothing measured it, which is different from zero: a transcription
+/// whose length nobody reported is not a transcription of no seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct Units {
+    /// Pictures returned.
+    pub images: Option<u64>,
+    /// Audio heard or produced, in milliseconds.
+    pub audio_millis: Option<u64>,
+    /// Characters of text read aloud.
+    pub characters: Option<u64>,
+}
+
+impl Units {
+    /// Nothing measured.
+    pub fn none() -> Units {
+        Units::default()
+    }
+
+    /// This many pictures.
+    #[must_use]
+    pub fn with_images(mut self, images: u64) -> Units {
+        self.images = Some(images);
+        self
+    }
+
+    /// This much audio, in milliseconds.
+    #[must_use]
+    pub fn with_audio_millis(mut self, millis: u64) -> Units {
+        self.audio_millis = Some(millis);
+        self
+    }
+
+    /// This many characters.
+    #[must_use]
+    pub fn with_characters(mut self, characters: u64) -> Units {
+        self.characters = Some(characters);
+        self
+    }
 }
 
 /// A priced table, and where its numbers came from.
@@ -164,15 +263,27 @@ mod rows {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
 
+    fn zero(m: &Micros) -> bool {
+        m.0 == 0
+    }
+
     #[derive(Serialize, Deserialize)]
     struct Row {
         model: String,
+        #[serde(default)]
         input: Micros,
+        #[serde(default)]
         output: Micros,
         #[serde(default)]
         cache_read: Micros,
         #[serde(default)]
         cache_write: Micros,
+        #[serde(default, skip_serializing_if = "zero")]
+        image: Micros,
+        #[serde(default, skip_serializing_if = "zero")]
+        audio_second: Micros,
+        #[serde(default, skip_serializing_if = "zero")]
+        character: Micros,
     }
 
     pub fn serialize<S: Serializer>(
@@ -187,6 +298,9 @@ mod rows {
                 output: rate.output,
                 cache_read: rate.cache_read,
                 cache_write: rate.cache_write,
+                image: rate.image,
+                audio_second: rate.audio_second,
+                character: rate.character,
             })
             .collect::<Vec<_>>()
             .serialize(serializer)
@@ -211,6 +325,9 @@ mod rows {
                     output: row.output,
                     cache_read: row.cache_read,
                     cache_write: row.cache_write,
+                    image: row.image,
+                    audio_second: row.audio_second,
+                    character: row.character,
                 },
             );
         }
@@ -310,6 +427,30 @@ fn day_number(text: &str) -> Option<i64> {
 }
 
 impl PriceBook {
+    /// An empty book, dated and sourced, for a caller who fills its rows itself.
+    ///
+    /// Every field that makes a book auditable is an argument, for the reason
+    /// [`PriceBook::parse`] refuses a blank one.
+    pub fn new(
+        id: impl Into<String>,
+        provider: impl Into<String>,
+        effective_from: impl Into<String>,
+        source: impl Into<String>,
+        verified_at: impl Into<String>,
+        currency: impl Into<String>,
+    ) -> PriceBook {
+        PriceBook {
+            id: id.into(),
+            provider: provider.into(),
+            effective_from: effective_from.into(),
+            source: source.into(),
+            verified_at: verified_at.into(),
+            expires_on: None,
+            currency: currency.into(),
+            rates: BTreeMap::new(),
+        }
+    }
+
     /// How long this crate lets a price table go unchecked before it says so: 90 days.
     ///
     /// A rule rather than a guess dressed as one. Vendors change prices on their own
@@ -427,28 +568,72 @@ impl PriceBook {
     /// reported no usage at all. Both are honest answers, and both are better than a zero
     /// that adds into a total as though the call were free.
     pub fn price(&self, model: &ModelId, usage: &Usage) -> Option<Priced> {
+        self.price_with(model, usage, &Units::none())
+    }
+
+    /// What a call cost, counting what it produced that is not tokens as well.
+    ///
+    /// Each part of the rate that is not zero is charged by what measured it: the token
+    /// rates by `usage`, the picture, audio and character rates by `units`. A part whose
+    /// measure is missing is left out and the cost says it is partial, because it is a
+    /// floor. When no part of the rate was measured at all the answer is `None`, not zero.
+    pub fn price_with(&self, model: &ModelId, usage: &Usage, units: &Units) -> Option<Priced> {
         let rate = self.rate(model)?;
-        if usage.coverage() == UsageCoverage::Absent {
-            return None;
-        }
 
         // Per million tokens, so the product is divided by a million. Integer division
         // truncates, which understates by less than a millionth of a unit per line.
-        let part = |tokens: Option<u64>, per_million: Micros| -> i64 {
-            let tokens = i64::try_from(tokens.unwrap_or(0)).unwrap_or(i64::MAX);
-            tokens.saturating_mul(per_million.0) / 1_000_000
+        let per_million = |count: Option<u64>, price: Micros| -> i64 {
+            let count = i64::try_from(count.unwrap_or(0)).unwrap_or(i64::MAX);
+            count.saturating_mul(price.0) / 1_000_000
         };
 
-        let amount = part(usage.input_tokens, rate.input)
-            .saturating_add(part(usage.cache_read_tokens, rate.cache_read))
-            .saturating_add(part(usage.cache_write_tokens, rate.cache_write))
-            .saturating_add(part(usage.output_tokens, rate.output));
+        let mut amount: i64 = 0;
+        let mut measured = false;
+        let mut missing = false;
+        let mut coverage = UsageCoverage::Exact;
+
+        if rate.by_token() {
+            if usage.coverage() == UsageCoverage::Absent {
+                missing = true;
+            } else {
+                measured = true;
+                coverage = usage.coverage();
+                amount = per_million(usage.input_tokens, rate.input)
+                    .saturating_add(per_million(usage.cache_read_tokens, rate.cache_read))
+                    .saturating_add(per_million(usage.cache_write_tokens, rate.cache_write))
+                    .saturating_add(per_million(usage.output_tokens, rate.output));
+            }
+        }
+
+        let mut unit = |price: Micros, count: Option<u64>, per: i64| {
+            if price.0 == 0 {
+                return;
+            }
+            match count {
+                Some(count) => {
+                    measured = true;
+                    let count = i64::try_from(count).unwrap_or(i64::MAX);
+                    amount = amount.saturating_add(count.saturating_mul(price.0) / per);
+                }
+                None => missing = true,
+            }
+        };
+        unit(rate.image, units.images, 1);
+        unit(rate.audio_second, units.audio_millis, 1_000);
+        unit(rate.character, units.characters, 1_000_000);
+
+        if !measured {
+            return None;
+        }
+        if missing {
+            coverage = UsageCoverage::Partial;
+        }
 
         Some(Priced {
             amount: Micros(amount),
             currency: self.currency.clone(),
             book: self.id.clone(),
-            coverage: usage.coverage(),
+            coverage,
         })
     }
 }
@@ -568,12 +753,12 @@ mod tests {
         let mut rates = BTreeMap::new();
         rates.insert(
             "test-model".to_string(),
-            Rate {
-                input: Micros(3_000_000),
-                cache_read: Micros(300_000),
-                cache_write: Micros(3_750_000),
-                output: Micros(15_000_000),
-            },
+            Rate::tokens(
+                Micros(3_000_000),
+                Micros(300_000),
+                Micros(3_750_000),
+                Micros(15_000_000),
+            ),
         );
         PriceBook {
             id: "test-2026-08".into(),
@@ -670,6 +855,103 @@ mod tests {
         // Rounding a per call cost to cents turns most calls into zero.
         assert_eq!(Micros(1_234).exact(), "0.001234");
         assert_eq!(Micros(-2_500_000).exact(), "-2.500000");
+    }
+
+    fn media_book() -> PriceBook {
+        let mut book = book();
+        // Sold by the picture only, as some image models are.
+        book.rates.insert(
+            "pictures".into(),
+            Rate::default().with_image(Micros(39_000)),
+        );
+        // Sold by the second, as a transcription model is.
+        book.rates.insert(
+            "listener".into(),
+            Rate::default().with_audio_second(Micros(100)),
+        );
+        // Sold by the character, as a text to speech model is.
+        book.rates.insert(
+            "reader".into(),
+            Rate::default().with_character(Micros(15_000_000)),
+        );
+        book
+    }
+
+    #[test]
+    fn a_picture_a_second_and_a_character_are_each_priced_by_what_measured_them() {
+        let book = media_book();
+        let none = Usage::absent();
+
+        let two = book.price_with(&"pictures".into(), &none, &Units::none().with_images(2));
+        assert_eq!(two.as_ref().map(|p| p.amount), Some(Micros(78_000)));
+        assert_eq!(two.map(|p| p.coverage), Some(UsageCoverage::Exact));
+
+        // A minute and a half at a hundredth of a cent a second.
+        let heard = book.price_with(
+            &"listener".into(),
+            &none,
+            &Units::none().with_audio_millis(90_500),
+        );
+        assert_eq!(heard.map(|p| p.amount), Some(Micros(9_050)));
+
+        // Two thousand characters at fifteen dollars a million.
+        let read = book.price_with(
+            &"reader".into(),
+            &none,
+            &Units::none().with_characters(2_000),
+        );
+        assert_eq!(read.map(|p| p.amount), Some(Micros(30_000)));
+    }
+
+    #[test]
+    fn a_model_sold_by_a_unit_nobody_measured_is_unpriced_not_free() {
+        // The transcription whose length was not reported. Zero would be a guess; `None`
+        // is what is known.
+        assert_eq!(
+            media_book().price_with(&"listener".into(), &Usage::absent(), &Units::none()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_rate_with_tokens_and_pictures_is_partial_when_only_one_was_measured() {
+        let mut book = book();
+        book.rates.insert(
+            "both".into(),
+            Rate::tokens(Micros(5_000_000), Micros(0), Micros(0), Micros(0))
+                .with_image(Micros(10_000)),
+        );
+        let usage = Usage {
+            input_tokens: Some(1_000_000),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            output_tokens: Some(0),
+            estimated: false,
+        };
+        let priced = book.price_with(&"both".into(), &usage, &Units::none());
+        assert_eq!(priced.as_ref().map(|p| p.amount), Some(Micros(5_000_000)));
+        assert_eq!(
+            priced.map(|p| p.coverage),
+            Some(UsageCoverage::Partial),
+            "the pictures were not counted, so the amount is a floor"
+        );
+    }
+
+    #[test]
+    fn a_book_row_reads_unit_prices_and_writes_back_only_those_it_has() {
+        let book = PriceBook::parse(
+            "id = \"x\"\nprovider = \"p\"\neffective_from = \"2026-01-01\"\n\
+             source = \"s\"\nverified_at = \"2026-01-01\"\ncurrency = \"USD\"\n\
+             [[price]]\nmodel = \"whisper\"\naudio_second = \"0.0001\"\n",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            book.rate(&"whisper".into()).map(|r| r.audio_second),
+            Some(Micros(100))
+        );
+        let written = toml::to_string(&book).unwrap_or_default();
+        assert!(written.contains("audio_second"));
+        assert!(!written.contains("image"));
     }
 
     impl Priced {

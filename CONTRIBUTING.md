@@ -79,6 +79,7 @@ src/
     openai.rs      the OpenAI request and reply shape, both directions
     server.rs      the client API, the token check, streaming
     media.rs       the endpoints beside chat: embeddings, images, speech, transcription
+    prices.rs      prices kept current: the daily sync, held prices, prices set by hand
     error.rs       failures as OpenAI error bodies and status codes
   chat/          the engine: what a call is made of: message, request, response, stream
   cost/          what it consumed and what that is worth: usage, pricing, ledger
@@ -243,6 +244,20 @@ way to tell which of the others still hold.
 
 If you update a table, update the date, and say in the pull request where you checked.
 
+Every Monday, `prices.yml` compares the shipped price books with the list a running llmr
+syncs from, using the sync's own code, and keeps one issue open, "Shipped prices differ from
+the price list", listing each row that differs. It closes the issue itself once they agree.
+The issue is a prompt to check the vendor's page, not an instruction to copy the list: a
+book with a new `verified_at` claims a person read the page.
+
+To run the same comparison locally:
+
+```sh
+curl -fsSL -o /tmp/prices.json https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+LLMR_PRICE_LIST=/tmp/prices.json cargo test --features server --bin llmr \
+  a_real_price_list_against_the_shipped_tables -- --ignored --nocapture
+```
+
 ## Tests
 
 Name a test after the claim it makes, not after the function it calls.
@@ -254,16 +269,23 @@ person to see it will be deciding whether to delete it.
 
 ## Commits and versions
 
-Versions follow semantic versioning, applied to what users of llmr depend on: the client
-API, the management API, the response headers, the environment variables, and the database
-on their volume. Before 1.0, a breaking change to any of those is a minor bump and gets a
-line in `CHANGELOG.md`. A database that a new release cannot open is the worst kind of
+Versions are calendar versions, `YYYY.M.PATCH`: the year, the month without a leading zero,
+and a count of releases in that month from 0 (`2026.9.0`, `2026.9.1`, `2026.10.0`). They are
+valid semver as well, which Cargo requires. The number says when a release was cut, not how
+much it changed, so compatibility is kept by the changelog: a change that breaks what users
+of llmr depend on (the client API, the management API, the response headers, the
+environment variables, and the database on their volume) is listed under **Breaking** in
+that release's section. A database that a new release cannot open is the worst kind of
 break, which is why schema changes are migrations.
+
+Between releases, `Cargo.toml` carries the version the next release is expected to have, and
+`CHANGELOG.md` collects it under `## Unreleased: <version>`. Cutting a release sets both to
+the month it is cut in and renames that heading to `## <version> — <date>`.
 
 The engine's Rust types are not part of that promise. Most of them are `#[non_exhaustive]`
 and built through constructors, which keeps changes to them local; if you add a struct the
 gateway must build, give it a constructor in the same commit.
 
-A release is a tag, `vX.Y.Z`, matching the version in `Cargo.toml` and a section in
-`CHANGELOG.md`. The tag publishes the Docker image and the GitHub release; nothing is
+A release is a tag, `vYYYY.M.PATCH`, for the month it is pushed in, matching the version in
+`Cargo.toml` and a section in `CHANGELOG.md`; the release workflow refuses anything else. The tag publishes the Docker image and the GitHub release; nothing is
 published from a laptop.

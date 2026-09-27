@@ -5,6 +5,7 @@
 //! flight finish on the gateway they started on. The routers' health counters start again
 //! with each build, which is the price of never locking the request path.
 
+use crate::prices::{Effective, Origin, PriceOverride, SyncedPrice};
 use crate::records::{
     split_route, Capabilities, Kind, Model, Order as OrderSpec, Provider, ProviderType, RouteSpec,
 };
@@ -20,7 +21,7 @@ use llmr::transport::{HttpTransport, Reqwest};
 use llmr::Embedder;
 use llmr::{
     Access, Breaker, ChatRequest, ChatResponse, ModelCapabilities, ModelId, Order, PriceBook,
-    Retry, Route, Router, Secret,
+    Retry, Route, Router, Secret, Units,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -68,9 +69,12 @@ pub struct Built {
     pub provider: Arc<dyn llmr::Provider>,
     pub provider_type: ProviderType,
     pub reach: llmr::Reach,
-    /// The vendor's published prices, when the endpoint is the vendor's own. A price book
-    /// for OpenAI's API says nothing about what Groq charges for the same shape.
+    /// What it charges: the vendor's published prices when the endpoint is the vendor's own
+    /// (a price book for OpenAI's API says nothing about what Groq charges for the same
+    /// shape), overlaid with synced prices and then prices set by hand.
     pub prices: Option<Arc<PriceBook>>,
+    /// For each priced model, where its price came from and the edition a cost records.
+    pub origins: BTreeMap<String, (Origin, String)>,
     /// The endpoints beside chat, where the provider type has them.
     pub embedder: Option<Arc<dyn Embedder>>,
     pub images: Option<Arc<dyn ImageGenerator>>,
@@ -96,6 +100,8 @@ pub struct Snapshot {
     pub providers: Vec<(Provider, Option<String>)>,
     pub models: Vec<Model>,
     pub routes: Vec<(String, RouteSpec)>,
+    pub synced: Vec<SyncedPrice>,
+    pub overrides: Vec<PriceOverride>,
 }
 
 impl Snapshot {
@@ -114,6 +120,8 @@ impl Snapshot {
             providers,
             models: store.models(None)?,
             routes: store.routes()?,
+            synced: store.synced_prices()?,
+            overrides: store.price_overrides(None)?,
         })
     }
 }
@@ -218,7 +226,14 @@ impl Gateway {
                 .filter(|m| m.provider_id == record.id)
                 .collect();
             match build_provider(record, credential.as_deref(), &rows) {
-                Ok(built) => {
+                Ok(mut built) => {
+                    match Effective::compose(record, &snapshot.synced, &snapshot.overrides) {
+                        Some(effective) => {
+                            built.prices = Some(Arc::new(effective.book));
+                            built.origins = effective.origins;
+                        }
+                        None => built.prices = None,
+                    }
                     providers.insert(record.id.clone(), built);
                 }
                 Err(why) => problems.push((record.id.clone(), why)),
@@ -455,12 +470,26 @@ impl Gateway {
 
 impl Gateway {
     /// What a call through this route cost.
-    ///
-    /// A self hosted route is free: its tokens are counted and nothing is charged. A route
-    /// with a price book is priced against the model that served it, or, when a provider
-    /// answered under a dated alias the book does not list, the model the route names. Any
-    /// other answered call is unpriced, which is a different thing from free.
     pub fn cost(&self, route: &str, served: &ModelId, usage: &llmr::Usage) -> crate::usage::Cost {
+        self.cost_with(route, served, usage, &Units::none())
+    }
+
+    /// What a call through this route cost, counting pictures, seconds of audio and
+    /// characters as well as tokens.
+    ///
+    /// A route with a price for the model is priced against the model that served it, or,
+    /// when a provider answered under a dated alias the book does not list, the model the
+    /// route names. Without one, a self hosted route is free: its tokens are counted and
+    /// nothing is charged. Any other answered call is unpriced, which is a different thing
+    /// from free. A price set by hand on a self hosted route is honoured: somebody pays for
+    /// that hardware and said how much.
+    pub fn cost_with(
+        &self,
+        route: &str,
+        served: &ModelId,
+        usage: &llmr::Usage,
+        units: &Units,
+    ) -> crate::usage::Cost {
         use crate::usage::Cost;
         let Some((provider_id, target)) = split_route(route) else {
             return Cost::Unpriced;
@@ -468,17 +497,22 @@ impl Gateway {
         let Some(built) = self.providers.get(provider_id) else {
             return Cost::Unpriced;
         };
-        if built.reach.is_on_device() {
-            return Cost::Free;
-        }
-        let Some(book) = &built.prices else {
-            return Cost::Unpriced;
-        };
-        match book
-            .price(served, usage)
-            .or_else(|| book.price(&ModelId::from(target), usage))
-        {
-            Some(priced) => Cost::priced(priced.amount, priced.currency, priced.coverage),
+        let target = ModelId::from(target);
+        let priced = built.prices.as_ref().and_then(|book| {
+            [served, &target].into_iter().find_map(|model| {
+                let origin = built.origins.get(model.as_str())?;
+                if built.reach.is_on_device() && origin.0 != Origin::Manual {
+                    return None;
+                }
+                let priced = book.price_with(model, usage, units)?;
+                Some((priced, origin.1.clone()))
+            })
+        });
+        match priced {
+            Some((priced, edition)) => {
+                Cost::priced(priced.amount, priced.currency, priced.coverage, edition)
+            }
+            None if built.reach.is_on_device() => Cost::Free,
             None => Cost::Unpriced,
         }
     }
@@ -639,6 +673,15 @@ pub fn build_provider(
         }),
         provider_type: record.provider_type,
         reach,
+        origins: prices
+            .as_ref()
+            .map(|book| {
+                book.rates
+                    .keys()
+                    .map(|m| (m.clone(), (Origin::Shipped, book.id.clone())))
+                    .collect()
+            })
+            .unwrap_or_default(),
         prices: prices.map(Arc::new),
         embedder: None,
         images: None,
@@ -868,6 +911,8 @@ mod tests {
                     "ghost/x",
                 ]),
             )],
+            synced: vec![],
+            overrides: vec![],
         }
     }
 
@@ -940,6 +985,8 @@ mod tests {
             providers: vec![(vendor, Some("sk-test".into())), provider("local", true)],
             models: vec![],
             routes: vec![],
+            synced: vec![],
+            overrides: vec![],
         };
         let gateway = Gateway::build(&snapshot);
         let million = llmr::Usage::absent().with_input(1_000_000).with_output(0);
@@ -958,9 +1005,15 @@ mod tests {
                 micros,
                 currency,
                 partial,
+                book,
             } => {
                 assert_eq!(micros, rate.input.0);
                 assert_eq!(currency, "USD");
+                assert_eq!(
+                    book.as_deref(),
+                    Some(anthropic::api::shipped_prices().id.as_str()),
+                    "a cost names the edition that priced it"
+                );
                 // Cache fields were not reported, so the figure is a floor.
                 assert!(partial);
             }
@@ -993,6 +1046,81 @@ mod tests {
     }
 
     #[test]
+    fn a_price_set_by_hand_beats_a_synced_one_which_beats_the_shipped_one() {
+        use crate::prices::{PriceOverride, SyncedPrice};
+        use crate::usage::Cost;
+        use llmr::{Micros, Rate};
+        let (mut vendor, _) = provider("anthropic", true);
+        vendor.provider_type = ProviderType::Anthropic;
+        vendor.base_url = None;
+        vendor.reach = None;
+        let per_million = |input: i64| Rate::tokens(Micros(input), Micros(0), Micros(0), Micros(0));
+        let snapshot = Snapshot {
+            providers: vec![(vendor, Some("sk-test".into())), provider("local", true)],
+            models: vec![],
+            routes: vec![],
+            synced: vec![SyncedPrice {
+                vendor: "anthropic".into(),
+                model: "claude-haiku-4-5".into(),
+                rate: Some(per_million(700_000)),
+                book: "synced-2026-09-27".into(),
+                updated_at: 0,
+                held: None,
+                rejected: None,
+            }],
+            overrides: vec![
+                PriceOverride {
+                    provider_id: "anthropic".into(),
+                    model: "claude-sonnet-5".into(),
+                    rate: per_million(1_000_000),
+                    note: Some("negotiated".into()),
+                    updated_at: 0,
+                },
+                PriceOverride {
+                    provider_id: "local".into(),
+                    model: "painter".into(),
+                    rate: Rate::default().with_image(Micros(20_000)),
+                    note: None,
+                    updated_at: 0,
+                },
+            ],
+        };
+        let gateway = Gateway::build(&snapshot);
+        let million = llmr::Usage::absent().with_input(1_000_000).with_output(0);
+        let priced = |route: &str, model: &str| match gateway.cost(route, &model.into(), &million) {
+            Cost::Priced { micros, book, .. } => Some((micros, book.unwrap_or_default())),
+            _ => None,
+        };
+        assert_eq!(
+            priced("anthropic/claude-sonnet-5", "claude-sonnet-5"),
+            Some((1_000_000, "manual-1970-01-01".into()))
+        );
+        assert_eq!(
+            priced("anthropic/claude-haiku-4-5", "claude-haiku-4-5"),
+            Some((700_000, "synced-2026-09-27".into()))
+        );
+        assert_eq!(
+            priced("anthropic/claude-opus-5", "claude-opus-5").map(|p| p.0),
+            Some(5_000_000)
+        );
+
+        // A self hosted model is free, unless somebody said what it costs.
+        assert_eq!(
+            gateway.cost("local/small", &"small".into(), &million),
+            Cost::Free
+        );
+        match gateway.cost_with(
+            "local/painter",
+            &"painter".into(),
+            &llmr::Usage::absent(),
+            &Units::none().with_images(3),
+        ) {
+            Cost::Priced { micros, .. } => assert_eq!(micros, 60_000),
+            other => panic!("expected three pictures priced, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_shipped_model_needs_no_capabilities_row_to_be_enabled() {
         let (mut vendor, _) = provider("anthropic", true);
         vendor.provider_type = ProviderType::Anthropic;
@@ -1002,6 +1130,8 @@ mod tests {
             providers: vec![(vendor, Some("sk-test".into()))],
             models: vec![model("anthropic", "claude-sonnet-5", true, false)],
             routes: vec![("default".into(), spec(&["anthropic/claude-sonnet-5"]))],
+            synced: vec![],
+            overrides: vec![],
         };
         let gateway = Gateway::build(&snapshot);
         let served = gateway.served().next().unwrap();

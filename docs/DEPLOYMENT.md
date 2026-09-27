@@ -72,6 +72,13 @@ writable by uid `65532`: `chown 65532:65532 /srv/llmr`.
 | `LLMR_MAX_BODY_MB` | `32` | Largest request body. Images, documents, recordings and transcription uploads arrive inline |
 | `RUST_LOG` | `info` | Log filter |
 | `LLMR_LOG_FORMAT` | text | `json` for one object per line |
+| `LLMR_PRICE_SYNC` | on | `off` to stop reading the price list. Prices then come from the image's tables and any set by hand |
+| `LLMR_PRICE_SYNC_URL` | LiteLLM's list | Where the price list is read from. Must be in [LiteLLM's layout](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) |
+| `LLMR_PRICE_SYNC_HOURS` | `24` | Hours between syncs, 1 to 720 |
+
+The price sync is the one request llmr makes that no client asked for: a `GET` of the price
+list, to `raw.githubusercontent.com` unless `LLMR_PRICE_SYNC_URL` says otherwise. On a
+network that allows no such traffic, set `LLMR_PRICE_SYNC=off`; nothing else changes.
 
 ## Who can reach it
 
@@ -138,7 +145,7 @@ upgrade.
 One line per request, on stdout (shown here without the timestamp and target):
 
 ```
-INFO answered model=default route=anthropic/claude-sonnet-5 attempts=1 fell_through=0 input_tokens=812 output_tokens=64 stop="end_turn" cost="0.003396 USD"
+INFO answered model=default route=anthropic/claude-sonnet-5 attempts=1 fell_through=0 input_tokens=812 output_tokens=64 stop="end_turn" cost="0.002264 USD"
 WARN fell through model=default route=openai/gpt-5.1 why="rate limited, retry after 2000ms (attempt 1 of 2, waiting 2000ms)"
 ```
 

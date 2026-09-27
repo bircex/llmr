@@ -160,7 +160,7 @@ fn the_anthropic_registry_knows_the_model_this_crate_names() {
 #[test]
 fn a_real_call_prices_to_a_number_somebody_can_check() {
     use llmr::{Micros, UsageCoverage};
-
+    // A million input tokens of Sonnet at two dollars, and a million out at ten.
     // A million input tokens of Sonnet at three dollars, and a million out at fifteen.
     let usage = Usage::absent()
         .with_input(1_000_000)
@@ -170,10 +170,10 @@ fn a_real_call_prices_to_a_number_somebody_can_check() {
 
     let priced = llmr::providers::anthropic::api::shipped_prices()
         .price(&ModelId::from("claude-sonnet-5"), &usage);
-    assert_eq!(priced.as_ref().map(|p| p.amount), Some(Micros(18_000_000)));
+    assert_eq!(priced.as_ref().map(|p| p.amount), Some(Micros(12_000_000)));
     assert_eq!(
         priced.as_ref().map(|p| p.amount.exact()),
-        Some("18.000000".into())
+        Some("12.000000".into())
     );
     assert_eq!(
         priced.as_ref().map(|p| p.coverage),
@@ -181,7 +181,7 @@ fn a_real_call_prices_to_a_number_somebody_can_check() {
     );
     assert_eq!(
         priced.map(|p| p.book),
-        Some("anthropic-2026-08".into()),
+        Some("anthropic-2026-09".into()),
         "a cost has to name the edition that produced it, or the past gets re-priced by \
          accident later"
     );

@@ -48,6 +48,8 @@ pub struct AppState {
     pub started: std::time::Instant,
     /// Where each request's usage row goes.
     pub recorder: Recorder,
+    /// How prices are kept current, and the lock that keeps two syncs from overlapping.
+    pub prices: crate::prices::Sync,
 }
 
 /// Milliseconds since `started`, for a usage row.
@@ -701,6 +703,7 @@ mod tests {
                 keys: vec!["secret".into()],
                 started: std::time::Instant::now(),
                 recorder: crate::usage::Recorder::start(db.clone()).0,
+                prices: crate::prices::Sync::new(crate::prices::Config::off()),
             }),
             1024 * 1024,
         )
@@ -1058,6 +1061,7 @@ mod tests {
                 keys: vec!["secret".into()],
                 started: std::time::Instant::now(),
                 recorder: crate::usage::Recorder::start(db.clone()).0,
+                prices: crate::prices::Sync::new(crate::prices::Config::off()),
             }),
             1024 * 1024,
         );

@@ -41,6 +41,7 @@ docker run -d --name llmr -p 127.0.0.1:8080:8080 \
 | `LLMR_LISTEN` | `0.0.0.0:8080` |
 | `LLMR_MAX_BODY_MB` | `32`. Images, documents and recordings arrive inline |
 | `RUST_LOG`, `LLMR_LOG_FORMAT` | Log filter (`info`), and `json` for one object per line |
+| `LLMR_PRICE_SYNC`, `LLMR_PRICE_SYNC_HOURS` | `off` to stop the daily price sync; hours between syncs (`24`) |
 
 Everything llmr is told is kept in `/var/lib/llmr`. Mount a volume there, or it is lost with
 the container.
@@ -134,6 +135,17 @@ curl "localhost:8080/manage/usage?group_by=model&from=$(date -d yesterday +%s)"
 Cost is the provider's published rate times the usage it reported, one amount per currency.
 A self hosted model is `free`; a paid provider llmr has no rate for is `unpriced`, and a total
 that includes one says it is incomplete rather than presenting a floor as the bill.
+
+Prices are kept current without a new image. llmr reads a public price list once a day
+([LiteLLM's](https://github.com/BerriAI/litellm), by default) and applies what changed; a
+price that moves by more than half waits for you to accept it. A price you set by hand, for
+a negotiated rate or your own hardware, wins over both:
+
+```sh
+curl -X PUT localhost:8080/manage/providers/anthropic/prices/claude-sonnet-5 \
+  -H 'content-type: application/json' -d '{"input": "1.80", "output": "9.00", "note": "contract"}'
+curl localhost:8080/manage/prices          # last sync, held prices, prices set by hand
+```
 
 ## Documentation
 

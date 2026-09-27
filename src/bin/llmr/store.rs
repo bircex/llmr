@@ -9,6 +9,7 @@
 //! only inside that closure, so no lock is ever held across an await.
 
 use crate::crypto::MasterKey;
+use crate::prices::{Change, Held, PriceOverride, SyncState, SyncedPrice};
 use crate::records::{Capabilities, Kind, Model, Provider, ProviderType, RouteSpec};
 use crate::usage::{Cost, Grouping, Outcome, Tokens, UsageFilter, UsageRecord, UsageTotals};
 use llmr::Reach;
@@ -120,8 +121,36 @@ const CLI_PROVIDERS_V3: &str =
 /// which decides the endpoint that serves it. Every model before this one was a chat model.
 const MODEL_KINDS_V4: &str = "ALTER TABLE models ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'";
 
+/// Version 5: prices kept current. What a daily sync read from a public price list, what
+/// somebody set by hand for one provider's model, and on each usage row the price book
+/// edition that priced it, so a price that changes later does not re-price the past.
+const PRICES_V5: &str = r#"
+CREATE TABLE IF NOT EXISTS synced_prices (
+    vendor        TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    rate          TEXT,
+    book          TEXT NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    held_rate     TEXT,
+    held_book     TEXT,
+    held_at       INTEGER,
+    held_why      TEXT,
+    rejected_rate TEXT,
+    PRIMARY KEY (vendor, model)
+);
+CREATE TABLE IF NOT EXISTS price_overrides (
+    provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+    model       TEXT NOT NULL,
+    rate        TEXT NOT NULL,
+    note        TEXT,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (provider_id, model)
+);
+ALTER TABLE usage ADD COLUMN price_book TEXT;
+"#;
+
 /// The schema version this build writes. Raised with a migration, never edited in place.
-const VERSION: i64 = 4;
+const VERSION: i64 = 5;
 
 /// What is sealed into `meta` so a wrong master key is caught at startup.
 const KEY_CHECK: &[u8] = b"llmr-master-key-check";
@@ -186,6 +215,9 @@ impl Store {
         }
         if version < 4 {
             conn.execute_batch(MODEL_KINDS_V4)?;
+        }
+        if version < 5 {
+            conn.execute_batch(PRICES_V5)?;
         }
         conn.pragma_update(None, "user_version", VERSION)?;
 
@@ -484,9 +516,9 @@ impl Store {
                 "INSERT INTO usage (at, request_id, asked, route, provider_id, model, served_model, \
                  stream, outcome, error_code, stop_reason, attempts, fell_through, latency_ms, \
                  input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, cost_status, \
-                 cost_micros, currency) \
+                 cost_micros, currency, price_book) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-                 ?17, ?18, ?19, ?20, ?21)",
+                 ?17, ?18, ?19, ?20, ?21, ?22)",
             )?;
             for row in rows {
                 insert.execute(params![
@@ -511,6 +543,7 @@ impl Store {
                     row.cost.status(),
                     row.cost.micros(),
                     row.cost.currency(),
+                    row.cost.book(),
                 ])?;
             }
         }
@@ -637,6 +670,7 @@ impl Store {
                         status.as_deref(),
                         row.get("cost_micros")?,
                         row.get("currency")?,
+                        row.get("price_book")?,
                     ),
                 },
             ))
@@ -653,6 +687,212 @@ impl Store {
 }
 
 /// The store, shareable across handlers, with every call on the blocking pool.
+fn rate_text(rate: &llmr::Rate) -> String {
+    serde_json::to_string(rate).unwrap_or_default()
+}
+
+fn rate_of(text: Option<String>) -> Option<llmr::Rate> {
+    text.and_then(|t| serde_json::from_str(&t).ok())
+}
+
+impl Store {
+    /// Every synced price, held ones included.
+    pub fn synced_prices(&self) -> StoreResult<Vec<SyncedPrice>> {
+        let mut statement = self.conn.prepare(
+            "SELECT vendor, model, rate, book, updated_at, held_rate, held_book, held_at, \
+             held_why, rejected_rate FROM synced_prices ORDER BY vendor, model",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let held = match rate_of(row.get(5)?) {
+                Some(rate) => Some(Held {
+                    rate,
+                    book: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                    at: row.get::<_, Option<i64>>(7)?.unwrap_or_default(),
+                    why: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+                }),
+                None => None,
+            };
+            Ok(SyncedPrice {
+                vendor: row.get(0)?,
+                model: row.get(1)?,
+                rate: rate_of(row.get(2)?),
+                book: row.get(3)?,
+                updated_at: row.get(4)?,
+                held,
+                rejected: rate_of(row.get(9)?),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Writes what a sync decided, and what the sync did, in one transaction.
+    pub fn apply_price_changes(
+        &mut self,
+        changes: &[Change],
+        book: &str,
+        state: &SyncState,
+    ) -> StoreResult<()> {
+        let at = now();
+        let tx = self.conn.transaction()?;
+        for change in changes {
+            match change {
+                Change::Apply {
+                    vendor,
+                    model,
+                    rate,
+                    ..
+                } => {
+                    tx.execute(
+                        "INSERT INTO synced_prices (vendor, model, rate, book, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5) \
+                         ON CONFLICT (vendor, model) DO UPDATE SET rate = ?3, book = ?4, \
+                         updated_at = ?5, held_rate = NULL, held_book = NULL, held_at = NULL, \
+                         held_why = NULL, rejected_rate = NULL",
+                        params![vendor, model, rate_text(rate), book, at],
+                    )?;
+                }
+                Change::Hold {
+                    vendor,
+                    model,
+                    rate,
+                    why,
+                } => {
+                    tx.execute(
+                        "INSERT INTO synced_prices (vendor, model, rate, book, updated_at, \
+                         held_rate, held_book, held_at, held_why) \
+                         VALUES (?1, ?2, NULL, '', ?3, ?4, ?5, ?3, ?6) \
+                         ON CONFLICT (vendor, model) DO UPDATE SET held_rate = ?4, \
+                         held_book = ?5, held_at = ?3, held_why = ?6",
+                        params![vendor, model, at, rate_text(rate), book, why],
+                    )?;
+                }
+                Change::Unhold { vendor, model } => {
+                    tx.execute(
+                        "UPDATE synced_prices SET held_rate = NULL, held_book = NULL, \
+                         held_at = NULL, held_why = NULL WHERE vendor = ?1 AND model = ?2",
+                        params![vendor, model],
+                    )?;
+                }
+            }
+        }
+        // A row that only ever held a price, and holds none now, is nothing.
+        tx.execute(
+            "DELETE FROM synced_prices WHERE rate IS NULL AND held_rate IS NULL \
+             AND rejected_rate IS NULL",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('price_sync', ?1) \
+             ON CONFLICT (key) DO UPDATE SET value = ?1",
+            params![serde_json::to_vec(state).unwrap_or_default()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records a sync that failed, keeping the prices it would have changed.
+    pub fn set_price_sync_state(&self, state: &SyncState) -> StoreResult<()> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('price_sync', ?1) \
+             ON CONFLICT (key) DO UPDATE SET value = ?1",
+            params![serde_json::to_vec(state).unwrap_or_default()],
+        )?;
+        Ok(())
+    }
+
+    /// What the last sync did.
+    pub fn price_sync_state(&self) -> StoreResult<SyncState> {
+        let stored: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'price_sync'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default())
+    }
+
+    /// Makes a held price the one that applies, or refuses it.
+    pub fn settle_held(&self, vendor: &str, model: &str, accept: bool) -> StoreResult<()> {
+        let sql = if accept {
+            "UPDATE synced_prices SET rate = held_rate, book = held_book, updated_at = ?3, \
+             held_rate = NULL, held_book = NULL, held_at = NULL, held_why = NULL, \
+             rejected_rate = NULL WHERE vendor = ?1 AND model = ?2 AND held_rate IS NOT NULL"
+        } else {
+            "UPDATE synced_prices SET rejected_rate = held_rate, held_rate = NULL, \
+             held_book = NULL, held_at = NULL, held_why = NULL, updated_at = ?3 \
+             WHERE vendor = ?1 AND model = ?2 AND held_rate IS NOT NULL"
+        };
+        let changed = self.conn.execute(sql, params![vendor, model, now()])?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!(
+                "no price is held for {vendor}/{model}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Prices set by hand, for one provider or all of them.
+    pub fn price_overrides(&self, provider: Option<&str>) -> StoreResult<Vec<PriceOverride>> {
+        let mut statement = self.conn.prepare(
+            "SELECT provider_id, model, rate, note, updated_at FROM price_overrides \
+             WHERE ?1 IS NULL OR provider_id = ?1 ORDER BY provider_id, model",
+        )?;
+        let rows = statement.query_map(params![provider], |row| {
+            Ok(PriceOverride {
+                provider_id: row.get(0)?,
+                model: row.get(1)?,
+                rate: rate_of(row.get(2)?).unwrap_or_default(),
+                note: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Sets a price by hand, replacing one set before.
+    pub fn put_price_override(
+        &self,
+        provider: &str,
+        model: &str,
+        rate: &llmr::Rate,
+        note: Option<&str>,
+    ) -> StoreResult<PriceOverride> {
+        self.provider(provider)?;
+        let at = now();
+        self.conn.execute(
+            "INSERT INTO price_overrides (provider_id, model, rate, note, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT (provider_id, model) DO UPDATE SET rate = ?3, note = ?4, updated_at = ?5",
+            params![provider, model, rate_text(rate), note, at],
+        )?;
+        Ok(PriceOverride {
+            provider_id: provider.into(),
+            model: model.into(),
+            rate: *rate,
+            note: note.map(Into::into),
+            updated_at: at,
+        })
+    }
+
+    /// Removes a price set by hand, so the synced or shipped one applies again.
+    pub fn delete_price_override(&self, provider: &str, model: &str) -> StoreResult<()> {
+        let removed = self.conn.execute(
+            "DELETE FROM price_overrides WHERE provider_id = ?1 AND model = ?2",
+            params![provider, model],
+        )?;
+        if removed == 0 {
+            return Err(StoreError::NotFound(format!(
+                "no price is set by hand for {provider}/{model}"
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct Db(Arc<Mutex<Store>>);
 
@@ -861,6 +1101,7 @@ mod tests {
             micros,
             currency: "USD".into(),
             partial: false,
+            book: None,
         };
         store
             .insert_usage(&[
@@ -874,6 +1115,7 @@ mod tests {
                         micros: 500,
                         currency: "EUR".into(),
                         partial: false,
+                        book: None,
                     },
                 ),
                 row(400, Some("c/m"), Outcome::Ok, Cost::Unpriced),
@@ -947,6 +1189,114 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, VERSION);
+    }
+
+    #[test]
+    fn a_version_four_database_gains_prices_and_keeps_its_usage() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(USAGE_V2).unwrap();
+        conn.execute_batch(MODEL_KINDS_V4).unwrap();
+        conn.execute(
+            "INSERT INTO usage (at, request_id, asked, stream, outcome, attempts, fell_through, \
+             latency_ms, cost_status, cost_micros, currency) \
+             VALUES (1, 'old', 'default', 0, 'ok', 1, 0, 5, 'priced', 42, 'USD')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 4).unwrap();
+        let store = Store::setup(conn, key()).unwrap();
+
+        // The row recorded before llmr kept the book reads as priced, with no book.
+        let rows = store
+            .usage_requests(&crate::usage::UsageFilter::default(), None, 10)
+            .unwrap();
+        assert_eq!(rows[0].1.cost.micros(), Some(42));
+        assert_eq!(rows[0].1.cost.book(), None);
+        assert!(store.synced_prices().unwrap().is_empty());
+        assert!(store.price_overrides(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_held_price_is_kept_apart_until_accepted_and_a_refused_one_is_remembered() {
+        use crate::prices::{Change, SyncState};
+        use llmr::{Micros, Rate};
+        let mut store = Store::in_memory(key()).unwrap();
+        let rate = |input| Rate::tokens(Micros(input), Micros(0), Micros(0), Micros(0));
+        let state = SyncState::default();
+        store
+            .apply_price_changes(
+                &[
+                    Change::Apply {
+                        vendor: "openai".into(),
+                        model: "a".into(),
+                        rate: rate(1),
+                        was: None,
+                    },
+                    Change::Hold {
+                        vendor: "openai".into(),
+                        model: "b".into(),
+                        rate: rate(2),
+                        why: "moved".into(),
+                    },
+                ],
+                "synced-2026-09-27",
+                &state,
+            )
+            .unwrap();
+        let rows = store.synced_prices().unwrap();
+        assert_eq!(rows[0].rate, Some(rate(1)));
+        assert_eq!(rows[0].book, "synced-2026-09-27");
+        assert_eq!(rows[1].rate, None, "held, and nothing synced applies yet");
+        assert_eq!(rows[1].held.as_ref().map(|h| h.rate), Some(rate(2)));
+
+        store.settle_held("openai", "b", false).unwrap();
+        let rows = store.synced_prices().unwrap();
+        assert_eq!(rows[1].held, None);
+        assert_eq!(rows[1].rejected, Some(rate(2)));
+        assert!(matches!(
+            store.settle_held("openai", "b", true),
+            Err(StoreError::NotFound(_))
+        ));
+
+        store
+            .apply_price_changes(
+                &[Change::Hold {
+                    vendor: "openai".into(),
+                    model: "a".into(),
+                    rate: rate(9),
+                    why: "moved".into(),
+                }],
+                "synced-2026-09-28",
+                &state,
+            )
+            .unwrap();
+        store.settle_held("openai", "a", true).unwrap();
+        let a = store.synced_prices().unwrap().remove(0);
+        assert_eq!(
+            (a.rate, a.book.as_str()),
+            (Some(rate(9)), "synced-2026-09-28")
+        );
+    }
+
+    #[test]
+    fn a_price_set_by_hand_goes_with_its_provider() {
+        use llmr::{Micros, Rate};
+        let store = Store::in_memory(key()).unwrap();
+        store
+            .insert_provider(&provider(&store, "local", None))
+            .unwrap();
+        let rate = Rate::default().with_image(Micros(40_000));
+        store
+            .put_price_override("local", "painter", &rate, Some("our GPUs"))
+            .unwrap();
+        assert!(matches!(
+            store.put_price_override("ghost", "m", &rate, None),
+            Err(StoreError::NotFound(_))
+        ));
+        assert_eq!(store.price_overrides(Some("local")).unwrap()[0].rate, rate);
+        store.delete_provider("local").unwrap();
+        assert!(store.price_overrides(None).unwrap().is_empty());
     }
 
     #[test]

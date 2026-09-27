@@ -12,34 +12,34 @@
 # reports no usage, and a price applied to an invented token count produces a number that
 # looks like a receipt. An unpriced call stays unpriced, and a report says so.
 
-id             = "anthropic-2026-08"
+id             = "anthropic-2026-09"
 provider       = "anthropic"
 effective_from = "2026-08-01"
 source         = "vendor pricing page"
-verified_at    = "2026-08-24"
+verified_at    = "2026-09-27"
 currency       = "USD"
 
 # Per million tokens.
 [[price]]
 model       = "claude-opus-5"
-input       = "15.00"
-output      = "75.00"
-cache_read  = "1.50"
-cache_write = "18.75"
+input       = "5.00"
+output      = "25.00"
+cache_read  = "0.50"
+cache_write = "6.25"
 
 [[price]]
 model       = "claude-opus-4-8"
-input       = "15.00"
-output      = "75.00"
-cache_read  = "1.50"
-cache_write = "18.75"
+input       = "5.00"
+output      = "25.00"
+cache_read  = "0.50"
+cache_write = "6.25"
 
 [[price]]
 model       = "claude-sonnet-5"
-input       = "3.00"
-output      = "15.00"
-cache_read  = "0.30"
-cache_write = "3.75"
+input       = "2.00"
+output      = "10.00"
+cache_read  = "0.20"
+cache_write = "2.50"
 
 [[price]]
 model       = "claude-haiku-4-5"

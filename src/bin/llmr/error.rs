@@ -119,6 +119,16 @@ impl ApiError {
         )
     }
 
+    /// Something llmr fetches from, such as the price list, could not be read.
+    pub fn bad_gateway(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::BAD_GATEWAY,
+            "server_error",
+            code,
+            message.into(),
+        )
+    }
+
     /// Something inside the gateway broke.
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(
