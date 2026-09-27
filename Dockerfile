@@ -24,13 +24,17 @@ ARG CODEX_VERSION=0.157.1
 ARG GEMINI_CLI_VERSION=0.61.0
 
 FROM rust:${RUST_VERSION}-slim-bookworm AS build
+# Set by buildx for each platform of a multi platform build.
+ARG TARGETPLATFORM
 WORKDIR /src
 COPY . .
 # Cache mounts rather than a dependency-only layer: the crate reads its model tables at
 # compile time, so a stub `src/` would not build, and the cache survives a source change
-# just as well.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+# just as well. One cache per platform: amd64 and arm64 build at the same time, and a shared
+# registry had both unpack the same crate at once, while a shared target directory would
+# mix two architectures' objects. The registry is also locked, for two builds of one platform.
+RUN --mount=type=cache,id=cargo-registry-${TARGETPLATFORM},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-target-${TARGETPLATFORM},target=/src/target,sharing=locked \
     cargo build --release --locked --features server --bin llmr \
  && install -D target/release/llmr /out/llmr
 
