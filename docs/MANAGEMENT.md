@@ -33,7 +33,7 @@ call needs `Authorization: Bearer <token>` (or `x-api-key`); without it, nothing
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "uptime_secs": 3600,
   "auth": true,
   "providers": { "total": 3, "enabled": 2, "problems": [{ "provider": "groq", "problem": "no credential is set, and this provider type needs one" }] },

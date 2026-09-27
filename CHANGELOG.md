@@ -5,6 +5,8 @@ change is a minor bump.
 
 ## Unreleased
 
+## 0.3.0 — 2026-09-27
+
 llmr stops being a library and becomes a service: one Docker image, managed over REST, with
 its state in an encrypted database. Nothing below existed in 0.2.0, and nothing from 0.2.0
 is published as a crate any more.

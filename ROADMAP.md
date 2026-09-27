@@ -39,11 +39,10 @@ cargo test
 
 ## Next
 
-**Done, not yet tagged:** the service (#76), its documentation (#77), REST management with the
-encrypted store (#78), usage with cost (#79), and the command line tools in the image (this
-change). Before the first tag: bump `version` in `Cargo.toml`, turn
-the changelog's Unreleased section into that version's, and tag. The release workflow and the
-image's `X.Y.Z` tags have not run yet, so watch the first one.
+**0.3.0, the first release as a service:** the service (#76), its documentation (#77), REST
+management with the encrypted store (#78), usage with cost (#79), the command line tools in
+the image (#80) and their subscription sign in (#81). It is the first release the release
+workflow and the image's `X.Y.Z` tags run for as a service.
 
 In order:
 
