@@ -72,6 +72,13 @@ writable by uid `65532`: `chown 65532:65532 /srv/llmr`.
 | `LLMR_MAX_BODY_MB` | `32` | Largest request body. Images, documents, recordings and transcription uploads arrive inline |
 | `RUST_LOG` | `info` | Log filter |
 | `LLMR_LOG_FORMAT` | text | `json` for one object per line |
+| `LLMR_PRICE_SYNC` | on | `off` to stop reading the price list. Prices then come from the image's tables and any set by hand |
+| `LLMR_PRICE_SYNC_URL` | LiteLLM's list | Where the price list is read from. Must be in [LiteLLM's layout](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) |
+| `LLMR_PRICE_SYNC_HOURS` | `24` | Hours between syncs, 1 to 720 |
+
+The price sync is the one request llmr makes that no client asked for: a `GET` of the price
+list, to `raw.githubusercontent.com` unless `LLMR_PRICE_SYNC_URL` says otherwise. On a
+network that allows no such traffic, set `LLMR_PRICE_SYNC=off`; nothing else changes.
 
 ## Who can reach it
 

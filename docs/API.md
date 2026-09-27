@@ -108,9 +108,10 @@ The standard `chat.completion` object, with two additions:
   finished when they are not.
 - `choices[0].message.reasoning_content`: reasoning text, when the model showed any.
 - `llmr_cost`: what this request cost. `{"status": "priced", "amount": "0.002264", "currency":
-  "USD"}`; `"partial"` when the provider left some usage out and the amount is a floor;
-  `{"status": "unpriced"}` for a paid provider llmr has no rate for; `{"status": "free"}` for a
-  self hosted model. Never a zero standing in for "unknown".
+  "USD", "book": "anthropic-2026-09"}`, where `book` names the price edition that priced it
+  (see [prices](MANAGEMENT.md#prices)); `"partial"` when the provider left some usage out and
+  the amount is a floor; `{"status": "unpriced"}` for a paid provider llmr has no rate for;
+  `{"status": "free"}` for a self hosted model. Never a zero standing in for "unknown".
 
 `usage` is present only when the provider reported both prompt and output counts. It is
 never filled with zeros, because a zero turns an unknown cost into a free one.
@@ -177,9 +178,12 @@ What they share:
 - Every answer carries `x-llmr-route`, `x-llmr-attempts`, `x-llmr-fell-through`,
   `x-llmr-request-id` (the id its usage row is recorded under) and, when priced,
   `x-llmr-cost`. A JSON reply also carries `llmr_cost`.
-- **Cost** comes from the vendor's price book when it has a row for the model that
-  answered. The shipped price books list chat models only, so a vendor's embedding, image,
-  speech and transcription models are `unpriced`; a `self-hosted` route is `free`.
+- **Cost** comes from the [prices](MANAGEMENT.md#prices) llmr keeps for the model that
+  answered: by the token where the vendor reports tokens, per picture for an image model
+  sold that way, per second of audio for a transcription model that reports the recording's
+  length, per million characters for a text to speech model sold by the character. A model
+  with no price, or whose unit the vendor did not report, is `unpriced`; a `self-hosted`
+  route is `free` unless a price was set for it by hand.
 - Each request is recorded in [usage](MANAGEMENT.md#usage) like a chat call, with the route,
   attempts, the tokens the provider reported, and the cost.
 

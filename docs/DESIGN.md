@@ -934,6 +934,34 @@ book looks like in 2027 without waiting.
 Expiry is reported ahead of age when both are true. Ageing says somebody should look; expiry
 says the numbers have already changed.
 
+**Shipped tables age, so the gateway keeps its own current.** A table in the image is as old
+as the image, and nobody rebuilds an image because a vendor cut a price. The gateway reads a
+public list once a day (LiteLLM's, which is maintained, machine readable and MIT licensed)
+and lays it over the shipped table, and a price set by hand through the management API lays
+over both. The order is precedence by who knows best: the person paying the bill, then a
+list updated far more often than llmr is released, then a table updated with releases.
+
+Three rules keep a list somebody else maintains from doing damage:
+
+* **A large move waits for a person.** More than half either way, or a price dropping to
+  nothing, is held while the old price keeps applying. Checking the shipped tables against
+  that list is how this project found its own Anthropic rows priced at three times the real
+  rate; the same list can be as wrong the other way, and a price falling to a third is as
+  likely a typo as a cut. Accepting is one call. A rejected price is remembered and not held
+  again.
+* **The same rules as the shipped tables.** Banded models stay unpriced, a unit nobody
+  measured prices nothing, and vendor prices reach only the vendor's own endpoint.
+* **Never on the request path.** A sync that cannot fetch or read the list changes nothing
+  and says why; a list with no prices for the three vendors is refused rather than applied
+  as "no changes".
+
+And every cost names the edition that priced it, so a price applied tomorrow does not make
+yesterday's totals a different number.
+
+The alternatives were weaker. No vendor publishes prices over an API: the model listings
+carry context windows and capabilities, not rates. The vendors' billing APIs report what
+was charged, a day late and per day, which can check a total but cannot price a request.
+
 **Why the tables are not behind a `tables` feature.** They were going to be. A feature that
 only removes a few kilobytes of static text is a feature nobody sets, and the cost of having
 it is worse than that: `from_env` would return a provider with a model table under one

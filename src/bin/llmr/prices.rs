@@ -382,6 +382,16 @@ const PER_MILLION: f64 = 1e12;
 /// Per unit to micros per unit.
 const PER_UNIT: f64 = 1e6;
 
+/// Whether a field prices part of a prompt past a context size, such as
+/// `input_cost_per_token_above_272k_tokens`. Not `_above_1hr`, which is the longer lived
+/// prompt cache and a different charge, not a band.
+fn banded(field: &str) -> bool {
+    field.split("_above_").skip(1).any(|rest| {
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        digits > 0 && rest[digits..].starts_with("k_tokens")
+    })
+}
+
 /// What one entry of the source costs, as a [`Rate`], or why it cannot be one.
 fn rate_of(entry: &Value) -> Result<Rate, &'static str> {
     let field = |name: &str| entry.get(name);
@@ -389,7 +399,7 @@ fn rate_of(entry: &Value) -> Result<Rate, &'static str> {
     // A model priced one way below a context size and another above it cannot be one flat
     // rate. Left unpriced, as the shipped tables leave it, rather than right for short
     // prompts and quietly wrong for long ones.
-    if costs.keys().any(|k| k.contains("_above_")) {
+    if costs.keys().any(|k| banded(k)) {
         return Err("priced in context bands");
     }
     let token = |name: &str| micros(field(name), PER_MILLION).unwrap_or_default();
@@ -824,6 +834,25 @@ mod tests {
             })),
             Err("priced in context bands")
         );
+    }
+
+    #[test]
+    fn a_longer_lived_cache_is_not_a_context_band() {
+        assert!(banded("input_cost_per_token_above_200k_tokens"));
+        assert!(banded("output_cost_per_token_above_272k_tokens_priority"));
+        assert!(banded(
+            "cache_creation_input_token_cost_above_1hr_above_200k_tokens"
+        ));
+        assert!(!banded("cache_creation_input_token_cost_above_1hr"));
+        assert!(!banded("input_cost_per_token"));
+        let rate = rate_of(&json!({
+            "mode": "chat",
+            "input_cost_per_token": 5e-06,
+            "output_cost_per_token": 2.5e-05,
+            "cache_creation_input_token_cost": 6.25e-06,
+            "cache_creation_input_token_cost_above_1hr": 1e-05,
+        }));
+        assert_eq!(rate.map(|r| r.cache_write), Ok(Micros(6_250_000)));
     }
 
     #[test]

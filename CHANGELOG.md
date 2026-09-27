@@ -80,6 +80,26 @@ is published as a crate any more.
   `priced`, `partial` (a floor), `unpriced` or `free` for a self hosted model. Schema
   version 2; a version 1 database is brought forward on start.
 
+- Prices kept current without a new image. Three sources, each overruling the one before:
+  the shipped tables; a daily sync from a public price list, LiteLLM's by default
+  (`LLMR_PRICE_SYNC`, `LLMR_PRICE_SYNC_URL`, `LLMR_PRICE_SYNC_HOURS`); and prices set by hand
+  per provider and model (`PUT` and `DELETE /manage/providers/{id}/prices/{model}`), which
+  also price `openai-compatible` and self hosted providers. A synced price that moves by
+  more than half, or drops to nothing, is held until accepted or rejected
+  (`POST /manage/prices/held/{vendor}/{model}`); a refused price is not held again. Context
+  banded models stay unpriced. `GET /manage/prices` shows the last sync, held prices and
+  prices set by hand; `POST /manage/prices/sync` syncs now; `GET
+  /manage/providers/{id}/prices` shows what a provider charges per model and where each
+  price came from; `/manage/status` gains `prices`.
+- Rates by the picture, the second of audio and the million characters, beside the token
+  rates, so image, speech and transcription models are priced: an image endpoint counts the
+  pictures it returned, a transcription the seconds the vendor reported, speech the
+  characters read aloud. A model sold by a unit nobody measured is `unpriced`, never zero.
+  The engine gains `Units`, `PriceBook::price_with`, `PriceBook::new`, and `Rate::tokens`
+  with `with_image`, `with_audio_second` and `with_character`.
+- Every priced cost names the book edition that priced it: `book` in `llmr_cost` and on a
+  usage row's `cost` (`anthropic-2026-09`, `synced-2026-09-27`, `manual-2026-09-27`).
+
 ### Changed
 
 - Versions are calendar versions, `YYYY.M.PATCH`: the year, the month without a leading zero,
@@ -88,6 +108,9 @@ is published as a crate any more.
   longer says whether something broke, so a release that does says so under **Breaking**.
 - Schema version 4: `models` gains a `kind` column. A version 3 database is brought forward on
   start, and every model in it is a chat model.
+- Schema version 5: synced prices, prices set by hand, and `price_book` on usage rows. A
+  version 4 database is brought forward on start; its usage rows keep their cost, with no
+  book.
 - The compatibility promise covers the client API, the management API, the headers, the
   environment variables and the database schema, not the engine's Rust types.
 - `Cargo.lock` is committed, because the image has to be reproducible.
@@ -120,7 +143,7 @@ is published as a crate any more.
   were the older, higher rates: $15/$75 per million for the two Opus models where the price
   is $5/$25, and $3/$15 for Sonnet 5 where it is $2/$10, with cache reads and writes to
   match. Calls to them were priced one and a half to three times too high. The book is now
-  `anthropic-2026-09`; rows already recorded keep the cost and the book they were priced with.
+  `anthropic-2026-09`; usage rows already recorded keep the cost they were recorded with.
 
 ## 0.2.0 — 2026-09-07
 

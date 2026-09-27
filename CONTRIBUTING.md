@@ -79,6 +79,7 @@ src/
     openai.rs      the OpenAI request and reply shape, both directions
     server.rs      the client API, the token check, streaming
     media.rs       the endpoints beside chat: embeddings, images, speech, transcription
+    prices.rs      prices kept current: the daily sync, held prices, prices set by hand
     error.rs       failures as OpenAI error bodies and status codes
   chat/          the engine: what a call is made of: message, request, response, stream
   cost/          what it consumed and what that is worth: usage, pricing, ledger
