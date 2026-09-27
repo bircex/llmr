@@ -193,6 +193,10 @@ pub struct Capabilities {
     #[serde(default)]
     pub images: bool,
     #[serde(default)]
+    pub documents: bool,
+    #[serde(default)]
+    pub audio: bool,
+    #[serde(default)]
     pub streaming: bool,
 }
 
@@ -206,6 +210,8 @@ impl Capabilities {
             prompt_caching: have.prompt_caching,
             thinking: have.thinking,
             images: have.images,
+            documents: have.documents,
+            audio: have.audio,
             streaming: have.streaming,
         }
     }

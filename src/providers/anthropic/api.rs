@@ -363,7 +363,11 @@ fn budget(effort: Effort) -> u32 {
 fn messages(request: &ChatRequest) -> Result<Value> {
     let mut out = Vec::with_capacity(request.messages.len());
     for (index, message) in request.messages.iter().enumerate() {
-        let mut blocks: Vec<Value> = message.content.iter().map(wire_block).collect();
+        let mut blocks = message
+            .content
+            .iter()
+            .map(wire_block)
+            .collect::<Result<Vec<Value>>>()?;
 
         // A breakpoint marks the last block of the message it follows. Everything before it
         // is cached, so putting it anywhere else changes what you are billed for.
@@ -384,8 +388,8 @@ fn messages(request: &ChatRequest) -> Result<Value> {
     Ok(Value::Array(out))
 }
 
-fn wire_block(block: &ContentBlock) -> Value {
-    match block {
+fn wire_block(block: &ContentBlock) -> Result<Value> {
+    Ok(match block {
         ContentBlock::Text(text) => json!({ "type": "text", "text": text }),
         ContentBlock::Thinking { text, signature } => {
             // The signature goes back untouched. A thinking block replayed without it is
@@ -413,6 +417,16 @@ fn wire_block(block: &ContentBlock) -> Value {
                 "source": { "type": "url", "url": url },
             }),
         },
+        ContentBlock::Document {
+            media_type, source, ..
+        } => document(media_type, source)?,
+        // Refused rather than dropped: a question about a recording, sent without it, gets
+        // an answer about nothing that reads like an answer about the recording.
+        ContentBlock::Audio { .. } => {
+            return Err(Error::InvalidRequest(
+                "the Messages API takes no audio; route this request to a model that does".into(),
+            ))
+        }
         // Byte for byte. The provider checks the history against what it produced, so a
         // block reshaped here is a block it will not recognise.
         ContentBlock::Opaque { raw, .. } => raw.clone(),
@@ -426,7 +440,35 @@ fn wire_block(block: &ContentBlock) -> Value {
             "content": content,
             "is_error": is_error,
         }),
-    }
+    })
+}
+
+/// A document block: a PDF as bytes or a link, or plain text carried as text.
+///
+/// Those are the sources this API names. Anything else is refused here rather than sent with
+/// a media type the far end will reject after the tokens are counted.
+fn document(media_type: &str, source: &ImageSource) -> Result<Value> {
+    let source = match (media_type, source) {
+        ("application/pdf", ImageSource::Bytes(bytes)) => json!({
+            "type": "base64",
+            "media_type": media_type,
+            "data": encode(bytes),
+        }),
+        ("application/pdf", ImageSource::Url(url)) => json!({ "type": "url", "url": url }),
+        ("text/plain", ImageSource::Bytes(bytes)) => json!({
+            "type": "text",
+            "media_type": media_type,
+            "data": String::from_utf8(bytes.clone()).map_err(|_| {
+                Error::InvalidRequest("a text/plain document is not UTF-8".into())
+            })?,
+        }),
+        _ => {
+            return Err(Error::InvalidRequest(format!(
+                "the Messages API takes a document as application/pdf, or text/plain bytes,                  not {media_type}"
+            )))
+        }
+    };
+    Ok(json!({ "type": "document", "source": source }))
 }
 
 fn read_block(value: &Value) -> Option<ContentBlock> {

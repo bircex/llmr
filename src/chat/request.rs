@@ -1,6 +1,6 @@
 //! What you ask a model for.
 
-use crate::chat::message::Message;
+use crate::chat::message::{ContentBlock, Message};
 use crate::model::ModelId;
 use serde::{Deserialize, Serialize};
 
@@ -213,13 +213,17 @@ impl ChatRequest {
             structured_output: self.response_schema.is_some(),
             prompt_caching: !self.cache_breakpoints.is_empty(),
             thinking: matches!(self.thinking, Thinking::On(_)),
-            images: self.messages.iter().any(|message| {
-                message
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, crate::chat::message::ContentBlock::Image { .. }))
-            }),
+            images: self.carries(|block| matches!(block, ContentBlock::Image { .. })),
+            documents: self.carries(|block| matches!(block, ContentBlock::Document { .. })),
+            audio: self.carries(|block| matches!(block, ContentBlock::Audio { .. })),
         }
+    }
+
+    /// Whether any message holds a block like this.
+    fn carries(&self, kind: impl Fn(&ContentBlock) -> bool) -> bool {
+        self.messages
+            .iter()
+            .any(|message| message.content.iter().any(&kind))
     }
 }
 
@@ -237,6 +241,10 @@ pub struct Needs {
     pub thinking: bool,
     /// The request carries an image.
     pub images: bool,
+    /// The request carries a document.
+    pub documents: bool,
+    /// The request carries audio.
+    pub audio: bool,
 }
 
 impl Needs {
@@ -261,6 +269,12 @@ impl Needs {
         }
         if self.images && !have.images {
             missing.push("images");
+        }
+        if self.documents && !have.documents {
+            missing.push("documents");
+        }
+        if self.audio && !have.audio {
+            missing.push("audio");
         }
         missing
     }

@@ -33,6 +33,12 @@ pub struct Entry {
     /// Whether a request may carry an image.
     #[serde(default)]
     pub images: bool,
+    /// Whether a request may carry a document, such as a PDF.
+    #[serde(default)]
+    pub documents: bool,
+    /// Whether a request may carry a recording.
+    #[serde(default)]
+    pub audio: bool,
     /// Whether the reply can be read as it arrives.
     ///
     /// Defaults to false like the others, so a table written before this column existed
@@ -71,6 +77,8 @@ impl Entry {
             prompt_caching: false,
             thinking: false,
             images: false,
+            documents: false,
+            audio: false,
             streaming: false,
             source: source.into(),
             verified_at: verified_at.into(),
@@ -108,6 +116,20 @@ impl Entry {
     #[must_use]
     pub fn with_images(mut self) -> Self {
         self.images = true;
+        self
+    }
+
+    /// Says a request to this model may carry a document.
+    #[must_use]
+    pub fn with_documents(mut self) -> Self {
+        self.documents = true;
+        self
+    }
+
+    /// Says a request to this model may carry audio.
+    #[must_use]
+    pub fn with_audio(mut self) -> Self {
+        self.audio = true;
         self
     }
 
@@ -215,6 +237,8 @@ impl Registry {
             prompt_caching: entry.prompt_caching,
             thinking: entry.thinking,
             images: entry.images,
+            documents: entry.documents,
+            audio: entry.audio,
             streaming: entry.streaming,
             reach: self.reach,
         })

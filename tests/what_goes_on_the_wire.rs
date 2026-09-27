@@ -51,6 +51,10 @@ impl Recorded {
             .map(|(_, v)| v.clone())
     }
 
+    fn calls(&self) -> usize {
+        self.sent.lock().expect("not poisoned").len()
+    }
+
     fn url(&self) -> String {
         let sent = self.sent.lock().expect("not poisoned");
         sent.first().map(|r| r.url.clone()).unwrap_or_default()
@@ -847,4 +851,116 @@ fn a_request_carrying_an_image_says_so_before_it_is_sent() {
 
     let text_only = ModelCapabilities::none(Reach::SelfHosted);
     assert_eq!(needs.unmet_by(&text_only), vec!["images"]);
+}
+
+// ---- Documents and audio ---------------------------------------------------------------
+
+/// The first bytes of a PDF, enough to check the encoding by hand.
+const PDF: &[u8] = b"%PDF-1.7";
+/// The first bytes of a WAV file.
+const WAV: &[u8] = b"RIFF";
+
+fn with(block: ContentBlock) -> ChatRequest {
+    ChatRequest::new(
+        "m",
+        vec![Message {
+            role: llmr::Role::User,
+            content: vec![ContentBlock::Text("what is this".into()), block],
+        }],
+    )
+}
+
+fn a_pdf() -> ContentBlock {
+    ContentBlock::Document {
+        media_type: "application/pdf".into(),
+        source: llmr::ImageSource::Bytes(PDF.to_vec()),
+        name: Some("report.pdf".into()),
+    }
+}
+
+fn a_recording() -> ContentBlock {
+    ContentBlock::Audio {
+        media_type: "audio/wav".into(),
+        data: WAV.to_vec(),
+    }
+}
+
+#[tokio::test]
+async fn anthropic_sends_a_pdf_as_a_document_block() {
+    let transport = Recorded::replying(200, anthropic_reply());
+    let _ = anthropic(Arc::clone(&transport)).chat(with(a_pdf())).await;
+
+    let block = &transport.body()["messages"][0]["content"][1];
+    assert_eq!(block["type"], "document");
+    assert_eq!(block["source"]["type"], "base64");
+    assert_eq!(block["source"]["media_type"], "application/pdf");
+    assert_eq!(block["source"]["data"], "JVBERi0xLjc=");
+}
+
+#[tokio::test]
+async fn anthropic_refuses_audio_rather_than_sending_the_question_without_it() {
+    let transport = Recorded::replying(200, anthropic_reply());
+    let outcome = anthropic(Arc::clone(&transport))
+        .chat(with(a_recording()))
+        .await;
+    assert!(
+        matches!(outcome, Err(llmr::Error::InvalidRequest(_))),
+        "{outcome:?}"
+    );
+    assert_eq!(transport.calls(), 0, "nothing reached the wire");
+}
+
+#[tokio::test]
+async fn the_openai_shape_sends_a_pdf_as_a_file_part_and_audio_as_input_audio() {
+    let transport = Recorded::replying(200, openai_reply());
+    let _ = openai(Arc::clone(&transport), Reach::FirstPartyApi)
+        .chat(with(a_pdf()))
+        .await;
+    let part = &transport.body()["messages"][0]["content"][1];
+    assert_eq!(part["type"], "file");
+    assert_eq!(part["file"]["filename"], "report.pdf");
+    assert_eq!(
+        part["file"]["file_data"],
+        "data:application/pdf;base64,JVBERi0xLjc="
+    );
+
+    let transport = Recorded::replying(200, openai_reply());
+    let _ = openai(Arc::clone(&transport), Reach::FirstPartyApi)
+        .chat(with(a_recording()))
+        .await;
+    let part = &transport.body()["messages"][0]["content"][1];
+    assert_eq!(part["type"], "input_audio");
+    assert_eq!(part["input_audio"]["format"], "wav");
+    assert_eq!(part["input_audio"]["data"], "UklGRg==");
+}
+
+#[tokio::test]
+async fn the_openai_shape_refuses_audio_it_has_no_format_name_for() {
+    let transport = Recorded::replying(200, openai_reply());
+    let outcome = openai(Arc::clone(&transport), Reach::FirstPartyApi)
+        .chat(with(ContentBlock::Audio {
+            media_type: "audio/ogg".into(),
+            data: WAV.to_vec(),
+        }))
+        .await;
+    assert!(
+        matches!(outcome, Err(llmr::Error::InvalidRequest(_))),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn a_request_carrying_a_document_or_audio_says_so_before_it_is_sent() {
+    let text_only = ModelCapabilities::none(Reach::SelfHosted);
+    assert_eq!(
+        with(a_pdf()).needs().unmet_by(&text_only),
+        vec!["documents"]
+    );
+    assert_eq!(
+        with(a_recording()).needs().unmet_by(&text_only),
+        vec!["audio"]
+    );
+    let able = text_only.with_documents().with_audio();
+    assert!(with(a_pdf()).needs().unmet_by(&able).is_empty());
+    assert!(with(a_recording()).needs().unmet_by(&able).is_empty());
 }

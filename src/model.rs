@@ -129,6 +129,10 @@ pub struct ModelCapabilities {
     /// A fact about the pairing. Some models take images and some do not, and no reach that
     /// speaks only text can carry one whatever the model could do.
     pub images: bool,
+    /// Whether a request may carry a document, such as a PDF.
+    pub documents: bool,
+    /// Whether a request may carry a recording for the model to listen to.
+    pub audio: bool,
     /// Whether the reply can be read as it arrives rather than all at once.
     ///
     /// A fact about the pairing, not the model. An endpoint that answers with one JSON
@@ -152,6 +156,8 @@ impl ModelCapabilities {
             prompt_caching: false,
             thinking: false,
             images: false,
+            documents: false,
+            audio: false,
             streaming: false,
             reach,
         }
@@ -197,6 +203,20 @@ impl ModelCapabilities {
     #[must_use]
     pub fn with_images(mut self) -> Self {
         self.images = true;
+        self
+    }
+
+    /// Says a request may carry a document.
+    #[must_use]
+    pub fn with_documents(mut self) -> Self {
+        self.documents = true;
+        self
+    }
+
+    /// Says a request may carry audio.
+    #[must_use]
+    pub fn with_audio(mut self) -> Self {
+        self.audio = true;
         self
     }
 

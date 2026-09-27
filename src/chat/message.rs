@@ -81,6 +81,30 @@ pub enum ContentBlock {
         source: ImageSource,
     },
 
+    /// A document, such as a PDF, as part of a turn.
+    ///
+    /// Its own block rather than an image with another media type, because the two are
+    /// separate capabilities: a model that reads a photograph may still refuse a PDF, and a
+    /// provider told otherwise rejects the request at the far end.
+    Document {
+        /// The media type, as the provider will be told: `application/pdf`, `text/plain`.
+        media_type: String,
+        /// Where the document is.
+        source: ImageSource,
+        /// The file name, when the caller gave one. Some protocols ask for it.
+        name: Option<String>,
+    },
+
+    /// Sound, as part of a turn: a recording the model is asked to listen to.
+    ///
+    /// Bytes only. No protocol this crate speaks fetches audio from a link.
+    Audio {
+        /// The media type, as the provider will be told: `audio/wav`, `audio/mpeg`.
+        media_type: String,
+        /// The recording.
+        data: Vec<u8>,
+    },
+
     /// Your answer to a [`ContentBlock::ToolUse`].
     ToolResult {
         /// The id from the call this answers.
@@ -118,7 +142,7 @@ impl ContentBlock {
     }
 }
 
-/// Where an image comes from.
+/// Where an image or a document comes from.
 ///
 /// Two, because providers accept two and they are not interchangeable. Bytes go in the
 /// request and cost you upload; a URL is fetched by the provider, which means the provider

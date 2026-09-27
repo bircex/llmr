@@ -17,6 +17,10 @@
 
 provider = "openai"
 reach    = "FirstPartyApi"
+#
+# `documents` and `audio` were read on 2026-09-27: chat completions takes a PDF on every
+# model that takes images, and the model pages list audio as not supported for every row
+# here. The audio models are a different family and are not in this table.
 
 [[model]]
 id                = "gpt-5.6-sol"
@@ -27,6 +31,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = false
 streaming         = true
 source            = "vendor model page"
 verified_at       = "2026-08-31"
@@ -40,6 +46,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = false
 streaming         = true
 source            = "vendor model page"
 verified_at       = "2026-08-31"
@@ -53,6 +61,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = false
 streaming         = true
 source            = "vendor model page"
 verified_at       = "2026-08-31"
@@ -66,6 +76,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = false
 streaming         = true
 source            = "vendor model page"
 verified_at       = "2026-08-31"
@@ -79,6 +91,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = false
 streaming         = true
 source            = "vendor model page"
 verified_at       = "2026-08-31"
@@ -92,6 +106,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = false
 streaming         = true
 source            = "vendor model page and pricing page"
 verified_at       = "2026-08-31"
@@ -105,6 +121,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = false
 streaming         = true
 source            = "vendor model page and pricing page"
 verified_at       = "2026-08-31"

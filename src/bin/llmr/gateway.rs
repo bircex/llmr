@@ -345,6 +345,12 @@ fn entry(id: &str, have: Capabilities) -> Entry {
     if have.images {
         entry = entry.with_images();
     }
+    if have.documents {
+        entry = entry.with_documents();
+    }
+    if have.audio {
+        entry = entry.with_audio();
+    }
     if have.streaming {
         entry = entry.with_streaming();
     }

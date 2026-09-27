@@ -15,6 +15,11 @@
 
 provider = "gemini"
 reach    = "FirstPartyApi"
+#
+# `documents` and `audio` were read on 2026-09-27. Every row takes PDFs. Audio is on only
+# where a model page lists audio input; gemini-3.7-flash and gemini-3.5-flash probably take
+# it too, and are left off until somebody reads their pages, because a capability nobody
+# checked is the claim this table exists to stop.
 
 [[model]]
 id                = "gemini-3.7-flash"
@@ -25,6 +30,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = false
 streaming         = true
 source            = "vendor model page; streamGenerateContent in the API reference"
 verified_at       = "2026-08-31"
@@ -38,6 +45,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = false
 streaming         = true
 source            = "vendor model page; streamGenerateContent in the API reference"
 verified_at       = "2026-08-31"
@@ -51,6 +60,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = true
 streaming         = true
 source            = "vendor model page; streamGenerateContent in the API reference"
 verified_at       = "2026-08-31"
@@ -64,6 +75,8 @@ structured_output = true
 prompt_caching    = true
 thinking          = true
 images            = true
+documents         = true
+audio             = true
 streaming         = true
 source            = "vendor model page; streamGenerateContent in the API reference"
 verified_at       = "2026-08-31"
