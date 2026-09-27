@@ -6,7 +6,7 @@ and a count of releases in that month from 0, so `2026.9.0`, then `2026.9.1`, th
 user depends on says so under **Breaking**. Releases before `2026.9.0` used semantic
 versioning.
 
-## Unreleased: 2026.9.0
+## 2026.9.0 — 2026-09-27
 
 llmr stops being a library and becomes a service: one Docker image, managed over REST, with
 its state in an encrypted database. Nothing below existed in 0.2.0, and nothing from 0.2.0
