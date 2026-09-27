@@ -5,6 +5,42 @@ change is a minor bump.
 
 ## Unreleased
 
+### Added
+
+- Documents and audio in a chat request. A user message may carry a `file` part (a PDF or
+  plain text, as a `data:` URL in `file_data`, or bare base64 named `.pdf` or `.txt`) and an
+  `input_audio` part (`wav`, `mp3`, `flac`, `ogg`, `aac`, `m4a`, `webm`). `file_id` is refused,
+  because llmr has no files endpoint. Two new model capabilities, `documents` and `audio`,
+  route them as `images` does: a model without one is skipped. Anthropic takes PDFs and plain
+  text and no audio; the OpenAI shape takes PDFs and `wav` or `mp3`; Gemini takes both
+  inline. The shipped tables set `documents` on every Anthropic, OpenAI and Gemini row, and
+  `audio` on `gemini-3.5-flash-lite` and `gemini-2.5-flash` only, the rows whose model pages
+  were read.
+- Four endpoints beside chat, in the OpenAI shape: `POST /v1/embeddings` (`float` or
+  `base64`), `POST /v1/images/generations`, `POST /v1/audio/speech` (the recording itself,
+  typed by `Content-Type`) and `POST /v1/audio/transcriptions` (multipart; `json` or `text`).
+  OpenAI and OpenAI-compatible providers serve all four; Gemini serves embeddings, images and
+  speech. Fields that cannot be carried are refused by name, and a model that declines is a
+  `422 refused`. Each answer carries the `x-llmr-*` headers, a JSON answer carries
+  `llmr_cost`, and each is recorded in usage like a chat call.
+- A `kind` on every model: `chat`, `embedding`, `image`, `speech` or `transcription`, set with
+  `PUT /manage/providers/{id}/models/{model}`. A model of a kind other than chat takes no
+  capabilities and needs none to be enabled. `GET /manage/provider-types` lists the `kinds`
+  each type offers, model views show `kind`, and the `PUT` answer adds the `endpoint`.
+- A route set serves the kind of its first enabled route, shown as `kind`; a route of another
+  kind is reported `unavailable`. A set that is not chat tries its routes in order with the
+  set's `retry_attempts`, `deadline_secs` and `on_device`, and stops on a refusal; `order` and
+  `breaker` apply to chat only.
+- `400 wrong_endpoint`: a name sent to the endpoint of another kind is told where it belongs.
+  `GET /v1/models` entries carry `llmr_kind`.
+- Engine features `image-generation` and `audio`, turned on by `server`, with the modules
+  `image`, `audio`, `providers::openai::{image, audio}` and `providers::gemini::media`.
+
+### Changed
+
+- Schema version 4: `models` gains a `kind` column. A version 3 database is brought forward on
+  start, and every model in it is a chat model.
+
 ## 0.3.0 — 2026-09-27
 
 llmr stops being a library and becomes a service: one Docker image, managed over REST, with

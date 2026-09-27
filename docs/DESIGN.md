@@ -1041,8 +1041,10 @@ that never surfaces.
 | `+ reqwest` | 105 | And a bundled client, with `from_env` |
 
 The first two are on by default and `reqwest` is not, so a build that reaches nothing
-compiles no network stack. The gateway's `server` feature turns on what it needs, and CI
-builds every feature alone so one that only compiles beside another is caught.
+compiles no network stack. `embeddings`, `image-generation` and `audio` are off by default,
+each a trait of its own, so a build that only chats compiles none of them. The gateway's
+`server` feature turns on what it needs, and CI builds every feature alone so one that only
+compiles beside another is caught.
 
 **Count distinct crates, not lines of `cargo tree`.** These read 52 and 250 for a while.
 Those were `cargo tree | wc -l`, which prints a crate once per dependent that reaches it, so
@@ -1167,6 +1169,66 @@ puts the stored id in front and delegates everything else.
 
 **Direct `provider/model` routers are cached only for enabled models**, so their breakers
 remember between requests and a client cannot grow the cache by inventing names.
+
+---
+
+## A model has one kind, and a route set serves one
+
+Chat, embeddings, image generation, speech and transcription are five endpoints, and a model
+answers at one of them. The management API records which as the model's `kind`.
+
+**On the model row, not on the provider.** OpenAI serves all five from one key, and so can an
+OpenAI-compatible server. What decides the endpoint is the model: a chat model asked for
+vectors is a request that cannot be sent at all. The provider type only bounds it, with the
+`kinds` it has endpoints for, so an Anthropic model cannot be enabled as an embedder.
+
+**A set serves the kind of its first enabled route.** A chat request has nothing to say to an
+embedding model, and a set that mixed them would fall through from one to the other on every
+call. A route of another kind is listed in `unavailable` with the reason, the same treatment
+as any other route that cannot serve, rather than refusing the whole set.
+
+**The wrong endpoint is named, not reported missing.** An embedding set sent to
+`/v1/chat/completions` is a `400 wrong_endpoint` saying where it belongs. `model_not_found`
+would send somebody looking for a typo that is not there, the same reason a switched off model
+says so.
+
+**Capabilities describe chat, and the other kinds take none.** Routing on capabilities exists
+to skip a model that would half answer a request. An embedding or a speech call has nothing
+of that shape to match on, so a model of another kind needs no capabilities to be enabled,
+sending some is a `400`, and a model moved off chat drops the ones it had: what was said
+about a chat model says nothing about the same id used another way.
+
+**A kind this build does not know reads as chat.** A row written by a newer llmr keeps
+working as the one kind every provider serves, rather than failing the whole snapshot.
+
+### A request that is not chat goes through a simpler loop
+
+The engine's `Router` routes a `ChatRequest` over `Provider`, which chats. Embedders, image
+generators, speech synthesizers and transcribers are traits of their own, for the reason
+embeddings are, so the gateway tries their routes with a loop of its own in `gateway.rs`. It
+keeps the rules that change what a caller is owed:
+
+- each route gets the set's `retry_attempts`, and only a failure worth repeating is repeated;
+- a refusal stops, and is not shopped to the next model;
+- the `on_device` floor holds, from the set or from the header;
+- `deadline_secs` bounds the whole request, and a wait that would cross it is not started.
+
+It leaves out ordering and the breaker. Routes go in the order listed, and a failing route is
+tried again on the next request. `cheapest` would compare nothing here: the shipped price
+books list chat models only, so every vendor media model is unpriced. Without the breaker,
+a route that is down costs one failed call per request until it recovers; that is the
+price of the simpler loop. `order` and `breaker` are stored on such a set and ignored,
+and the documentation says so rather than letting a panel believe otherwise.
+
+**What a provider cannot honour is refused before the call.** Gemini draws one picture per
+call at an aspect ratio, and speaks WAV or raw samples at one speed. A request for anything
+else fails that route with nothing sent, because a picture of the wrong shape or a recording
+in the wrong format is billed and then useless. The next route is tried, as for any failure
+that is not a refusal.
+
+**A refusal is a `422`.** Chat writes one as a `200` with `content_filter` because its shape
+has a place for it. An embedding list, a picture list and a recording have none, and an
+empty one would read as an answer.
 
 ---
 

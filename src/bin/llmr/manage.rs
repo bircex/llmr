@@ -744,6 +744,7 @@ async fn enabled_models(State(state): Shared) -> Answer {
                 "id": route,
                 "provider": provider_id,
                 "model": model_id,
+                "kind": gateway.kind_of(route).unwrap_or_default(),
                 "type": built.provider_type,
                 "reach": built.reach.as_str(),
                 "priced": built.prices.as_ref().is_some_and(|p| p.rate(&ModelId::from(model_id)).is_some()),
@@ -1792,6 +1793,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["content-type"], "audio/wav");
         assert_eq!(response.headers()["x-llmr-route"], "local/say");
+        assert!(response.headers()["x-llmr-request-id"]
+            .to_str()
+            .unwrap()
+            .starts_with("tts-"));
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();

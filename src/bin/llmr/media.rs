@@ -129,8 +129,17 @@ impl Call {
 }
 
 /// The headers every answer carries: which route, how many attempts, what it cost.
-fn with_headers<T>(mut response: Response, routed: &MediaRouted<T>, cost: &Cost) -> Response {
+fn with_headers<T>(
+    mut response: Response,
+    id: &str,
+    routed: &MediaRouted<T>,
+    cost: &Cost,
+) -> Response {
     let headers = response.headers_mut();
+    // The id the usage row carries, so a client's log and this one can be joined.
+    if let Ok(value) = HeaderValue::from_str(id) {
+        headers.insert("x-llmr-request-id", value);
+    }
     if let Ok(value) = HeaderValue::from_str(&routed.route) {
         headers.insert("x-llmr-route", value);
     }
@@ -301,7 +310,12 @@ pub async fn embeddings(
     if let Some(prompt) = reply.usage.input_tokens {
         out["usage"] = json!({ "prompt_tokens": prompt, "total_tokens": prompt });
     }
-    Ok(with_headers(Json(out).into_response(), &routed, &cost))
+    Ok(with_headers(
+        Json(out).into_response(),
+        &call.id,
+        &routed,
+        &cost,
+    ))
 }
 
 // ----- images ---------------------------------------------------------------------------
@@ -419,7 +433,12 @@ pub async fn images(
     if let Some(usage) = usage_view(&reply.usage) {
         out["usage"] = usage;
     }
-    Ok(with_headers(Json(out).into_response(), &routed, &cost))
+    Ok(with_headers(
+        Json(out).into_response(),
+        &call.id,
+        &routed,
+        &cost,
+    ))
 }
 
 // ----- speech ---------------------------------------------------------------------------
@@ -491,7 +510,7 @@ pub async fn speech(
     if let Ok(value) = HeaderValue::from_str(&media_type) {
         response.headers_mut().insert(header::CONTENT_TYPE, value);
     }
-    Ok(with_headers(response, &routed, &cost))
+    Ok(with_headers(response, &call.id, &routed, &cost))
 }
 
 // ----- transcription --------------------------------------------------------------------
@@ -651,7 +670,7 @@ pub async fn transcriptions(
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/plain; charset=utf-8"),
         );
-        return Ok(with_headers(response, &routed, &cost));
+        return Ok(with_headers(response, &call.id, &routed, &cost));
     }
     let mut out = json!({ "text": reply.text, "llmr_cost": cost.view() });
     if let Some(usage) = usage_view(&reply.usage) {
@@ -659,5 +678,10 @@ pub async fn transcriptions(
     } else if let Some(seconds) = reply.seconds {
         out["usage"] = json!({ "type": "duration", "seconds": seconds });
     }
-    Ok(with_headers(Json(out).into_response(), &routed, &cost))
+    Ok(with_headers(
+        Json(out).into_response(),
+        &call.id,
+        &routed,
+        &cost,
+    ))
 }
