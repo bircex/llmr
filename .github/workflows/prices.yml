@@ -1,0 +1,66 @@
+name: Price drift
+
+# The shipped price tables against the public price list a running llmr syncs from, once a
+# week. Where they disagree, an issue says which rows and by how much, and a person checks
+# each against the vendor's page: every shipped table says a person read that page on the
+# date it carries, so a bot does not rewrite one.
+#
+# One issue, kept current: a second run that still finds a difference edits it rather than
+# opening another.
+
+on:
+  schedule:
+    # Monday morning, beside the toolchain look-ahead in ci.yml.
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  LIST: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+  TITLE: Shipped prices differ from the price list
+
+jobs:
+  drift:
+    name: shipped tables against the price list
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Fetch the price list
+        run: curl -fsSL --retry 3 -o "$RUNNER_TEMP/prices.json" "$LIST"
+
+      # The comparison is the sync's own code, run against the shipped tables, so this and a
+      # running llmr cannot disagree about what a row of the list means.
+      - name: Compare
+        env:
+          LLMR_PRICE_LIST: ${{ runner.temp }}/prices.json
+          LLMR_PRICE_DRIFT_REPORT: ${{ runner.temp }}/drift.md
+        run: >
+          cargo test --features server --bin llmr
+          a_real_price_list_against_the_shipped_tables -- --ignored --nocapture
+
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ runner.temp }}/drift.md
+        run: |
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n1)
+          if [ ! -f "$REPORT" ]; then
+            echo "The shipped tables agree with the list."
+            if [ -n "$open" ]; then
+              gh issue close "$open" --repo "$GITHUB_REPOSITORY" \
+                --comment "The shipped tables agree with the price list again."
+            fi
+            exit 0
+          fi
+          if [ -n "$open" ]; then
+            gh issue edit "$open" --repo "$GITHUB_REPOSITORY" --body-file "$REPORT"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file "$REPORT"
+          fi

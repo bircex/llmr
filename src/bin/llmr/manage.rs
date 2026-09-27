@@ -1365,11 +1365,17 @@ mod tests {
         )
     }
 
-    /// What the sync would do to the shipped tables with a real copy of the list, read
-    /// from `LLMR_PRICE_LIST`. Run by hand: `LLMR_PRICE_LIST=... cargo test ... -- --ignored`.
+    /// Where the shipped tables and a real copy of the price list disagree.
+    ///
+    /// Reads the list from `LLMR_PRICE_LIST`. With `LLMR_PRICE_DRIFT_REPORT` set, writes a
+    /// Markdown report there when anything differs, and nothing when all agrees; the weekly
+    /// `prices.yml` workflow turns that report into an issue. It never fails on a
+    /// difference: a difference is for a person to check against the vendor's page, since
+    /// the shipped tables say a person read that page.
     #[test]
     #[ignore = "reads a price list from disk"]
     fn a_real_price_list_against_the_shipped_tables() {
+        use crate::prices::{rate_view, Change};
         let path = std::env::var("LLMR_PRICE_LIST").unwrap();
         let parsed = crate::prices::parse_source(&std::fs::read(path).unwrap()).unwrap();
         let books: Vec<llmr::PriceBook> = ["anthropic", "openai", "gemini"]
@@ -1386,22 +1392,50 @@ mod tests {
         let (changes, summary) =
             crate::prices::plan(&std::collections::BTreeMap::new(), &shipped, &parsed.rows);
         println!("{summary:?}");
+
+        let mut rows = Vec::new();
         for change in changes {
-            match change {
-                crate::prices::Change::Hold {
-                    vendor, model, why, ..
-                } => {
-                    println!("HOLD {vendor}/{model}: {why}");
-                }
-                crate::prices::Change::Apply {
+            let (vendor, model, rate, why) = match change {
+                Change::Hold {
                     vendor,
                     model,
                     rate,
-                    was: Some(was),
-                } => {
-                    println!("CHANGE {vendor}/{model}: {was:?} -> {rate:?}");
-                }
-                _ => {}
+                    why,
+                } => (vendor, model, rate, format!("would be held: {why}")),
+                Change::Apply {
+                    vendor,
+                    model,
+                    rate,
+                    was: Some(_),
+                } => (vendor, model, rate, "would apply".to_string()),
+                _ => continue,
+            };
+            let was = shipped(&vendor, &model).map(|r| rate_view(&r).to_string());
+            println!("DRIFT {vendor}/{model}: {why}");
+            rows.push(format!(
+                "| `{vendor}` | `{model}` | `{}` | `{}` | {why} |",
+                was.unwrap_or_default(),
+                rate_view(&rate)
+            ));
+        }
+        let book_ids: Vec<String> = books.iter().map(|b| format!("`{}`", b.id)).collect();
+        if let Ok(report) = std::env::var("LLMR_PRICE_DRIFT_REPORT") {
+            if rows.is_empty() {
+                let _ = std::fs::remove_file(report);
+            } else {
+                let body = format!(
+                    "The shipped price tables ({}) and the price list the daily sync reads \
+                     disagree on {} model(s). A running llmr already follows the list, within \
+                     its hold rules; the tables are what a fresh or offline install prices \
+                     with.\n\nCheck each against the vendor's pricing page, then update \
+                     `models/*-prices.toml` with a new `id` and `verified_at`, or note here why \
+                     the list is wrong.\n\n| Vendor | Model | Shipped | List | Sync |\n\
+                     |---|---|---|---|---|\n{}\n",
+                    book_ids.join(", "),
+                    rows.len(),
+                    rows.join("\n")
+                );
+                std::fs::write(report, body).unwrap();
             }
         }
     }

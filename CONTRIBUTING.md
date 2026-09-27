@@ -244,6 +244,20 @@ way to tell which of the others still hold.
 
 If you update a table, update the date, and say in the pull request where you checked.
 
+Every Monday, `prices.yml` compares the shipped price books with the list a running llmr
+syncs from, using the sync's own code, and keeps one issue open, "Shipped prices differ from
+the price list", listing each row that differs. It closes the issue itself once they agree.
+The issue is a prompt to check the vendor's page, not an instruction to copy the list: a
+book with a new `verified_at` claims a person read the page.
+
+To run the same comparison locally:
+
+```sh
+curl -fsSL -o /tmp/prices.json https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+LLMR_PRICE_LIST=/tmp/prices.json cargo test --features server --bin llmr \
+  a_real_price_list_against_the_shipped_tables -- --ignored --nocapture
+```
+
 ## Tests
 
 Name a test after the claim it makes, not after the function it calls.

@@ -99,6 +99,9 @@ is published as a crate any more.
   with `with_image`, `with_audio_second` and `with_character`.
 - Every priced cost names the book edition that priced it: `book` in `llmr_cost` and on a
   usage row's `cost` (`anthropic-2026-09`, `synced-2026-09-27`, `manual-2026-09-27`).
+- A weekly workflow, `prices.yml`, compares the shipped price books with the price list and
+  keeps one issue open listing the rows that differ, for a person to check against the
+  vendor's page. It closes the issue once they agree.
 
 ### Changed
 
