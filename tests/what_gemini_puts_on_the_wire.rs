@@ -310,3 +310,33 @@ async fn the_catalogue_strips_the_path_a_caller_never_types() {
         vec!["gemini-3-flash", "gemini-3-pro"]
     );
 }
+
+#[tokio::test]
+async fn a_document_and_a_recording_go_inline_with_the_type_they_were_given() {
+    let transport = Recorded::replying(reply());
+    let request = ChatRequest::new(
+        "gemini-test",
+        vec![Message {
+            role: llmr::Role::User,
+            content: vec![
+                ContentBlock::Text("summarise both".into()),
+                ContentBlock::Document {
+                    media_type: "application/pdf".into(),
+                    source: llmr::ImageSource::Bytes(b"%PDF-1.7".to_vec()),
+                    name: None,
+                },
+                ContentBlock::Audio {
+                    media_type: "audio/ogg".into(),
+                    data: b"OggS".to_vec(),
+                },
+            ],
+        }],
+    );
+    let _ = provider(Arc::clone(&transport)).chat(request).await;
+
+    let parts = &transport.body()["contents"][0]["parts"];
+    assert_eq!(parts[1]["inlineData"]["mimeType"], "application/pdf");
+    assert_eq!(parts[1]["inlineData"]["data"], "JVBERi0xLjc=");
+    assert_eq!(parts[2]["inlineData"]["mimeType"], "audio/ogg");
+    assert_eq!(parts[2]["inlineData"]["data"], "T2dnUw==");
+}

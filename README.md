@@ -39,7 +39,7 @@ docker run -d --name llmr -p 127.0.0.1:8080:8080 \
 | `LLMR_MASTER_KEY` | **Required.** Seals every stored credential. `llmr keygen` makes one. Keep a copy: without it, stored credentials cannot be read, and llmr refuses to start with a different one |
 | `LLMR_TOKEN` | Optional. Tokens callers must present as `Authorization: Bearer <token>`, comma separated. Unset, nothing is checked: keep the port on a network only your panel and apps can reach |
 | `LLMR_LISTEN` | `0.0.0.0:8080` |
-| `LLMR_MAX_BODY_MB` | `32`. Images arrive inline |
+| `LLMR_MAX_BODY_MB` | `32`. Images, documents and recordings arrive inline |
 | `RUST_LOG`, `LLMR_LOG_FORMAT` | Log filter (`info`), and `json` for one object per line |
 
 Everything llmr is told is kept in `/var/lib/llmr`. Mount a volume there, or it is lost with
@@ -88,18 +88,30 @@ reply = client.chat.completions.create(
 )
 ```
 
+Embeddings, image generation, speech and transcription work the same way, at
+`/v1/embeddings`, `/v1/images/generations`, `/v1/audio/speech` and
+`/v1/audio/transcriptions`, served by models enabled with that `kind`:
+
+```sh
+curl -X PUT localhost:8080/manage/providers/openai/models/text-embedding-3-small \
+  -d '{"enabled": true, "kind": "embedding"}'
+curl -X PUT localhost:8080/manage/routes/vectors -d '{"routes": ["openai/text-embedding-3-small"]}'
+
+curl localhost:8080/v1/embeddings -d '{"model": "vectors", "input": "Hello"}'
+```
+
 A model that is not enabled is refused by name (`model_not_enabled`), not silently served.
 Every reply says which provider answered (`x-llmr-route`), whether anything failed first
 (`x-llmr-fell-through`), and what it cost (`llmr_cost`, `x-llmr-cost`). [docs/API.md](docs/API.md) has the client API: fields, streaming,
-errors.
+the endpoints beside chat, errors.
 
 ## How it routes
 
 A request is matched against what each route can actually do. A request with tools skips a
-route that cannot take tools; one with an image skips a route that cannot see; one for a
-route set marked `on_device` never leaves your hardware, even when every local route is
-down. Among the routes that fit, the first that answers wins; a failing route is skipped for
-a while rather than waited on in every request.
+route that cannot take tools; one with an image, a PDF or a recording skips a route that
+cannot read it; one for a route set marked `on_device` never leaves your hardware, even when
+every local route is down. Among the routes that fit, the first that answers wins; a failing
+route is skipped for a while rather than waited on in every request.
 
 **A refusal stops.** When a model declines, the next one is not asked the same question.
 
@@ -128,7 +140,7 @@ that includes one says it is incomplete rather than presenting a floor as the bi
 | | |
 |---|---|
 | [docs/MANAGEMENT.md](docs/MANAGEMENT.md) | The management API: providers, models, route sets, tests, usage, status |
-| [docs/API.md](docs/API.md) | The client API: `/v1/chat/completions`, streaming, headers, errors |
+| [docs/API.md](docs/API.md) | The client API: chat, embeddings, images, speech, transcription, headers, errors |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Compose, volumes, the master key, TLS in front, backups, logs |
 | [SECURITY.md](SECURITY.md) | What llmr holds, where prompts go, how to report a problem |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How the code is laid out and what a pull request must pass |
@@ -137,10 +149,12 @@ that includes one says it is incomplete rather than presenting a floor as the bi
 
 ## Not there yet
 
-- Media beyond an image in a prompt: images and other non-text inputs and outputs over the
-  API.
-- Bedrock (needs a SigV4 signing transport), an Anthropic Messages endpoint (`/v1/messages`),
-  and embeddings.
+- Media in a chat reply: `/v1/chat/completions` answers in text, and refuses `audio` and
+  `modalities`. Pictures and speech come from their own endpoints.
+- Image edits and variations, Gemini's Imagen models (`:predict`), and transcription through
+  Gemini, which has no transcription endpoint (send the recording to a chat model instead).
+- Bedrock (needs a SigV4 signing transport), and an Anthropic Messages endpoint
+  (`/v1/messages`).
 
 ## Releases
 

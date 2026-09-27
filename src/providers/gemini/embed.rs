@@ -65,8 +65,17 @@ pub struct GeminiEmbeddings {
 /// The reach is [`Reach::FirstPartyApi`] and is not a parameter. Unlike the OpenAI shape,
 /// which a dozen vendors and a laptop all speak, this endpoint is Google's.
 pub fn with(transport: Arc<dyn HttpTransport>, key: Secret) -> GeminiEmbeddings {
+    at(DEFAULT_BASE_URL, transport, key)
+}
+
+/// An embedder at another base URL speaking the same API, such as a proxy in front of it.
+pub fn at(
+    base_url: impl Into<String>,
+    transport: Arc<dyn HttpTransport>,
+    key: Secret,
+) -> GeminiEmbeddings {
     GeminiEmbeddings {
-        base_url: DEFAULT_BASE_URL.to_string(),
+        base_url: base_url.into().trim_end_matches('/').to_string(),
         transport,
         key,
         known: BTreeMap::new(),

@@ -4,6 +4,7 @@
 //! |---|---|---|
 //! | `api` | [`crate::Reach::FirstPartyApi`] | The `generateContent` API |
 //! | `embed` | [`crate::Reach::FirstPartyApi`] | The `batchEmbedContents` API |
+//! | `media` | [`crate::Reach::FirstPartyApi`] | Pictures and speech from `generateContent` |
 //!
 //! One reach so far. The reason this directory exists rather than a single file is that a
 //! caller comparing two reaches for one vendor is what the grouping is for.
@@ -19,3 +20,11 @@ pub mod api;
 // inside it. This is the one reach in the crate where `Purpose` reaches a wire.
 #[cfg(all(feature = "gemini", feature = "embeddings"))]
 pub mod embed;
+
+// Pictures and speech, which this API answers from `generateContent` asked for a different
+// kind of reply.
+#[cfg(all(
+    feature = "gemini",
+    any(feature = "image-generation", feature = "audio")
+))]
+pub mod media;

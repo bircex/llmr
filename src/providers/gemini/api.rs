@@ -163,7 +163,14 @@ impl Protocol for GenerateContent {
                     Role::User => "user",
                     Role::Assistant => "model",
                 },
-                "parts": message.content.iter().filter_map(wire_part).collect::<Vec<_>>(),
+                "parts": message
+                    .content
+                    .iter()
+                    .map(wire_part)
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>(),
             }));
         }
 
@@ -383,8 +390,8 @@ fn budget(effort: Effort) -> u32 {
     }
 }
 
-fn wire_part(block: &ContentBlock) -> Option<Value> {
-    match block {
+fn wire_part(block: &ContentBlock) -> Result<Option<Value>> {
+    Ok(match block {
         ContentBlock::Text(text) => Some(json!({ "text": text })),
         // Sent back marked as what it is. This API has no signature to preserve, so a
         // dropped thinking part costs context rather than breaking the next turn.
@@ -409,24 +416,36 @@ fn wire_part(block: &ContentBlock) -> Option<Value> {
                 },
             },
         })),
-        ContentBlock::Image { media_type, source } => Some(match source {
-            ImageSource::Bytes(bytes) => {
-                use base64::Engine as _;
-                json!({
-                    "inlineData": {
-                        "mimeType": media_type,
-                        "data": base64::engine::general_purpose::STANDARD.encode(bytes),
-                    },
-                })
-            }
-            ImageSource::Url(url) => json!({
-                "fileData": { "mimeType": media_type, "fileUri": url },
-            }),
-        }),
+        // One shape for every kind of media: the bytes inline, or a file for the API to
+        // fetch, each with the type the caller gave.
+        ContentBlock::Image { media_type, source }
+        | ContentBlock::Document {
+            media_type, source, ..
+        } => Some(media(media_type, source)),
+        ContentBlock::Audio { media_type, data } => {
+            Some(media(media_type, &ImageSource::Bytes(data.clone())))
+        }
         // It came from a different protocol and this one has nowhere to put it. Dropped
         // rather than guessed at, which is safe here because nothing in this API checks the
         // history against a signature.
         ContentBlock::Opaque { .. } => None,
+    })
+}
+
+fn media(media_type: &str, source: &ImageSource) -> Value {
+    match source {
+        ImageSource::Bytes(bytes) => {
+            use base64::Engine as _;
+            json!({
+                "inlineData": {
+                    "mimeType": media_type,
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+            })
+        }
+        ImageSource::Url(url) => json!({
+            "fileData": { "mimeType": media_type, "fileUri": url },
+        }),
     }
 }
 
@@ -477,7 +496,7 @@ fn read_stop(reason: Option<&str>) -> StopReason {
     }
 }
 
-fn read_usage(value: Option<&Value>) -> Usage {
+pub(crate) fn read_usage(value: Option<&Value>) -> Usage {
     let Some(usage) = value else {
         return Usage::absent();
     };

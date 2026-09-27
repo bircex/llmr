@@ -29,6 +29,7 @@ mod crypto;
 mod error;
 mod gateway;
 mod manage;
+mod media;
 mod openai;
 mod records;
 mod server;

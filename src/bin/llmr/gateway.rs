@@ -6,20 +6,23 @@
 //! with each build, which is the price of never locking the request path.
 
 use crate::records::{
-    split_route, Capabilities, Model, Order as OrderSpec, Provider, ProviderType, RouteSpec,
+    split_route, Capabilities, Kind, Model, Order as OrderSpec, Provider, ProviderType, RouteSpec,
 };
 use crate::store::{Store, StoreResult};
 use async_trait::async_trait;
+use llmr::audio::{SpeechSynthesizer, Transcriber};
 use llmr::chat::EventStream;
+use llmr::image::ImageGenerator;
 use llmr::providers::api::ApiProvider;
 use llmr::providers::{anthropic, gemini, openai};
 use llmr::registry::{Entry, Registry};
 use llmr::transport::{HttpTransport, Reqwest};
+use llmr::Embedder;
 use llmr::{
     Access, Breaker, ChatRequest, ChatResponse, ModelCapabilities, ModelId, Order, PriceBook,
     Retry, Route, Router, Secret,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -68,6 +71,24 @@ pub struct Built {
     /// The vendor's published prices, when the endpoint is the vendor's own. A price book
     /// for OpenAI's API says nothing about what Groq charges for the same shape.
     pub prices: Option<Arc<PriceBook>>,
+    /// The endpoints beside chat, where the provider type has them.
+    pub embedder: Option<Arc<dyn Embedder>>,
+    pub images: Option<Arc<dyn ImageGenerator>>,
+    pub speech: Option<Arc<dyn SpeechSynthesizer>>,
+    pub transcriber: Option<Arc<dyn Transcriber>>,
+}
+
+impl Built {
+    /// Whether this provider has the endpoint a model of this kind is served from.
+    pub fn serves(&self, kind: Kind) -> bool {
+        match kind {
+            Kind::Chat => true,
+            Kind::Embedding => self.embedder.is_some(),
+            Kind::Image => self.images.is_some(),
+            Kind::Speech => self.speech.is_some(),
+            Kind::Transcription => self.transcriber.is_some(),
+        }
+    }
 }
 
 /// Everything the store holds, read in one go, with credentials opened.
@@ -100,7 +121,16 @@ impl Snapshot {
 /// A name a client may ask for, and the router behind it.
 pub struct Served {
     pub name: String,
+    /// What its models are for. Every route in a set is the same kind.
+    pub kind: Kind,
+    /// The chat router. Empty for a set of another kind, whose routes are in `media`.
     pub router: Arc<Router>,
+    /// `provider/model` for a set that is not chat, in the order to try them.
+    pub media: Vec<String>,
+    /// Attempts per route, the first included, for a set that is not chat.
+    pub attempts: u32,
+    /// Give up on a request to a set that is not chat after this long.
+    pub deadline: Option<Duration>,
     /// Only self hosted routes may serve it.
     pub on_device: bool,
     /// Routes in the set that cannot be used right now, and why.
@@ -113,15 +143,42 @@ pub enum Resolution {
     Found(Arc<Router>, bool),
     /// A model that exists and is switched off, with the reason to give the client.
     NotEnabled(String),
+    /// A model or set of another kind, asked for at the wrong endpoint.
+    WrongKind(Kind),
     /// Nothing by that name.
     Unknown,
+}
+
+/// Where a request that is not chat may go, in order.
+pub struct Plan {
+    pub routes: Vec<String>,
+    pub attempts: u32,
+    pub deadline: Option<Duration>,
+    pub on_device: bool,
+}
+
+/// What a name sent to an endpoint that is not chat turned out to be.
+pub enum MediaResolution {
+    Found(Plan),
+    NotEnabled(String),
+    WrongKind(Kind),
+    Unknown,
+}
+
+/// An answer that is not chat, and how it was reached.
+pub struct MediaRouted<T> {
+    pub value: T,
+    pub route: String,
+    pub attempts: u32,
+    pub fell_through: Vec<(String, String)>,
 }
 
 /// Everything a request needs to find a provider.
 pub struct Gateway {
     providers: BTreeMap<String, Built>,
-    /// `provider/model` for every model that is enabled on an enabled provider.
-    enabled: BTreeSet<String>,
+    /// `provider/model` for every model that is enabled on an enabled provider, and what
+    /// it is for.
+    enabled: BTreeMap<String, Kind>,
     served: BTreeMap<String, Served>,
     /// Providers that could not be built, and why, for the status endpoint.
     problems: Vec<(String, String)>,
@@ -135,7 +192,7 @@ impl Gateway {
     pub fn empty() -> Gateway {
         Gateway {
             providers: BTreeMap::new(),
-            enabled: BTreeSet::new(),
+            enabled: BTreeMap::new(),
             served: BTreeMap::new(),
             problems: Vec::new(),
             direct: Mutex::new(HashMap::new()),
@@ -168,11 +225,11 @@ impl Gateway {
             }
         }
 
-        let enabled: BTreeSet<String> = snapshot
+        let enabled: BTreeMap<String, Kind> = snapshot
             .models
             .iter()
             .filter(|m| m.enabled && providers.contains_key(&m.provider_id))
-            .map(|m| format!("{}/{}", m.provider_id, m.model_id))
+            .map(|m| (format!("{}/{}", m.provider_id, m.model_id), m.kind))
             .collect();
 
         let mut served = BTreeMap::new();
@@ -199,7 +256,12 @@ impl Gateway {
 
     /// Every enabled `provider/model`, in name order.
     pub fn enabled(&self) -> impl Iterator<Item = &String> {
-        self.enabled.iter()
+        self.enabled.keys()
+    }
+
+    /// What an enabled `provider/model` is for.
+    pub fn kind_of(&self, route: &str) -> Option<Kind> {
+        self.enabled.get(route).copied()
     }
 
     /// Providers that are enabled and could not be built.
@@ -219,12 +281,18 @@ impl Gateway {
     /// so a client cannot grow the cache by inventing names.
     pub fn resolve(&self, model: &str) -> Resolution {
         if let Some(served) = self.served.get(model) {
+            if served.kind != Kind::Chat {
+                return Resolution::WrongKind(served.kind);
+            }
             return Resolution::Found(served.router.clone(), served.on_device);
         }
         let Some((provider_id, target)) = split_route(model) else {
             return Resolution::Unknown;
         };
-        if !self.enabled.contains(model) {
+        if let Some(kind) = self.kind_of(model).filter(|k| *k != Kind::Chat) {
+            return Resolution::WrongKind(kind);
+        }
+        if !self.enabled.contains_key(model) {
             return match self.providers.get(provider_id) {
                 Some(_) => Resolution::NotEnabled(format!(
                     "{target} is not enabled on provider {provider_id}. Enable it through \
@@ -250,6 +318,138 @@ impl Gateway {
             })
             .clone();
         Resolution::Found(router, false)
+    }
+}
+
+impl Gateway {
+    /// What a name sent to the endpoint for `kind` resolves to.
+    ///
+    /// The same names as chat: a route set, or `provider/model` for an enabled model. A name
+    /// of another kind is told where it belongs rather than reported unknown.
+    pub fn resolve_media(&self, model: &str, kind: Kind) -> MediaResolution {
+        if let Some(served) = self.served.get(model) {
+            if served.kind != kind {
+                return MediaResolution::WrongKind(served.kind);
+            }
+            return MediaResolution::Found(Plan {
+                routes: served.media.clone(),
+                attempts: served.attempts,
+                deadline: served.deadline,
+                on_device: served.on_device,
+            });
+        }
+        let Some((provider_id, target)) = split_route(model) else {
+            return MediaResolution::Unknown;
+        };
+        match self.kind_of(model) {
+            Some(found) if found != kind => MediaResolution::WrongKind(found),
+            Some(_) => MediaResolution::Found(Plan {
+                routes: vec![model.to_string()],
+                attempts: 2,
+                deadline: None,
+                on_device: false,
+            }),
+            None => match self.providers.get(provider_id) {
+                Some(_) => MediaResolution::NotEnabled(format!(
+                    "{target} is not enabled on provider {provider_id}. Enable it through \
+                     PUT /manage/providers/{provider_id}/models/{target} with its kind"
+                )),
+                None => MediaResolution::Unknown,
+            },
+        }
+    }
+
+    /// Tries a plan's routes in order until one answers.
+    ///
+    /// The chat router's rules, for a request that is not chat: each route gets the set's
+    /// attempts while its failure is worth repeating, a refusal stops everything rather than
+    /// being shopped to the next model, a route off the device is skipped when the data may
+    /// not leave it, and the deadline caps the whole request. `call` answers `None` for a
+    /// provider without this endpoint, which is skipped and said to be.
+    pub async fn media<T, F, Fut>(
+        &self,
+        plan: &Plan,
+        on_device: bool,
+        call: F,
+    ) -> Result<MediaRouted<T>, llmr::Error>
+    where
+        F: Fn(&Built, ModelId) -> Option<Fut>,
+        Fut: std::future::Future<Output = llmr::Result<T>>,
+    {
+        let started = std::time::Instant::now();
+        let retry = Retry::new(plan.attempts.max(1));
+        let mut fell_through = Vec::new();
+        let mut attempts = 0;
+        let mut last = None;
+        let out_of_time = |wait: Duration| {
+            plan.deadline
+                .is_some_and(|deadline| started.elapsed().saturating_add(wait) >= deadline)
+        };
+
+        for route in &plan.routes {
+            let Some((provider_id, target)) = split_route(route) else {
+                continue;
+            };
+            let Some(built) = self.providers.get(provider_id) else {
+                fell_through.push((route.clone(), "the provider is not built".into()));
+                continue;
+            };
+            if (on_device || plan.on_device) && !built.reach.is_on_device() {
+                fell_through.push((route.clone(), "cannot do on-device".into()));
+                continue;
+            }
+            for attempt in 1..=plan.attempts.max(1) {
+                if out_of_time(Duration::ZERO) {
+                    return Err(llmr::Error::Timeout {
+                        elapsed: started.elapsed(),
+                    });
+                }
+                let Some(future) = call(built, ModelId::from(target)) else {
+                    fell_through.push((route.clone(), "the provider has no such endpoint".into()));
+                    break;
+                };
+                attempts += 1;
+                match future.await {
+                    Ok(value) => {
+                        return Ok(MediaRouted {
+                            value,
+                            route: route.clone(),
+                            attempts,
+                            fell_through,
+                        })
+                    }
+                    Err(error @ llmr::Error::Refused { .. }) => return Err(error),
+                    Err(error) => {
+                        fell_through.push((route.clone(), error.to_string()));
+                        match retry.wait_before(attempt + 1, &error) {
+                            Some(wait) if out_of_time(wait) => {
+                                return Err(llmr::Error::Timeout {
+                                    elapsed: started.elapsed(),
+                                })
+                            }
+                            Some(wait) => {
+                                last = Some(error);
+                                tokio::time::sleep(wait).await;
+                            }
+                            None => {
+                                last = Some(error);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            llmr::Error::Unsupported(format!(
+                "no route can serve this request. Tried: {}",
+                fell_through
+                    .iter()
+                    .map(|(route, why)| format!("{route} ({why})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        }))
     }
 }
 
@@ -345,6 +545,12 @@ fn entry(id: &str, have: Capabilities) -> Entry {
     if have.images {
         entry = entry.with_images();
     }
+    if have.documents {
+        entry = entry.with_documents();
+    }
+    if have.audio {
+        entry = entry.with_audio();
+    }
     if have.streaming {
         entry = entry.with_streaming();
     }
@@ -376,7 +582,9 @@ pub fn build_provider(
     let transport: Arc<dyn HttpTransport> = Arc::new(
         Reqwest::new(Duration::from_secs(record.timeout_secs)).map_err(|e| e.to_string())?,
     );
-    let key = Secret::new("provider-credential", credential.unwrap_or_default());
+    // One per endpoint rather than a shared clone: a secret is deliberately not `Clone`, so
+    // every copy of a key in memory is one somebody wrote down on purpose.
+    let key = || Secret::new("provider-credential", credential.unwrap_or_default());
     let reach = record
         .effective_reach()
         .unwrap_or(llmr::Reach::FirstPartyApi);
@@ -388,22 +596,22 @@ pub fn build_provider(
         ProviderType::Anthropic => (
             Arc::new(ApiProvider::new(
                 anthropic::api::Messages,
-                base_url,
-                transport,
-                key,
+                base_url.clone(),
+                transport.clone(),
+                key(),
                 reach,
-                registry,
+                registry.clone(),
             )),
             own_endpoint.then(anthropic::api::shipped_prices),
         ),
         ProviderType::Gemini => (
             Arc::new(ApiProvider::new(
                 gemini::api::GenerateContent,
-                base_url,
-                transport,
-                key,
+                base_url.clone(),
+                transport.clone(),
+                key(),
                 reach,
-                registry,
+                registry.clone(),
             )),
             own_endpoint.then(gemini::api::shipped_prices),
         ),
@@ -413,18 +621,18 @@ pub fn build_provider(
                 // than the stored id, because the protocol wants one that lives for ever and
                 // the gateway is rebuilt on every change; `Named` is what a route shows.
                 record.provider_type.as_str(),
-                base_url,
-                transport,
-                key,
+                base_url.clone(),
+                transport.clone(),
+                key(),
                 reach,
-                registry,
+                registry.clone(),
             )),
             (record.provider_type == ProviderType::Openai && own_endpoint)
                 .then(openai::api::shipped_prices),
         ),
     };
 
-    Ok(Built {
+    let mut built = Built {
         provider: Arc::new(Named {
             id: record.id.clone(),
             inner,
@@ -432,7 +640,46 @@ pub fn build_provider(
         provider_type: record.provider_type,
         reach,
         prices: prices.map(Arc::new),
-    })
+        embedder: None,
+        images: None,
+        speech: None,
+        transcriber: None,
+    };
+
+    // The endpoints beside chat, on the same base URL, key and transport.
+    match record.provider_type {
+        ProviderType::Anthropic => {}
+        ProviderType::Gemini => {
+            built.embedder = Some(Arc::new(gemini::embed::at(
+                base_url.clone(),
+                transport.clone(),
+                key(),
+            )));
+            let media = Arc::new(gemini::media::at(base_url, transport, key()));
+            built.images = Some(media.clone());
+            built.speech = Some(media);
+        }
+        ProviderType::Openai | ProviderType::OpenaiCompatible => {
+            let id = record.provider_type.as_str();
+            built.embedder = Some(Arc::new(openai::embed::at(
+                id,
+                base_url.clone(),
+                transport.clone(),
+                key(),
+                reach,
+            )));
+            built.images = Some(Arc::new(openai::image::at(
+                id,
+                base_url.clone(),
+                transport.clone(),
+                key(),
+            )));
+            let audio = Arc::new(openai::audio::at(id, base_url, transport, key()));
+            built.speech = Some(audio.clone());
+            built.transcriber = Some(audio);
+        }
+    }
+    Ok(built)
 }
 
 fn route(built: &Built, model: ModelId) -> Route {
@@ -447,11 +694,20 @@ fn build_served(
     name: &str,
     spec: &RouteSpec,
     providers: &BTreeMap<String, Built>,
-    enabled: &BTreeSet<String>,
+    enabled: &BTreeMap<String, Kind>,
     snapshot: &Snapshot,
 ) -> Served {
     let mut routes = Vec::new();
+    let mut media = Vec::new();
     let mut unavailable = Vec::new();
+    // A set is the kind of its first enabled route, and serves that kind only: a chat
+    // request has nothing to say to an embedding model, and a set that mixed them would
+    // fall through from one to the other on every call.
+    let kind = spec
+        .routes
+        .iter()
+        .find_map(|route| enabled.get(route).copied())
+        .unwrap_or_default();
     for written in &spec.routes {
         let Some((provider_id, target)) = split_route(written) else {
             unavailable.push((written.clone(), "not written provider/model".into()));
@@ -466,8 +722,30 @@ fn build_served(
             unavailable.push((written.clone(), why.into()));
             continue;
         };
-        if !enabled.contains(written) {
+        let Some(route_kind) = enabled.get(written).copied() else {
             unavailable.push((written.clone(), "the model is not enabled".into()));
+            continue;
+        };
+        if route_kind != kind {
+            unavailable.push((
+                written.clone(),
+                format!(
+                    "{} model, in a set serving {}",
+                    route_kind.with_article(),
+                    kind.as_str()
+                ),
+            ));
+            continue;
+        }
+        if kind != Kind::Chat {
+            if built.serves(kind) {
+                media.push(written.clone());
+            } else {
+                unavailable.push((
+                    written.clone(),
+                    format!("the provider has no {} endpoint", kind.as_str()),
+                ));
+            }
             continue;
         }
         let model = ModelId::from(target);
@@ -497,7 +775,11 @@ fn build_served(
 
     Served {
         name: name.to_string(),
+        kind,
         router: Arc::new(router),
+        media,
+        attempts: spec.retry_attempts,
+        deadline: spec.deadline_secs.map(Duration::from_secs),
         on_device: spec.on_device,
         unavailable,
     }
@@ -513,7 +795,11 @@ impl Gateway {
                 name.to_string(),
                 Served {
                     name: name.to_string(),
+                    kind: Kind::Chat,
                     router: Arc::new(router),
+                    media: Vec::new(),
+                    attempts: 1,
+                    deadline: None,
                     on_device,
                     unavailable: Vec::new(),
                 },
@@ -549,6 +835,7 @@ mod tests {
         Model {
             provider_id: provider.into(),
             model_id: id.into(),
+            kind: crate::records::Kind::Chat,
             enabled,
             capabilities: known.then(|| Capabilities {
                 streaming: true,

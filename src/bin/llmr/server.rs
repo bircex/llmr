@@ -5,6 +5,10 @@
 //! | `GET`  | `/healthz` | Liveness. No token needed, so an orchestrator can ask. |
 //! | `GET`  | `/v1/models` | The names this gateway serves. |
 //! | `POST` | `/v1/chat/completions` | A chat call, whole or streamed. |
+//! | `POST` | `/v1/embeddings` | Text as vectors. See `media.rs` for this and the next three. |
+//! | `POST` | `/v1/images/generations` | Pictures from a prompt. |
+//! | `POST` | `/v1/audio/speech` | Text read aloud. |
+//! | `POST` | `/v1/audio/transcriptions` | A recording written down. |
 //! | *      | `/manage/...` | Providers, models, route sets and status; see `manage.rs`. |
 //!
 //! Nothing here logs a prompt, a reply or a key. A request is logged as the name asked for,
@@ -47,7 +51,7 @@ pub struct AppState {
 }
 
 /// Milliseconds since `started`, for a usage row.
-fn elapsed_ms(started: std::time::Instant) -> i64 {
+pub(crate) fn elapsed_ms(started: std::time::Instant) -> i64 {
     i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)
 }
 
@@ -61,7 +65,7 @@ fn route_parts(route: &str) -> (Option<String>, Option<String>) {
 
 /// A usage row for a request some provider answered.
 #[allow(clippy::too_many_arguments)]
-fn answered_row(
+pub(crate) fn answered_row(
     id: &str,
     asked: &str,
     stream: bool,
@@ -101,6 +105,13 @@ pub fn app(state: Arc<AppState>, max_body_bytes: usize) -> axum::Router {
     let protected = axum::Router::new()
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/embeddings", post(crate::media::embeddings))
+        .route("/v1/images/generations", post(crate::media::images))
+        .route("/v1/audio/speech", post(crate::media::speech))
+        .route(
+            "/v1/audio/transcriptions",
+            post(crate::media::transcriptions),
+        )
         .merge(crate::manage::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
 
@@ -167,38 +178,49 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 
 async fn models(State(state): State<Arc<AppState>>) -> Json<Value> {
     let gateway = state.live.current();
-    let entry = |id: &str| {
+    // `llmr_kind` says which endpoint a name belongs to; the OpenAI shape has no field for it.
+    let entry = |id: &str, kind: crate::records::Kind| {
         json!({
             "id": id,
             "object": "model",
             "created": 0,
             "owned_by": "llmr",
+            "llmr_kind": kind,
         })
     };
     // Route sets first, because those are the names a client is meant to use; then every
     // enabled model, addressable directly as provider/model.
     let data: Vec<Value> = gateway
         .served()
-        .map(|served| entry(&served.name))
-        .chain(gateway.enabled().map(|id| entry(id)))
+        .map(|served| entry(&served.name, served.kind))
+        .chain(
+            gateway
+                .enabled()
+                .map(|id| entry(id, gateway.kind_of(id).unwrap_or_default())),
+        )
         .collect();
     Json(json!({ "object": "list", "data": data }))
 }
 
 /// A process-unique id for one reply.
 fn completion_id() -> String {
+    request_id("chatcmpl")
+}
+
+/// A process-unique id for one request, after a prefix saying what it was.
+pub(crate) fn request_id(prefix: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     format!(
-        "chatcmpl-{nanos:x}{:x}",
+        "{prefix}-{nanos:x}{:x}",
         COUNTER.fetch_add(1, Ordering::Relaxed)
     )
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -209,7 +231,7 @@ fn now() -> u64 {
 ///
 /// Only ever tightens. A header cannot loosen a name configured `on_device`, or any caller
 /// could send a private prompt to a vendor by adding one line.
-fn wants_on_device(headers: &HeaderMap) -> bool {
+pub(crate) fn wants_on_device(headers: &HeaderMap) -> bool {
     headers
         .get("x-llmr-on-device")
         .and_then(|v| v.to_str().ok())
@@ -265,6 +287,7 @@ async fn chat_completions(
         Resolution::NotEnabled(why) => {
             return Err(refuse(ApiError::model_not_enabled(&asked, why)))
         }
+        Resolution::WrongKind(kind) => return Err(refuse(ApiError::wrong_endpoint(&asked, kind))),
         Resolution::Unknown => return Err(refuse(ApiError::model_not_found(&asked))),
     };
 

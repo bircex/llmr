@@ -163,7 +163,7 @@ impl Protocol for ChatCompletions {
             messages.push(json!({ "role": "system", "content": system }));
         }
         for message in &request.messages {
-            messages.extend(wire_message(message));
+            messages.extend(wire_message(message)?);
         }
 
         let mut body = json!({
@@ -412,10 +412,11 @@ impl Protocol for ChatCompletions {
 ///
 /// Tool results are their own top level message in this protocol, where Anthropic carries
 /// them as blocks inside a user turn. One of ours can therefore become several of theirs.
-fn wire_message(message: &Message) -> Vec<Value> {
+fn wire_message(message: &Message) -> Result<Vec<Value>> {
     let mut out = Vec::new();
     let mut text = Vec::new();
     let mut calls = Vec::new();
+    // Images, documents and audio: whatever makes a turn carry parts rather than a string.
     let mut images = Vec::new();
 
     for block in &message.content {
@@ -446,6 +447,14 @@ fn wire_message(message: &Message) -> Vec<Value> {
                     },
                 },
             })),
+            ContentBlock::Document {
+                media_type,
+                source,
+                name,
+            } => images.push(file_part(media_type, source, name.as_deref())?),
+            ContentBlock::Audio { media_type, data } => {
+                images.push(audio_part(media_type, data)?);
+            }
             ContentBlock::ToolUse { id, name, input } => calls.push(json!({
                 "id": id,
                 "type": "function",
@@ -494,7 +503,56 @@ fn wire_message(message: &Message) -> Vec<Value> {
         out.push(turn);
     }
 
-    out
+    Ok(out)
+}
+
+/// Bytes as the base64 this shape carries them in.
+fn base64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// A document as a `file` part: a PDF's bytes inline as a data URL, with a file name.
+///
+/// A PDF, as bytes, and nothing else. Chat completions takes no other document type, and
+/// names a file by an id from its own upload endpoint or by its contents; a link is neither.
+fn file_part(media_type: &str, source: &ImageSource, name: Option<&str>) -> Result<Value> {
+    if media_type != "application/pdf" {
+        return Err(Error::InvalidRequest(format!(
+            "this API takes a document as a PDF, not {media_type}"
+        )));
+    }
+    let ImageSource::Bytes(bytes) = source else {
+        return Err(Error::InvalidRequest(
+            "this API takes a document as its bytes, not as a link".into(),
+        ));
+    };
+    Ok(json!({
+        "type": "file",
+        "file": {
+            // Required by the endpoint, and read by nothing that matters here: a name made
+            // up from the type is as good as any.
+            "filename": name.unwrap_or("document.pdf"),
+            "file_data": format!("data:{media_type};base64,{}", base64(bytes)),
+        },
+    }))
+}
+
+/// A recording as an `input_audio` part, which names its format rather than a media type.
+fn audio_part(media_type: &str, data: &[u8]) -> Result<Value> {
+    let format = match media_type {
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        other => {
+            return Err(Error::InvalidRequest(format!(
+                "this API takes audio as wav or mp3, not {other}"
+            )))
+        }
+    };
+    Ok(json!({
+        "type": "input_audio",
+        "input_audio": { "data": base64(data), "format": format },
+    }))
 }
 
 fn read_stop(reason: Option<&str>) -> StopReason {

@@ -16,7 +16,7 @@ call needs `Authorization: Bearer <token>` (or `x-api-key`); without it, nothing
 | `GET` `PATCH` `DELETE` | `/manage/providers/{id}` | Read, change, remove |
 | `POST` | [`/manage/providers/{id}/test`](#testing-a-provider) | Is it reachable, is the key good; optionally one real call |
 | `GET` | [`/manage/providers/{id}/models`](#models) | What it serves, what each can do, what is enabled |
-| `PUT` `DELETE` | `/manage/providers/{id}/models/{model}` | Enable, disable, set capabilities; forget |
+| `PUT` `DELETE` | `/manage/providers/{id}/models/{model}` | Enable, disable, set kind and capabilities; forget |
 | `GET` | `/manage/models` | Every enabled model, across providers |
 | `GET` | [`/manage/routes`](#route-sets) | Every route set, with what is usable and what is resting |
 | `GET` `PUT` `DELETE` | `/manage/routes/{name}` | One route set |
@@ -49,19 +49,24 @@ until the problem is fixed; everything else keeps serving.
 { "data": [
   { "id": "anthropic", "name": "Anthropic", "transport": "api",
     "default_base_url": "https://api.anthropic.com", "reach_required": false,
-    "default_reach": "first-party-api", "credential": "required", "lists_models": true, "priced": true },
+    "default_reach": "first-party-api", "credential": "required", "lists_models": true, "priced": true,
+    "kinds": ["chat"] },
   { "id": "openai-compatible", "name": "OpenAI-compatible endpoint", "transport": "api",
     "default_base_url": null, "reach_required": true,
-    "default_reach": null, "credential": "optional", "lists_models": true, "priced": false }
+    "default_reach": null, "credential": "optional", "lists_models": true, "priced": false,
+    "kinds": ["chat", "embedding", "image", "speech", "transcription"] }
 ] }
 ```
 
-| Type | For | Credential |
-|---|---|---|
-| `anthropic` | Anthropic's API | required |
-| `openai` | OpenAI's API | required |
-| `gemini` | Google's Gemini API | required |
-| `openai-compatible` | Ollama, vLLM, LM Studio, Groq, Together, OpenRouter, LiteLLM, anything on `/v1/chat/completions` | optional |
+| Type | For | Credential | Kinds |
+|---|---|---|---|
+| `anthropic` | Anthropic's API | required | `chat` |
+| `openai` | OpenAI's API | required | all five |
+| `gemini` | Google's Gemini API | required | `chat`, `embedding`, `image`, `speech` |
+| `openai-compatible` | Ollama, vLLM, LM Studio, Groq, Together, OpenRouter, LiteLLM, anything on `/v1/chat/completions` | optional | all five: whichever the server behind it answers |
+
+`kinds` is what a model of this provider may be [enabled as](#kinds). Gemini has no
+transcription endpoint; a recording is written down by a chat model that takes audio.
 
 `priced` says whether llmr knows the provider's published prices, which is what a route
 set's `order: "cheapest"` compares. A provider with a `base_url` of its own is unpriced.
@@ -166,9 +171,10 @@ key can be checked before anything is switched on.
   "provider": "anthropic",
   "listing_error": null,
   "data": [
-    { "id": "claude-sonnet-5", "route": "anthropic/claude-sonnet-5", "enabled": true, "listed": true,
+    { "id": "claude-sonnet-5", "route": "anthropic/claude-sonnet-5", "kind": "chat", "enabled": true, "listed": true,
       "capabilities": { "context_window": 1000000, "max_output": 128000, "tools": true, "structured_output": true,
-                        "prompt_caching": true, "thinking": true, "images": true, "streaming": true },
+                        "prompt_caching": true, "thinking": true, "images": true, "documents": true,
+                        "audio": false, "streaming": true },
       "capabilities_source": "shipped", "updated_at": 1790460000 }
   ]
 }
@@ -177,7 +183,8 @@ key can be checked before anything is switched on.
 The list merges three sources: what the provider reports right now (`listed`), the table of
 models this release knows (`capabilities_source: "shipped"`), and models you set yourself
 (`"custom"`). `listed` is `null` when the provider could not be asked, and `listing_error`
-says why.
+says why. `kind` is what the model was enabled as, and `chat` for a model with no settings
+yet, because the shipped tables describe chat models only.
 
 ### Enable, disable, describe
 
@@ -206,16 +213,57 @@ release), say what it can do, or it is refused with `param: "capabilities"`:
 | `prompt_caching` | `false` | Repeated prefixes are cached |
 | `thinking` | `false` | Can be asked to reason (`reasoning_effort`) |
 | `images` | `false` | A request may carry an image |
+| `documents` | `false` | A request may carry a document (a PDF, or plain text where the provider takes it) |
+| `audio` | `false` | A request may carry a recording (`input_audio`) |
 | `streaming` | `false` | Replies arrive as written. Without it a streamed request still works, as one burst at the end |
 
-Capabilities are what routing reads: a request with tools skips a model with `tools: false`.
+Capabilities are what routing reads: a request with tools skips a model with `tools: false`,
+and one with a PDF skips a model with `documents: false`.
 Under-claiming makes a model unreachable for those requests; over-claiming sends it requests
 it will half ignore. `"capabilities": null` removes a custom set and goes back to the shipped
 one.
 
+The answer is the model as stored, and the endpoint a client sends it to:
+
+```json
+{ "provider": "anthropic", "id": "claude-sonnet-5", "route": "anthropic/claude-sonnet-5",
+  "kind": "chat", "endpoint": "/v1/chat/completions", "enabled": true, "capabilities": null }
+```
+
 Model ids may contain slashes: `PUT /manage/providers/openrouter/models/meta-llama/llama-3.1-70b`.
 
 `DELETE /manage/providers/{id}/models/{model}` forgets the model's settings.
+
+### Kinds
+
+A model is for one thing, and that decides the endpoint that serves it:
+
+| `kind` | Endpoint |
+|---|---|
+| `chat` (default) | `/v1/chat/completions` |
+| `embedding` | `/v1/embeddings` |
+| `image` | `/v1/images/generations` |
+| `speech` | `/v1/audio/speech` |
+| `transcription` | `/v1/audio/transcriptions` |
+
+Set it with the model, in the same `PUT`:
+
+```sh
+curl -X PUT localhost:8080/manage/providers/openai/models/text-embedding-3-small \
+  -d '{"enabled": true, "kind": "embedding"}'
+```
+
+- The kind must be one the provider type lists in `kinds`; anything else is a `400` with
+  `param: "kind"`.
+- Capabilities describe a chat model. A model of another kind takes none and needs none to
+  be enabled; sending `capabilities` with it is a `400`, and changing a chat model to
+  another kind drops the ones it had.
+- A model left out of `kind` keeps the one it has; a model with no settings yet is `chat`.
+- Routing on capabilities is for chat only. A request to one of the other endpoints goes to
+  the routes of that kind in order; see [the client API](API.md#endpoints-beside-chat).
+
+A client that sends a name to the wrong endpoint gets `400 wrong_endpoint`, naming the right
+one.
 
 ### Every enabled model
 
@@ -224,7 +272,7 @@ Model ids may contain slashes: `PUT /manage/providers/openrouter/models/meta-lla
 ```json
 { "data": [
   { "id": "anthropic/claude-sonnet-5", "provider": "anthropic", "model": "claude-sonnet-5",
-    "type": "anthropic", "reach": "first-party-api", "priced": true, "capabilities": { "...": "..." } }
+    "kind": "chat", "type": "anthropic", "reach": "first-party-api", "priced": true, "capabilities": { "...": "..." } }
 ] }
 ```
 
@@ -248,10 +296,10 @@ A route set is a name clients ask for, such as `default`, and the models behind 
 | Field | Default | |
 |---|---|---|
 | `routes` | required | `provider/model`, tried in order. Split at the first `/` |
-| `order` | `as-listed` | `as-listed`, `cheapest` (lowest published rate first, unpriced last) or `healthiest` (fewest recent failures first) |
+| `order` | `as-listed` | `as-listed`, `cheapest` (lowest published rate first, unpriced last) or `healthiest` (fewest recent failures first). Chat sets only |
 | `on_device` | `false` | Only `self-hosted` routes may serve it. A floor: when every local route is down the request fails rather than falling back |
 | `retry_attempts` | `2` | Attempts per route, the first included. Only rate limits and transient failures are retried, and a rate limit's own wait is honoured exactly |
-| `breaker` | `true` | A route that keeps failing is skipped for a while (a second, doubling to a minute; five minutes for a rejected key) |
+| `breaker` | `true` | A route that keeps failing is skipped for a while (a second, doubling to a minute; five minutes for a rejected key). Chat sets only |
 | `deadline_secs` | none | Give up on the whole request after this long. Set it for anything a person waits on |
 
 The name is 1 to 64 letters, digits, `-`, `_`, `.`; a `/` would read as `provider/model`.
@@ -263,6 +311,7 @@ A route set as returned adds what llmr made of it:
   "name": "default",
   "routes": ["anthropic/claude-sonnet-5", "openai/gpt-5.1", "ollama/llama3.1:8b"],
   "...": "...",
+  "kind": "chat",
   "usable": ["anthropic/claude-sonnet-5", "ollama/llama3.1:8b"],
   "unavailable": [{ "route": "openai/gpt-5.1", "why": "the model is not enabled" }],
   "resting": [{ "route": "anthropic/claude-sonnet-5", "seconds_left": 12 }]
@@ -270,11 +319,48 @@ A route set as returned adds what llmr made of it:
 ```
 
 A route is `unavailable` when its provider does not exist, is disabled or cannot be built,
-when its model is not enabled, or when nothing is known about what the model can do. It is
-`resting` when a breaker is skipping it after failures. A route set with nothing usable
-answers `400 no_route`.
+when its model is not enabled, when nothing is known about what the model can do, or when
+the model is of another kind than the set. It is `resting` when a breaker is skipping it
+after failures. A route set with nothing usable answers `400 no_route`.
 
 `GET /manage/routes` lists them all; `DELETE /manage/routes/{name}` removes one.
+
+### A set serves one kind
+
+`kind` is the [kind](#kinds) of the set's first enabled route, and `chat` while none is
+enabled. The set serves that kind only, at that kind's endpoint. A route of another kind is
+listed in `unavailable` rather than used:
+
+```sh
+curl -X PUT localhost:8080/manage/routes/vectors -d '{
+  "routes": ["openai/text-embedding-3-small", "ollama/nomic-embed-text"],
+  "retry_attempts": 2,
+  "deadline_secs": 20
+}'
+```
+
+```json
+{
+  "name": "vectors",
+  "routes": ["openai/text-embedding-3-small", "ollama/nomic-embed-text"],
+  "...": "...",
+  "kind": "embedding",
+  "usable": ["openai/text-embedding-3-small"],
+  "unavailable": [{ "route": "ollama/nomic-embed-text", "why": "a chat model, in a set serving embedding" }],
+  "resting": []
+}
+```
+
+Here `ollama/nomic-embed-text` was enabled without `"kind": "embedding"`, so it is a chat
+model; enabling it again with the kind makes it usable.
+
+A set of a kind other than chat is served more simply than a chat set. Its routes are tried
+in the order listed, each with `retry_attempts`, retried only on a rate limit, a timeout or a
+transient failure; `deadline_secs` bounds the whole request; `on_device` and the client's
+`x-llmr-on-device` header are honoured; and a refusal stops. `order` and `breaker` are
+stored and not used: there is no reordering by price or health, and a failing route is not
+rested, so `resting` stays empty. A route whose provider has no endpoint for the kind is
+`unavailable`.
 
 ## Usage
 
@@ -349,8 +435,10 @@ model.
 ```
 
 `limit` is 1 to 1000 (default 100). Pass `next_before` as `before` for the next, older page;
-it is `null` on the last one. `request_id` is the `id` the client received, so a client's log
-and this one can be joined.
+it is `null` on the last one. For a chat call, `request_id` is the `id` the client received, so
+a client's log and this one can be joined. The endpoints beside chat have no id in their
+body; theirs is llmr's own, starting `emb-`, `img-`, `tts-` or `stt-`, and comes back in the
+`x-llmr-request-id` header for the same join.
 
 ### Forgetting old rows
 

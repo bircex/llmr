@@ -21,7 +21,7 @@
 
 use crate::error::ApiError;
 use crate::gateway::{build_provider, registry, Gateway, Snapshot};
-use crate::records::{valid_id, Capabilities, Model, Provider, ProviderType, RouteSpec};
+use crate::records::{valid_id, Capabilities, Kind, Model, Provider, ProviderType, RouteSpec};
 use crate::server::AppState;
 use crate::usage::{Grouping, UsageFilter, UsageTotals};
 use axum::extract::{Path, Query, State};
@@ -579,6 +579,9 @@ async fn provider_models(State(state): Shared, Path(id): Path<String>) -> Answer
             json!({
                 "id": model_id,
                 "route": format!("{}/{}", provider.id, model_id),
+                // What the row says; a model with no row is offered as chat, the only kind
+                // the release's tables describe.
+                "kind": row.map_or(Kind::Chat, |r| r.kind),
                 "enabled": row.is_some_and(|r| r.enabled),
                 // `null` when the provider could not list its models, rather than `false`.
                 "listed": listed.as_ref().map(|l| l.iter().any(|m| m.as_str() == model_id)),
@@ -599,6 +602,7 @@ async fn provider_models(State(state): Shared, Path(id): Path<String>) -> Answer
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ModelChange {
+    kind: Option<String>,
     enabled: Option<bool>,
     #[serde(default, deserialize_with = "present")]
     capabilities: Option<Option<Capabilities>>,
@@ -633,6 +637,7 @@ async fn put_model(
     let mut row = existing.unwrap_or(Model {
         provider_id: provider.id.clone(),
         model_id: model_id.clone(),
+        kind: Kind::Chat,
         enabled: false,
         capabilities: None,
         updated_at: 0,
@@ -640,16 +645,54 @@ async fn put_model(
     if let Some(enabled) = change.enabled {
         row.enabled = enabled;
     }
-    if let Some(capabilities) = change.capabilities {
-        row.capabilities = capabilities;
+    if let Some(kind) = &change.kind {
+        row.kind = Kind::parse(kind).ok_or_else(|| {
+            ApiError::invalid_param(
+                "kind",
+                "one of chat, embedding, image, speech, transcription",
+            )
+        })?;
+    }
+    let info = provider.provider_type.info();
+    if !info.kinds.contains(&row.kind) {
+        return Err(ApiError::invalid_param(
+            "kind",
+            format!(
+                "a {} provider serves {}, not {}",
+                info.name,
+                info.kinds
+                    .iter()
+                    .map(|k| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                row.kind.as_str()
+            ),
+        ));
+    }
+    match change.capabilities {
+        Some(Some(_)) if row.kind != Kind::Chat => {
+            return Err(ApiError::invalid_param(
+                "capabilities",
+                format!(
+                    "capabilities describe a chat model, and {} model takes none",
+                    row.kind.with_article()
+                ),
+            ))
+        }
+        Some(capabilities) => row.capabilities = capabilities,
+        None => {}
+    }
+    // What was said about a chat model says nothing about the same id used another way.
+    if row.kind != Kind::Chat {
+        row.capabilities = None;
     }
 
-    // A model is only usable when something says what it can do. Refused here rather than
-    // accepted and silently unroutable.
+    // A chat model is only usable when something says what it can do. Refused here rather
+    // than accepted and silently unroutable. The other kinds have nothing to route on.
     let shipped_knows = registry(&provider, &[])
         .capabilities(&ModelId::from(model_id.as_str()))
         .is_some();
-    if row.enabled && row.capabilities.is_none() && !shipped_knows {
+    if row.kind == Kind::Chat && row.enabled && row.capabilities.is_none() && !shipped_knows {
         return Err(ApiError::invalid_param(
             "capabilities",
             format!(
@@ -666,6 +709,8 @@ async fn put_model(
         "provider": row.provider_id,
         "id": row.model_id,
         "route": format!("{}/{}", provider.id, model_id),
+        "kind": row.kind,
+        "endpoint": row.kind.endpoint(),
         "enabled": row.enabled,
         "capabilities": row.capabilities,
     }))
@@ -699,6 +744,7 @@ async fn enabled_models(State(state): Shared) -> Answer {
                 "id": route,
                 "provider": provider_id,
                 "model": model_id,
+                "kind": gateway.kind_of(route).unwrap_or_default(),
                 "type": built.provider_type,
                 "reach": built.reach.as_str(),
                 "priced": built.prices.as_ref().is_some_and(|p| p.rate(&ModelId::from(model_id)).is_some()),
@@ -714,7 +760,10 @@ async fn enabled_models(State(state): Shared) -> Answer {
 fn route_view(name: &str, spec: &RouteSpec, gateway: &Gateway) -> Value {
     let served = gateway.served().find(|s| s.name == name);
     let usable: Vec<String> = served
-        .map(|s| s.router.routes().map(|(route, _)| route).collect())
+        .map(|s| match s.kind {
+            Kind::Chat => s.router.routes().map(|(route, _)| route).collect(),
+            _ => s.media.clone(),
+        })
         .unwrap_or_default();
     let unavailable: Vec<Value> = served
         .map(|s| {
@@ -735,6 +784,8 @@ fn route_view(name: &str, spec: &RouteSpec, gateway: &Gateway) -> Value {
         .unwrap_or_default();
     let mut view = serde_json::to_value(spec).unwrap_or(Value::Null);
     view["name"] = json!(name);
+    // What the set serves, from its first enabled route; chat when none is enabled yet.
+    view["kind"] = json!(served.map_or(Kind::Chat, |s| s.kind));
     view["usable"] = json!(usable);
     view["unavailable"] = json!(unavailable);
     view["resting"] = json!(resting);
@@ -982,6 +1033,57 @@ mod tests {
                         StatusCode::OK,
                         axum::Json(json!({ "data": [{ "id": "small" }, { "id": "big" }] })),
                     )
+                }),
+            )
+            .route(
+                "/v1/embeddings",
+                post(|headers: HeaderMap, axum::Json(body): axum::Json<Value>| async move {
+                    if !allowed(&headers) {
+                        return (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "bad key" })));
+                    }
+                    let inputs = body["input"].as_array().map_or(1, Vec::len);
+                    // Out of order on purpose: the gateway must put them back.
+                    let data: Vec<Value> = (0..inputs)
+                        .rev()
+                        .map(|i| json!({ "index": i, "embedding": [i as f32, 0.5] }))
+                        .collect();
+                    (
+                        StatusCode::OK,
+                        axum::Json(json!({
+                            "model": body["model"],
+                            "data": data,
+                            "usage": { "prompt_tokens": 3 },
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/v1/images/generations",
+                post(|axum::Json(body): axum::Json<Value>| async move {
+                    axum::Json(json!({
+                        "created": 1,
+                        "data": [{ "b64_json": "iVBORw0KGgo=", "revised_prompt": body["prompt"] }],
+                    }))
+                }),
+            )
+            .route(
+                "/v1/audio/speech",
+                post(|axum::Json(body): axum::Json<Value>| async move {
+                    format!("AUDIO:{}:{}", body["voice"].as_str().unwrap_or(""), body["input"].as_str().unwrap_or(""))
+                }),
+            )
+            .route(
+                "/v1/audio/transcriptions",
+                post(|headers: HeaderMap, body: axum::body::Bytes| async move {
+                    let form = String::from_utf8_lossy(&body).to_string();
+                    let multipart = headers
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|v| v.starts_with("multipart/form-data; boundary="));
+                    axum::Json(json!({
+                        "text": if multipart && form.contains("RIFFDATA") { "merhaba dünya" } else { "not a form" },
+                        "usage": { "type": "duration", "seconds": 2.0 },
+                    }))
                 }),
             )
             .route(
@@ -1501,5 +1603,247 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn every_media_endpoint_is_served_by_a_model_of_its_kind() {
+        let app = gateway();
+        let base = upstream().await;
+        local_provider(&app, &base, "good").await;
+
+        // A kind the provider type has, with no capabilities needed.
+        for (model, kind) in [
+            ("vec", "embedding"),
+            ("draw", "image"),
+            ("say", "speech"),
+            ("hear", "transcription"),
+        ] {
+            let (status, body) = call(
+                &app,
+                "PUT",
+                &format!("/manage/providers/local/models/{model}"),
+                Some(json!({ "enabled": true, "kind": kind })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["kind"], kind);
+        }
+        // Capabilities describe chat, and are refused for another kind.
+        let (status, refused) = call(
+            &app,
+            "PUT",
+            "/manage/providers/local/models/vec",
+            Some(json!({ "kind": "embedding", "capabilities": { "tools": true } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+
+        // A set of embedding models, with a chat model in it reported rather than used.
+        call(
+            &app,
+            "PUT",
+            "/manage/providers/local/models/small",
+            Some(json!({ "enabled": true, "capabilities": { "streaming": true } })),
+        )
+        .await;
+        let (status, set) = call(
+            &app,
+            "PUT",
+            "/manage/routes/vectors",
+            Some(json!({ "routes": ["local/vec", "local/small"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{set}");
+        assert_eq!(set["kind"], "embedding");
+        assert_eq!(set["usable"], json!(["local/vec"]));
+        assert_eq!(
+            set["unavailable"][0]["why"],
+            "a chat model, in a set serving embedding"
+        );
+
+        // Embeddings, put back in the order the inputs were given.
+        let (status, reply) = call(
+            &app,
+            "POST",
+            "/v1/embeddings",
+            Some(json!({ "model": "vectors", "input": ["a", "b"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_eq!(reply["data"][0]["embedding"], json!([0.0, 0.5]));
+        assert_eq!(reply["data"][1]["embedding"], json!([1.0, 0.5]));
+        assert_eq!(reply["usage"]["prompt_tokens"], 3);
+        assert_eq!(reply["llmr_cost"]["status"], "free", "a self hosted model");
+
+        // A route whose key is rejected falls through to the next, and says so.
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/manage/providers",
+            Some(json!({
+                "id": "bad",
+                "type": "openai-compatible",
+                "base_url": base,
+                "reach": "self-hosted",
+                "credential": "wrong",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        call(
+            &app,
+            "PUT",
+            "/manage/providers/bad/models/vec",
+            Some(json!({ "enabled": true, "kind": "embedding" })),
+        )
+        .await;
+        call(
+            &app,
+            "PUT",
+            "/manage/routes/fallback",
+            Some(json!({ "routes": ["bad/vec", "local/vec"] })),
+        )
+        .await;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "model": "fallback", "input": "a" }).to_string(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-llmr-route"], "local/vec");
+        assert_eq!(response.headers()["x-llmr-fell-through"], "1");
+
+        // Base64, as the OpenAI SDKs ask for by default: little endian 32 bit floats.
+        let (_, reply) = call(
+            &app,
+            "POST",
+            "/v1/embeddings",
+            Some(json!({ "model": "local/vec", "input": "a", "encoding_format": "base64" })),
+        )
+        .await;
+        assert_eq!(reply["data"][0]["embedding"], "AAAAAAAAAD8=");
+
+        // A chat model at the wrong endpoint, and an embedding model at chat, are told where
+        // they belong.
+        let (status, wrong) = call(
+            &app,
+            "POST",
+            "/v1/embeddings",
+            Some(json!({ "model": "local/small", "input": "a" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(wrong["error"]["code"], "wrong_endpoint");
+        let (status, wrong) = call(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({ "model": "vectors", "messages": [{ "role": "user", "content": "hi" }] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            wrong["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("/v1/embeddings"),
+            "{wrong}"
+        );
+
+        // A picture, as bytes.
+        let (status, reply) = call(
+            &app,
+            "POST",
+            "/v1/images/generations",
+            Some(json!({ "model": "local/draw", "prompt": "a cat" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_eq!(reply["data"][0]["b64_json"], "iVBORw0KGgo=");
+        assert_eq!(reply["data"][0]["revised_prompt"], "a cat");
+        assert_eq!(reply["output_format"], "png");
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/v1/images/generations",
+            Some(json!({ "model": "local/draw", "prompt": "a cat", "style": "vivid" })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "refused by name, not dropped"
+        );
+
+        // Speech, as the recording itself, typed.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/audio/speech")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "model": "local/say", "input": "merhaba", "voice": "alloy", "response_format": "wav" })
+                    .to_string(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "audio/wav");
+        assert_eq!(response.headers()["x-llmr-route"], "local/say");
+        assert!(response.headers()["x-llmr-request-id"]
+            .to_str()
+            .unwrap()
+            .starts_with("tts-"));
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"AUDIO:alloy:merhaba");
+
+        // A transcription, from a multipart upload, carried on as one.
+        let boundary = "b0undary";
+        let form = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nlocal/hear\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\
+             Content-Type: audio/wav\r\n\r\nRIFFDATA\r\n--{boundary}--\r\n"
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/audio/transcriptions")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(form))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let reply: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(reply["text"], "merhaba dünya");
+        assert_eq!(reply["usage"]["seconds"], 2.0);
+
+        // Every one of them was recorded, by a writer that runs beside the requests.
+        let mut routes = Vec::new();
+        for _ in 0..100 {
+            let (_, usage) = call(&app, "GET", "/manage/usage/requests?limit=50", None).await;
+            routes = usage["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|r| r["route"].as_str().map(str::to_string))
+                .collect();
+            if routes.iter().any(|r| r == "local/hear") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        for route in ["local/vec", "local/draw", "local/say", "local/hear"] {
+            assert!(routes.iter().any(|r| r == route), "{route} in {routes:?}");
+        }
     }
 }

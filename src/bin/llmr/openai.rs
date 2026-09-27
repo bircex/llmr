@@ -323,7 +323,7 @@ fn text_of(content: Option<&Value>, at: &dyn Fn(&str) -> String) -> Result<Strin
     }
 }
 
-/// A user turn, which is the one place an image may appear.
+/// A user turn, which is the one place an image, a document or a recording may appear.
 fn user_content(
     content: Option<&Value>,
     at: &dyn Fn(&str) -> String,
@@ -350,6 +350,8 @@ fn user_content(
                     })?;
                 blocks.push(read_image(url, at)?);
             }
+            Some("file") => blocks.push(read_file(part.get("file"), at)?),
+            Some("input_audio") => blocks.push(read_audio(part.get("input_audio"), at)?),
             other => {
                 return Err(ApiError::invalid_param(
                     "messages",
@@ -364,25 +366,128 @@ fn user_content(
     Ok(blocks)
 }
 
+/// The media type and bytes of a `data:` URL, when it is one.
+///
+/// `Ok(None)` for anything that is not a data URL, so the caller decides what else it takes.
+fn data_url(
+    url: &str,
+    what: &str,
+    at: &dyn Fn(&str) -> String,
+) -> Result<Option<(String, Vec<u8>)>, ApiError> {
+    let Some(rest) = url.strip_prefix("data:") else {
+        return Ok(None);
+    };
+    let (header, data) = rest
+        .split_once(',')
+        .ok_or_else(|| ApiError::invalid_param("messages", at("malformed data URL")))?;
+    let media_type = header.strip_suffix(";base64").ok_or_else(|| {
+        ApiError::invalid_param("messages", at(&format!("a data URL {what} must be base64")))
+    })?;
+    Ok(Some((media_type.to_string(), decode(data, what, at)?)))
+}
+
+fn decode(data: &str, what: &str, at: &dyn Fn(&str) -> String) -> Result<Vec<u8>, ApiError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .map_err(|_| ApiError::invalid_param("messages", at(&format!("{what} data is not base64"))))
+}
+
+/// A document from a `file` part: its bytes, inline.
+///
+/// `file_data` is a data URL, whose type is read from it; bare base64 is taken too, with the
+/// type read from the file name's extension. A `file_id` names an upload to a files endpoint
+/// this gateway does not have, so it is refused rather than forwarded to a provider that has
+/// never seen it.
+fn read_file(file: Option<&Value>, at: &dyn Fn(&str) -> String) -> Result<ContentBlock, ApiError> {
+    let file =
+        file.ok_or_else(|| ApiError::invalid_param("messages", at("a file part needs a file")))?;
+    let name = file
+        .get("filename")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(data) = file.get("file_data").and_then(Value::as_str) else {
+        let why = if file.get("file_id").is_some() {
+            "file_id names an upload this gateway does not hold; send the file as file_data"
+        } else {
+            "a file part needs file_data"
+        };
+        return Err(ApiError::invalid_param("messages", at(why)));
+    };
+    let (media_type, bytes) = match data_url(data, "file", at)? {
+        Some(read) => read,
+        None => {
+            let by_name = name
+                .as_deref()
+                .map(str::to_ascii_lowercase)
+                .and_then(|name| {
+                    [(".pdf", "application/pdf"), (".txt", "text/plain")]
+                        .iter()
+                        .find(|(extension, _)| name.ends_with(extension))
+                        .map(|(_, media_type)| (*media_type).to_string())
+                })
+                .ok_or_else(|| {
+                    ApiError::invalid_param(
+                        "messages",
+                        at("send file_data as a data URL, or name the file .pdf or .txt so its                             type can be read"),
+                    )
+                })?;
+            (by_name, decode(data, "file", at)?)
+        }
+    };
+    Ok(ContentBlock::Document {
+        media_type,
+        source: ImageSource::Bytes(bytes),
+        name,
+    })
+}
+
+/// A recording from an `input_audio` part, which names a format rather than a media type.
+fn read_audio(
+    audio: Option<&Value>,
+    at: &dyn Fn(&str) -> String,
+) -> Result<ContentBlock, ApiError> {
+    let audio = audio.ok_or_else(|| {
+        ApiError::invalid_param("messages", at("an input_audio part needs input_audio"))
+    })?;
+    let data = audio
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::invalid_param("messages", at("input_audio needs data")))?;
+    let format = audio
+        .get("format")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let media_type = match format {
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "ogg" => "audio/ogg",
+        "aac" => "audio/aac",
+        "m4a" => "audio/mp4",
+        "webm" => "audio/webm",
+        _ => {
+            return Err(ApiError::invalid_param(
+                "messages",
+                at("input_audio format must be wav, mp3, flac, ogg, aac, m4a or webm"),
+            ))
+        }
+    };
+    Ok(ContentBlock::Audio {
+        media_type: media_type.to_string(),
+        data: decode(data, "audio", at)?,
+    })
+}
+
 /// An image, from a data URL or a link.
 ///
 /// The media type is read, never guessed: from the data URL itself, or from a link's file
 /// extension. A link with no recognisable extension is refused, because a provider told the
 /// wrong type rejects the request or decodes it wrongly.
 fn read_image(url: &str, at: &dyn Fn(&str) -> String) -> Result<ContentBlock, ApiError> {
-    if let Some(rest) = url.strip_prefix("data:") {
-        let (header, data) = rest
-            .split_once(',')
-            .ok_or_else(|| ApiError::invalid_param("messages", at("malformed data URL")))?;
-        let media_type = header.strip_suffix(";base64").ok_or_else(|| {
-            ApiError::invalid_param("messages", at("a data URL image must be base64"))
-        })?;
-        use base64::Engine as _;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(data.trim())
-            .map_err(|_| ApiError::invalid_param("messages", at("image data is not base64")))?;
+    if let Some((media_type, bytes)) = data_url(url, "image", at)? {
         return Ok(ContentBlock::Image {
-            media_type: media_type.to_string(),
+            media_type,
             source: ImageSource::Bytes(bytes),
         });
     }
@@ -863,6 +968,68 @@ mod tests {
         }))
         .expect_err("no extension");
         assert_eq!(error.status.as_u16(), 400);
+    }
+
+    #[test]
+    fn a_pdf_and_a_recording_arrive_as_a_document_and_audio() {
+        let incoming = read(json!({
+            "model": "m",
+            "messages": [{ "role": "user", "content": [
+                { "type": "file", "file": {
+                    "filename": "report.pdf",
+                    "file_data": "data:application/pdf;base64,JVBERi0xLjc=",
+                } },
+                { "type": "input_audio", "input_audio": { "data": "UklGRg==", "format": "wav" } },
+            ]}],
+        }))
+        .expect("reads");
+        let needs = incoming.request.needs();
+        assert!(needs.documents && needs.audio);
+        match &incoming.request.messages[0].content[..] {
+            [ContentBlock::Document {
+                media_type,
+                source: ImageSource::Bytes(pdf),
+                name,
+            }, ContentBlock::Audio {
+                media_type: audio_type,
+                data,
+            }] => {
+                assert_eq!(media_type, "application/pdf");
+                assert_eq!(pdf, b"%PDF-1.7");
+                assert_eq!(name.as_deref(), Some("report.pdf"));
+                assert_eq!(audio_type, "audio/wav");
+                assert_eq!(data, b"RIFF");
+            }
+            other => panic!("expected a document and audio, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_file_data_takes_its_type_from_the_name_and_a_file_id_is_refused() {
+        let incoming = read(json!({
+            "model": "m",
+            "messages": [{ "role": "user", "content": [
+                { "type": "file", "file": { "filename": "notes.txt", "file_data": "aGk=" } },
+            ]}],
+        }))
+        .expect("reads");
+        assert!(matches!(
+            &incoming.request.messages[0].content[0],
+            ContentBlock::Document { media_type, .. } if media_type == "text/plain"
+        ));
+
+        for part in [
+            json!({ "type": "file", "file": { "file_id": "file-123" } }),
+            json!({ "type": "file", "file": { "filename": "x.bin", "file_data": "aGk=" } }),
+            json!({ "type": "input_audio", "input_audio": { "data": "aGk=", "format": "midi" } }),
+        ] {
+            let error = read(json!({
+                "model": "m",
+                "messages": [{ "role": "user", "content": [part.clone()] }],
+            }))
+            .expect_err("refused");
+            assert_eq!(error.status.as_u16(), 400, "{part}");
+        }
     }
 
     #[test]

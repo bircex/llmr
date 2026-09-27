@@ -69,7 +69,7 @@ writable by uid `65532`: `chown 65532:65532 /srv/llmr`.
 | `LLMR_TOKEN` | unset | Tokens callers must present, comma separated. Unset, nothing is checked |
 | `LLMR_LISTEN` | `0.0.0.0:8080` | Address and port inside the container |
 | `LLMR_DATA_DIR` | `/var/lib/llmr` | Where the database lives |
-| `LLMR_MAX_BODY_MB` | `32` | Largest request body; images arrive inline |
+| `LLMR_MAX_BODY_MB` | `32` | Largest request body. Images, documents, recordings and transcription uploads arrive inline |
 | `RUST_LOG` | `info` | Log filter |
 | `LLMR_LOG_FORMAT` | text | `json` for one object per line |
 

@@ -4,6 +4,8 @@
 //! |---|---|---|
 //! | `api` | you say | Anything speaking `/v1/chat/completions` |
 //! | `embed` | you say | Anything speaking `/v1/embeddings` |
+//! | `image` | you say | Anything speaking `/v1/images/generations` |
+//! | `audio` | you say | Anything speaking `/v1/audio/speech` and `/v1/audio/transcriptions` |
 //!
 //! # `api` is a shape, not a vendor
 //!
@@ -29,3 +31,10 @@ pub mod api;
 // share is a base URL and a key.
 #[cfg(all(feature = "openai", feature = "embeddings"))]
 pub mod embed;
+
+// Pictures and speech in the same shape, each behind its own feature like embeddings.
+#[cfg(all(feature = "openai", feature = "image-generation"))]
+pub mod image;
+
+#[cfg(all(feature = "openai", feature = "audio"))]
+pub mod audio;

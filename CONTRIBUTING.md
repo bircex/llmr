@@ -78,14 +78,18 @@ src/
     manage.rs      the management API
     openai.rs      the OpenAI request and reply shape, both directions
     server.rs      the client API, the token check, streaming
+    media.rs       the endpoints beside chat: embeddings, images, speech, transcription
     error.rs       failures as OpenAI error bodies and status codes
   chat/          the engine: what a call is made of: message, request, response, stream
   cost/          what it consumed and what that is worth: usage, pricing, ledger
+  embed/         text as vectors: the Embedder trait (feature `embeddings`)
+  image/         pictures from a prompt: the ImageGenerator trait (feature `image-generation`)
+  audio/         speech both ways: SpeechSynthesizer and Transcriber (feature `audio`)
   providers/
     api/         the shared machinery for reaching over the network: ApiProvider + Protocol
     anthropic/   api.rs the Messages protocol
-    openai/      api.rs the chat completions shape, embed.rs
-    gemini/      api.rs generateContent, embed.rs
+    openai/      api.rs the chat completions shape, embed.rs, image.rs, audio.rs
+    gemini/      api.rs generateContent, embed.rs, media.rs (pictures and speech)
     bedrock/     api.rs InvokeModel, reusing the Messages translation
   model.rs       Reach, ModelId, ModelCapabilities
   registry.rs    what a provider serves and what it can do
@@ -198,7 +202,9 @@ Three things the suite is checking, and they are the ones that are easy to get w
 
 Put your provider behind a feature, then make it something a panel can add: a
 `ProviderType` in `src/bin/llmr/records.rs` (with the `TypeInfo` a panel renders a form
-from), a branch in `build_provider` in `gateway.rs`, and a row in `docs/MANAGEMENT.md`. A
+from, and the `kinds` it has endpoints for), a branch in `build_provider` in `gateway.rs`
+that builds the chat provider and any of the embedder, image, speech and transcription
+endpoints those kinds need, and a row in `docs/MANAGEMENT.md`. A
 provider the management API cannot add is a provider nobody running llmr can use.
 
 ### And then call it for real, once

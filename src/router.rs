@@ -136,6 +136,10 @@ pub struct Requirements {
     pub thinking: bool,
     /// The model must accept an image.
     pub images: bool,
+    /// The model must accept a document.
+    pub documents: bool,
+    /// The model must accept audio.
+    pub audio: bool,
     /// The reply must be readable as it arrives.
     ///
     /// Not something a request can express, because it is about how you intend to read the
@@ -163,6 +167,8 @@ impl Requirements {
             prompt_caching: needs.prompt_caching,
             thinking: needs.thinking,
             images: needs.images,
+            documents: needs.documents,
+            audio: needs.audio,
             // Neither of these is in the request. One is about how you will read the reply,
             // the other about where your data may go, and a request says nothing about
             // either.
@@ -201,6 +207,8 @@ impl Requirements {
             && (!self.thinking || have.thinking)
             && (!self.streaming || have.streaming)
             && (!self.images || have.images)
+            && (!self.documents || have.documents)
+            && (!self.audio || have.audio)
     }
 
     /// What is missing, by name, for a message somebody reads.
@@ -226,6 +234,12 @@ impl Requirements {
         }
         if self.images && !have.images {
             missing.push("images");
+        }
+        if self.documents && !have.documents {
+            missing.push("documents");
+        }
+        if self.audio && !have.audio {
+            missing.push("audio");
         }
         missing
     }

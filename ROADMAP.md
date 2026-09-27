@@ -19,8 +19,8 @@ publishing, docs.rs or a public API, that is what the project did then.
 
 | | |
 |---|---:|
-| Source | 19,112 lines across 45 files, the service included |
-| Tests | 407 passing, all features · 265 on the default set |
+| Source | 22,308 lines across 51 files, the service included |
+| Tests | 427 passing, all features · 270 on the default set |
 | Distributed as | The Docker image, for amd64 and arm64, from `main` and from `v*` tags |
 | CI on GitHub | every pull request, including building and starting the image |
 
@@ -49,11 +49,17 @@ In order:
 2. Per caller limits: spending caps and rate limits, now that usage is recorded. The engine's
    `Budget` is per process lifetime, which a long running service cannot use as is.
 3. An Anthropic Messages endpoint beside the OpenAI one, so prompt caching and thinking
-   signatures can cross; Bedrock (needs a SigV4 signing transport); embeddings.
+   signatures can cross; Bedrock (needs a SigV4 signing transport). ~~Embeddings~~ ·
+   **done**, with media below.
 4. Stop sequences and `tool_choice`, which the engine's `ChatRequest` cannot express yet and
    the client API therefore refuses.
-5. Media: images and other non-text inputs and outputs over the API, beyond the image a
-   prompt can already carry.
+5. ~~Media: images and other non-text inputs and outputs over the API, beyond the image a
+   prompt can already carry.~~ · **done**, unreleased. A chat request carries PDFs and
+   recordings, routed on two new capabilities, `documents` and `audio`. Models have a `kind`,
+   and `/v1/embeddings`, `/v1/images/generations`, `/v1/audio/speech` and
+   `/v1/audio/transcriptions` serve route sets of that kind, in order, without the chat
+   router's breaker or reordering. Still out: media in a chat reply, image edits, Imagen
+   (`:predict`), and transcription through Gemini, which has no endpoint for it.
 
 ---
 
@@ -337,8 +343,9 @@ correct all the way down.
 
 ## Things known to be missing from the engine
 
-Reranking and completion endpoints, audio and documents. Bedrock does not stream, because its
+Reranking and completion endpoints. Bedrock does not stream, because its
 event framing is not server sent events. The gateway's own gaps are listed in the README; if
 you fix one, take it out of that list in the same commit.
 
-Streaming, retries, images and embeddings used to be on this line and are not any more.
+Streaming, retries, images, embeddings, audio and documents used to be on this line and are
+not any more.
