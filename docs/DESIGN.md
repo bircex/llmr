@@ -1263,6 +1263,63 @@ falling back to the route's model keeps a dated alias from turning a priced call
 **A cost uses the gateway the request started on.** A provider changed or removed while a
 stream runs does not reprice it against something it never used.
 
+## A command line tool in the image is a model behind a process, and nothing more
+
+Claude Code, Codex and Gemini CLI ship in the image, ready, and a provider of their type runs
+the tool once per request. The engine's `LocalCli` was written for a tool on a person's
+machine, signed in with its own login; a tool in a shared container, called by whoever holds
+the token, needed different answers, so the gateway runs them itself (`src/bin/llmr/cli.rs`).
+
+**Every tool the tool has is off.** These programs are agents: given a prompt they read files,
+run commands and search the web. Behind a router they are asked by callers who are not the
+operator, so each is started with all of it switched off, by the tool's own settings: `--tools
+""` for Claude Code, every acting feature disabled for Codex, an empty allow list for Gemini
+CLI. An allow list is preferred where there is one, because a tool added by a later version is
+then off too. Codex's features are switched off with `-c features.<name>=false` rather than
+`--disable`, which refuses a name the installed version does not know: an update must not
+turn a renamed feature into a provider that cannot start.
+
+**The environment is built, not inherited.** An empty environment, a home of its own, the
+proxy and certificate variables, one key. The master key and the tokens are in llmr's
+environment, and a child inherits it by default.
+
+**A call leaves nothing behind.** Its directory is its home, working directory and
+temporary directory, and it is removed when the call ends. A session file, a history or an
+error report from one caller's call would otherwise be there for the next caller's.
+
+**The tool does not retry.** Claude Code retries a 401 for minutes, Codex five times, Gemini
+CLI ten. Retrying and falling back is what a route set is configured for, and a tool that
+retries inside a request holds it while a fallback waits. Each is told not to.
+
+**Its failures are read as statuses.** A tool exits 1 for a bad key and for a timeout alike.
+Each prints the vendor's status somewhere (Claude Code's `api_error_status`, the status in
+Codex's `turn.failed` message, the `code` in Gemini CLI's error object), and it is mapped the
+way an API provider's status is: a 401 is a rejected credential that is not retried, a 429
+falls through. Without that every failure would be transient, and a revoked key would be
+retried on every request.
+
+**The key is an API key.** A subscription login (Claude Pro or Max, ChatGPT) is for a
+person's own use of the tool, and a router serving other callers is not that. Claude Code's
+`--bare` mode, which keeps a call from reading hooks, plugins and memory, reads only an API
+key in any case.
+
+**Usage is read in each tool's own words.** Codex's input count includes the cached part and
+its output count includes reasoning; Gemini CLI's prompt count includes the cached part and
+its thinking is billed as output; Claude Code's are Anthropic's. Each is recorded from a run
+against a local endpoint (`src/bin/llmr/recorded/`), the way the engine's presets are.
+
+**The tested version ships; another is the operator's choice.** The image pins the versions
+the parsers were recorded against. An update installs from npm onto the volume, beside the
+copy in use, checks that it starts, and swaps it in with a rename, so a failed update changes
+nothing. Only a plain version number or `latest` reaches npm: a range, a tag, a URL or a path
+could install something other than the vendor's package.
+
+**llmr is its own init.** Process 1 has to reap what the tools leave behind. tini would, but
+tini is started with the master key in its environment and is not llmr's code, so it cannot
+be marked undumpable, and any process of the same user, a tool included, could read it from
+`/proc/1/environ`. So process 1 is llmr: undumpable, reaping, passing signals on, and running
+the gateway as its child.
+
 ---
 
 ## Naming and prose

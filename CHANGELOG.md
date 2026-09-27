@@ -42,8 +42,24 @@ is published as a crate any more.
   rows before a time. Each reply carries its own cost as `llmr_cost` (and `x-llmr-cost`):
   `priced`, `partial` (a floor), `unpriced` or `free` for a self hosted model. Schema
   version 2; a version 1 database is brought forward on start.
+- Command line tools: Claude Code, Codex and Gemini CLI installed in the image at tested
+  versions, and three provider types that run them (`claude-code`, `codex`, `gemini-cli`)
+  with an API key, priced at the vendor's rates. Each call runs in an empty directory of its
+  own with only its own key, with the tool's own tools and retries switched off, and its
+  failures read as the vendor's status (a bad key is not retried, a rate limit falls through).
+  `GET /manage/clis` reports each tool's version and where it came from, and the newest on
+  npm with `?check_latest=true`; `POST /manage/clis/{name}/update` installs another version
+  onto the volume inside the running container; `POST /manage/clis/{name}/reset` goes back
+  to the image's. `LLMR_NPM_REGISTRY` for a mirror.
 
 ### Changed
+
+- The image is Debian slim with Node.js rather than distroless, because the command line
+  tools need it: about 370 MB to download, 1.4 GB on disk. It still runs as uid 65532, so an
+  existing volume stays writable.
+- llmr is the container's init: process 1 reaps what the tools leave behind and passes
+  signals on, and every llmr process is undumpable, so no process of its user can read the
+  master key out of `/proc`.
 
 - Semantic versioning applies to the client API, the management API, the headers, the
   environment variables and the database schema, not to the engine's Rust types.

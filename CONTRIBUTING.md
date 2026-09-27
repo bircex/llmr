@@ -71,6 +71,9 @@ deployment that upgrades.
 src/
   bin/llmr/      the gateway
     main.rs        command line, startup, shutdown, logging, `check` and `healthcheck`
+    init.rs        process 1 in the container: reaping, passing signals on
+    cli.rs         Claude Code, Codex, Gemini CLI: running one, reading it, updating it
+    recorded/      what each of those printed, recorded against a local endpoint
     records.rs     what is stored: provider types, providers, models, route sets
     store.rs       the SQLite database, and every query
     crypto.rs      credentials at rest, sealed with the master key
@@ -169,6 +172,12 @@ For a command line tool, write a preset on `providers::cli::LocalCli`: a program
 arguments, and an `Envelope` saying where in its output the answer and the usage are. The
 spawning, the deadline, the kill on drop and the difference between a missing binary and a
 silent one are `LocalCli`'s.
+
+A tool the image ships is different: the gateway runs those itself, in `src/bin/llmr/cli.rs`,
+because a tool in a shared container needs its environment, directory and own tools taken
+away, which `LocalCli` does not do. Adding one there is a `Tool`, its arguments with every
+acting feature off and its retries off, a reader for what it prints (recorded from a real run
+against a local endpoint, into `recorded/`), and an install line in the `Dockerfile`.
 
 Either one goes in a file under **whoever you reach and whoever the credential pays** —
 `providers::<who>::api` or `providers::<who>::cli` — beside whatever other reaches that node

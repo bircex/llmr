@@ -14,11 +14,15 @@
 //! | `GET` `PUT` `DELETE` | `/manage/routes/{name}` | One route set |
 //! | `GET` `DELETE` | `/manage/usage` | Totals over a time range, grouped; or forget old rows |
 //! | `GET` | `/manage/usage/requests` | Single requests, newest first |
+//! | `GET` | `/manage/clis`, `/manage/clis/{name}` | The command line tools: installed version, where from, newest |
+//! | `POST` | `/manage/clis/{name}/update` | Install a version onto the volume |
+//! | `POST` | `/manage/clis/{name}/reset` | Go back to the version in the image |
 //!
 //! Every change is written to the store, then the gateway is rebuilt from the store and
 //! swapped in, so the next request sees it. A credential is write only: it goes in on a
 //! `POST` or `PATCH` and comes back as its last four characters.
 
+use crate::cli::{Tool, Toolbox, UpdateError};
 use crate::error::ApiError;
 use crate::gateway::{build_provider, registry, Gateway, Snapshot};
 use crate::records::{valid_id, Capabilities, Model, Provider, ProviderType, RouteSpec};
@@ -68,13 +72,18 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         )
         .route("/manage/usage", get(usage_totals).delete(forget_usage))
         .route("/manage/usage/requests", get(usage_requests))
+        .route("/manage/clis", get(list_clis))
+        .route("/manage/clis/{name}", get(read_cli))
+        .route("/manage/clis/{name}/update", post(update_cli))
+        .route("/manage/clis/{name}/reset", post(reset_cli))
 }
 
 /// Reads the store again, builds a new gateway, and swaps it in.
 async fn reload(state: &AppState) -> Result<(), ApiError> {
+    let tools = state.tools.clone();
     let gateway = state
         .db
-        .run(|store| Ok(Gateway::build(&Snapshot::read(store)?)))
+        .run(move |store| Ok(Gateway::build(&Snapshot::read(store)?, &tools)))
         .await?;
     state.live.replace(gateway);
     Ok(())
@@ -210,7 +219,18 @@ fn read_timeout(secs: u64) -> Result<u64, ApiError> {
 /// Whether a provider as it stands can be built, said the way a panel shows it.
 fn complete(provider: &Provider) -> Result<(), ApiError> {
     let info = provider.provider_type.info();
-    if provider.effective_base_url().is_none() {
+    let cli = provider.provider_type.tool().is_some();
+    if cli && provider.reach.is_some_and(|r| r != Reach::LocalCli) {
+        return Err(ApiError::invalid_param(
+            "reach",
+            format!(
+                "a {} provider runs a command line tool that calls its vendor, so its reach \
+                 is local-cli",
+                info.name
+            ),
+        ));
+    }
+    if !cli && provider.effective_base_url().is_none() {
         return Err(ApiError::invalid_param(
             "base_url",
             format!("a {} provider needs a base_url", info.name),
@@ -421,9 +441,10 @@ async fn built_on_the_spot(
         })
         .await?;
     let refs: Vec<&Model> = rows.iter().collect();
-    let built = build_provider(&provider, credential.as_deref(), &refs).map_err(|why| {
-        ApiError::invalid(format!("provider {} cannot be built: {why}", provider.id))
-    })?;
+    let built =
+        build_provider(&provider, credential.as_deref(), &refs, &state.tools).map_err(|why| {
+            ApiError::invalid(format!("provider {} cannot be built: {why}", provider.id))
+        })?;
     Ok((provider, built))
 }
 
@@ -454,6 +475,9 @@ async fn test_provider(
     let (provider, built) = built_on_the_spot(&state, id).await?;
 
     let mut report = json!({ "provider": provider.id });
+    if let Some(tool) = provider.provider_type.tool() {
+        report["cli"] = cli_view(&state.tools, tool);
+    }
 
     // The free check: a named model is validated, otherwise the model list is fetched. Both
     // prove the credential without generating a token.
@@ -537,6 +561,7 @@ async fn provider_models(State(state): Shared, Path(id): Path<String>) -> Answer
     let row_refs: Vec<&Model> = rows.iter().collect();
     let shipped = registry(&provider, &[]);
     let known = registry(&provider, &row_refs);
+    let cli = provider.provider_type.tool().is_some();
 
     // What the provider says it serves right now, when it can say.
     let (listed, listing_error) =
@@ -565,13 +590,19 @@ async fn provider_models(State(state): Shared, Path(id): Path<String>) -> Answer
         .keys()
         .map(|model_id| {
             let row = rows.iter().find(|r| &r.model_id == model_id);
-            let capabilities = known
-                .capabilities(&ModelId::from(model_id.as_str()))
-                .map(|c| Capabilities::from_engine(&c));
+            let capabilities = if cli {
+                built
+                    .provider
+                    .capabilities(&ModelId::from(model_id.as_str()))
+            } else {
+                known.capabilities(&ModelId::from(model_id.as_str()))
+            }
+            .map(|c| Capabilities::from_engine(&c));
             let source = match (
                 row.and_then(|r| r.capabilities),
                 shipped.models.contains_key(model_id),
             ) {
+                _ if cli => Some("cli"),
                 (Some(_), _) => Some("custom"),
                 (None, true) => Some("shipped"),
                 (None, false) => None,
@@ -644,19 +675,25 @@ async fn put_model(
         row.capabilities = capabilities;
     }
 
-    // A model is only usable when something says what it can do. Refused here rather than
-    // accepted and silently unroutable.
-    let shipped_knows = registry(&provider, &[])
-        .capabilities(&ModelId::from(model_id.as_str()))
-        .is_some();
-    if row.enabled && row.capabilities.is_none() && !shipped_knows {
-        return Err(ApiError::invalid_param(
-            "capabilities",
-            format!(
-                "nothing is known about what {model_id} can do; send its capabilities \
-                 (tools, streaming, images, ...) to enable it"
-            ),
-        ));
+    // Through a command line tool every model is text in, text out, whatever it can do
+    // behind an API. Capabilities written here would promise what the tool cannot carry.
+    if provider.provider_type.tool().is_some() {
+        // Passed to the tool as an argument, so it must not read as one of its flags.
+        if !crate::cli::valid_model(&model_id) {
+            return Err(ApiError::invalid_param(
+                "model",
+                "a command line provider's model id may not start with '-' or contain spaces \
+                 or control characters",
+            ));
+        }
+        if row.capabilities.is_some() {
+            return Err(ApiError::invalid_param(
+                "capabilities",
+                "a command line provider carries text only, so its models take no capabilities",
+            ));
+        }
+    } else {
+        check_known(&provider, &row, &model_id)?;
     }
 
     let stored = row.clone();
@@ -669,6 +706,24 @@ async fn put_model(
         "enabled": row.enabled,
         "capabilities": row.capabilities,
     }))
+}
+
+/// A model is only usable when something says what it can do. Refused here rather than
+/// accepted and silently unroutable.
+fn check_known(provider: &Provider, row: &Model, model_id: &str) -> Result<(), ApiError> {
+    let shipped_knows = registry(provider, &[])
+        .capabilities(&ModelId::from(model_id))
+        .is_some();
+    if row.enabled && row.capabilities.is_none() && !shipped_knows {
+        return Err(ApiError::invalid_param(
+            "capabilities",
+            format!(
+                "nothing is known about what {model_id} can do; send its capabilities \
+                 (tools, streaming, images, ...) to enable it"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 async fn delete_model(
@@ -951,8 +1006,161 @@ async fn forget_usage(
     ok(json!({ "deleted": deleted }))
 }
 
+// ----- command line tools -------------------------------------------------------------
+
+/// A tool as the API shows it.
+fn cli_view(tools: &Toolbox, tool: Tool) -> Value {
+    let installed = tools.installed(tool);
+    json!({
+        "name": tool.name(),
+        "title": tool.title(),
+        "program": tool.program(),
+        "package": tool.package(),
+        "provider_type": tool.provider_type(),
+        "installed": installed.is_some(),
+        "version": installed.as_ref().and_then(|i| i.version.clone()),
+        // `image`: the version this release was tested with; `updated`: installed onto the
+        // volume through this API.
+        "source": installed.as_ref().map(|i| i.source),
+        "image_version": tools.image_version(tool),
+    })
+}
+
+fn read_tool(name: &str) -> Result<Tool, ApiError> {
+    Tool::parse(name).ok_or_else(|| {
+        ApiError::not_found(format!(
+            "no command line tool {name:?}; one of claude-code, codex, gemini-cli"
+        ))
+    })
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct CliQuery {
+    /// Also ask npm for the newest version. Slower, and needs the registry reachable.
+    #[serde(default)]
+    check_latest: bool,
+}
+
+/// Adds the newest version npm has, and whether it differs from the one in use.
+async fn with_latest(tools: &Toolbox, tool: Tool, mut view: Value) -> Value {
+    match tools.latest(tool).await {
+        Ok(latest) => {
+            view["update_available"] = json!(view["version"].as_str() != Some(latest.as_str()));
+            view["latest"] = json!(latest);
+        }
+        Err(why) => {
+            view["latest"] = Value::Null;
+            view["latest_error"] = json!(why);
+        }
+    }
+    view
+}
+
+async fn list_clis(
+    State(state): Shared,
+    query: Result<Query<CliQuery>, axum::extract::rejection::QueryRejection>,
+) -> Answer {
+    let query = query.map_err(|e| ApiError::invalid(e.body_text()))?.0;
+    let tools = &state.tools;
+    let mut data = Vec::new();
+    if query.check_latest {
+        let views = Tool::ALL.map(|tool| with_latest(tools, tool, cli_view(tools, tool)));
+        let [a, b, c] = views;
+        let (a, b, c) = tokio::join!(a, b, c);
+        data.extend([a, b, c]);
+    } else {
+        data.extend(Tool::ALL.map(|tool| cli_view(tools, tool)));
+    }
+    ok(json!({ "data": data }))
+}
+
+async fn read_cli(
+    State(state): Shared,
+    Path(name): Path<String>,
+    query: Result<Query<CliQuery>, axum::extract::rejection::QueryRejection>,
+) -> Answer {
+    let query = query.map_err(|e| ApiError::invalid(e.body_text()))?.0;
+    let tool = read_tool(&name)?;
+    let view = cli_view(&state.tools, tool);
+    ok(if query.check_latest {
+        with_latest(&state.tools, tool, view).await
+    } else {
+        view
+    })
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct CliUpdate {
+    /// `latest`, or a version such as `2.1.283`.
+    version: Option<String>,
+}
+
+fn update_error(tool: Tool, error: UpdateError) -> ApiError {
+    match error {
+        UpdateError::Busy => ApiError::conflict(
+            "another update of a command line tool is running; try again when it is done",
+        ),
+        UpdateError::BadVersion => ApiError::invalid_param(
+            "version",
+            "version must be \"latest\" or a version number such as 1.2.3",
+        ),
+        UpdateError::Failed(why) => {
+            ApiError::bad_gateway("update_failed", format!("{}: {why}", tool.title()))
+        }
+    }
+}
+
+/// Installs a version onto the volume. The next call runs it; calls in flight finish on the
+/// copy they started with.
+async fn update_cli(
+    State(state): Shared,
+    Path(name): Path<String>,
+    raw: axum::body::Bytes,
+) -> Answer {
+    let tool = read_tool(&name)?;
+    let request: CliUpdate = if raw.iter().all(u8::is_ascii_whitespace) {
+        CliUpdate::default()
+    } else {
+        body(json_body(&raw)?)?
+    };
+    let version = request.version.unwrap_or_else(|| "latest".into());
+    let before = state.tools.installed(tool).and_then(|i| i.version);
+    let started = Instant::now();
+    state
+        .tools
+        .update(tool, &version)
+        .await
+        .map_err(|e| update_error(tool, e))?;
+    let mut view = cli_view(&state.tools, tool);
+    view["previous_version"] = json!(before);
+    view["took_ms"] = json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    tracing::info!(
+        tool = tool.name(),
+        from = before.as_deref().unwrap_or("none"),
+        to = view["version"].as_str().unwrap_or("unknown"),
+        "command line tool updated"
+    );
+    ok(view)
+}
+
+/// Removes the copy on the volume, so calls run the image's version again.
+async fn reset_cli(State(state): Shared, Path(name): Path<String>) -> Answer {
+    let tool = read_tool(&name)?;
+    let removed = state
+        .tools
+        .reset(tool)
+        .await
+        .map_err(|e| update_error(tool, e))?;
+    let mut view = cli_view(&state.tools, tool);
+    view["removed_update"] = json!(removed);
+    ok(view)
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::cli::Toolbox;
     use crate::crypto::MasterKey;
     use crate::gateway::{Gateway, Live};
     use crate::server::{app, AppState};
@@ -1009,6 +1217,13 @@ mod tests {
     }
 
     fn gateway() -> axum::Router {
+        gateway_with(Toolbox::new(
+            std::path::PathBuf::from("/nonexistent"),
+            std::path::Path::new("/nonexistent"),
+        ))
+    }
+
+    fn gateway_with(tools: Toolbox) -> axum::Router {
         let key = MasterKey::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
         let db = Db::new(Store::in_memory(key).unwrap());
         app(
@@ -1018,6 +1233,7 @@ mod tests {
                 keys: Vec::new(),
                 started: std::time::Instant::now(),
                 recorder: crate::usage::Recorder::start(db.clone()).0,
+                tools: Arc::new(tools),
             }),
             1024 * 1024,
         )
@@ -1501,5 +1717,173 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// A gateway whose image has Claude Code as a script that prints a recorded answer.
+    #[cfg(unix)]
+    fn gateway_with_claude_code(name: &str) -> (axum::Router, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("llmr-manage-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let image = root.join("image");
+        crate::cli::fake_tool(
+            &image,
+            crate::cli::Tool::ClaudeCode,
+            &format!(
+                "cat > /dev/null\ncat <<'RECORDED'\n{}\nRECORDED",
+                include_str!("recorded/claude-code.ok.stdout").trim()
+            ),
+        );
+        let tools = Toolbox::new(image, &root.join("data"));
+        tools.prepare().unwrap();
+        (gateway_with(tools), root)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_line_tool_is_set_up_and_served_like_any_provider() {
+        let (app, root) = gateway_with_claude_code("flow");
+
+        let (status, types) = call(&app, "GET", "/manage/provider-types", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let claude = types["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == "claude-code")
+            .unwrap();
+        assert_eq!(claude["transport"], "cli");
+        assert_eq!(claude["default_reach"], "local-cli");
+
+        let (status, tools) = call(&app, "GET", "/manage/clis", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let listed = tools["data"].as_array().unwrap();
+        assert_eq!(listed.len(), 3);
+        assert_eq!(listed[0]["name"], "claude-code");
+        assert_eq!(listed[0]["installed"], true);
+        assert_eq!(listed[0]["version"], "9.9.9");
+        assert_eq!(listed[0]["source"], "image");
+        assert_eq!(listed[1]["installed"], false);
+
+        // No base URL needed, and a reach that is not local-cli is refused.
+        let (status, refused) = call(
+            &app,
+            "POST",
+            "/manage/providers",
+            Some(json!({ "id": "cc", "type": "claude-code", "credential": "sk-ant-x", "reach": "self-hosted" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(refused["error"]["param"], "reach");
+        let (status, created) = call(
+            &app,
+            "POST",
+            "/manage/providers",
+            Some(json!({ "id": "cc", "type": "claude-code", "credential": "sk-ant-x" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert_eq!(created["transport"], "cli");
+        assert_eq!(created["reach"], "local-cli");
+
+        // A model needs no capabilities, and is refused any: the tool carries text only.
+        let (status, refused) = call(
+            &app,
+            "PUT",
+            "/manage/providers/cc/models/claude-haiku-4-5",
+            Some(json!({ "enabled": true, "capabilities": { "tools": true } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(refused["error"]["param"], "capabilities");
+        // Nothing a tool could read as a flag.
+        let (status, refused) = call(
+            &app,
+            "PUT",
+            "/manage/providers/cc/models/--dangerously-skip-permissions",
+            Some(json!({ "enabled": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(refused["error"]["param"], "model");
+        let (status, _) = call(
+            &app,
+            "PUT",
+            "/manage/providers/cc/models/claude-haiku-4-5",
+            Some(json!({ "enabled": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The free test says what it can: installed, and the key unproven.
+        let (status, report) = call(
+            &app,
+            "POST",
+            "/manage/providers/cc/test",
+            Some(json!({ "model": "claude-haiku-4-5" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(report["access"], "unknown", "{report}");
+        assert_eq!(report["cli"]["version"], "9.9.9");
+
+        // Served, priced from Anthropic's book: 11 in at $1, 4 out at $5, per million.
+        let (status, reply) = call(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({ "model": "cc/claude-haiku-4-5", "messages": [{ "role": "user", "content": "hi" }] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_eq!(reply["choices"][0]["message"]["content"], "Hello from mock");
+        assert_eq!(reply["usage"]["prompt_tokens"], 11);
+        assert_eq!(reply["usage"]["completion_tokens"], 4);
+        assert_eq!(reply["llmr_cost"]["status"], "priced", "{reply}");
+        assert_eq!(reply["llmr_cost"]["amount"], "0.000031");
+
+        // A request the tool cannot carry is refused, not flattened.
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "cc/claude-haiku-4-5",
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tools": [{ "type": "function", "function": { "name": "f", "parameters": {} } }],
+            })),
+        )
+        .await;
+        assert!(status.is_client_error(), "{status}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tool_update_takes_only_a_version_and_reset_is_harmless_without_one() {
+        let (app, root) = gateway_with_claude_code("update");
+        for bad in [
+            "^2.0.0",
+            "2.0",
+            "next",
+            "file:../x",
+            "2.0.0 --registry=http://evil",
+        ] {
+            let (status, refused) = call(
+                &app,
+                "POST",
+                "/manage/clis/claude-code/update",
+                Some(json!({ "version": bad })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+            assert_eq!(refused["error"]["param"], "version");
+        }
+        let (status, _) = call(&app, "POST", "/manage/clis/nope/update", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, reset) = call(&app, "POST", "/manage/clis/claude-code/reset", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reset["removed_update"], false);
+        assert_eq!(reset["source"], "image");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

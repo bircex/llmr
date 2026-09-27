@@ -52,6 +52,36 @@ loosen it. The reach of an `openai-compatible` provider is whatever the panel wr
 on your own hardware and a hosted API answer the same request, and llmr cannot tell them
 apart. Setting it wrong is silent.
 
+A command line provider is always `local-cli`: the tool runs in the container and sends the
+prompt to its vendor, so it never serves an `on_device` route set.
+
+## Command line tools
+
+Claude Code, Codex and Gemini CLI run inside the container, as llmr's own user, one process
+per request. They are other people's programs that can act on a machine if allowed to, so
+each call is held in:
+
+- **No tools.** Each is started with every tool it has switched off: no reading files, no
+  running commands, no web search, no sub agents. A prompt that asks for any of it gets a
+  model that has nothing to call.
+- **Nothing inherited.** The environment is emptied and rebuilt: `PATH`, a home of its own,
+  the proxy and certificate variables, and the one key it is calling with. It never sees
+  `LLMR_MASTER_KEY`, `LLMR_TOKEN` or another provider's key.
+- **Nothing kept.** Each call runs in a new directory under `/var/lib/llmr/run`, which is its
+  home, working directory and temporary directory, and which is removed when the call ends.
+- **Nothing left running.** The tool runs in a process group of its own, killed as a whole
+  when the call ends, times out or is abandoned.
+- **Nothing to read in llmr.** A process can read the environment and memory of any other
+  process of the same user through `/proc`. llmr marks itself undumpable, which makes those
+  files root's. That is also why the image has no tini: an init started with llmr's
+  environment would hold the master key in a process that cannot be marked, so llmr is its
+  own init. Do not run the image with `--init`.
+
+What is not contained: the prompt and the key go to the vendor, which is what the tool is
+for, and a tool can still read what any process of llmr's user can read in the container, the
+database on the volume included (its credentials are sealed). An update installs whatever npm
+serves for that package and version. Update deliberately, and from a registry you trust.
+
 ## What llmr does not do
 
 **It does not terminate TLS.** It serves plain HTTP. Anything crossing a network you do not
