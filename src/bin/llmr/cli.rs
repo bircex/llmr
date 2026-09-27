@@ -1670,6 +1670,7 @@ mod tests {
     use super::*;
 
     /// A Claude Code call with an API key, for tests about running rather than signing in.
+    #[cfg(unix)]
     fn key_call(timeout: Duration) -> Invocation<'static> {
         Invocation {
             tool: Tool::ClaudeCode,
