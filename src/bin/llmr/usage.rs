@@ -123,6 +123,9 @@ pub enum Cost {
         currency: String,
         /// Some usage fields were not reported, so the amount is a floor.
         partial: bool,
+        /// The price book edition the rate came from. `None` on rows recorded before llmr
+        /// kept it.
+        book: Option<String>,
     },
     Unpriced,
     Free,
@@ -131,12 +134,21 @@ pub enum Cost {
 }
 
 impl Cost {
-    /// A priced amount from the engine's price book.
-    pub fn priced(amount: Micros, currency: String, coverage: UsageCoverage) -> Cost {
+    /// A priced amount, and the book edition it was priced from.
+    pub fn priced(amount: Micros, currency: String, coverage: UsageCoverage, book: String) -> Cost {
         Cost::Priced {
             micros: amount.0,
             currency,
             partial: coverage != UsageCoverage::Exact,
+            book: Some(book),
+        }
+    }
+
+    /// The price book edition a priced cost came from.
+    pub fn book(&self) -> Option<&str> {
+        match self {
+            Cost::Priced { book, .. } => book.as_deref(),
+            _ => None,
         }
     }
 
@@ -164,12 +176,18 @@ impl Cost {
         }
     }
 
-    pub fn from_row(status: Option<&str>, micros: Option<i64>, currency: Option<String>) -> Cost {
+    pub fn from_row(
+        status: Option<&str>,
+        micros: Option<i64>,
+        currency: Option<String>,
+        book: Option<String>,
+    ) -> Cost {
         match (status, micros, currency) {
             (Some(s @ ("priced" | "partial")), Some(micros), Some(currency)) => Cost::Priced {
                 micros,
                 currency,
                 partial: s == "partial",
+                book,
             },
             (Some("free"), ..) => Cost::Free,
             (Some(_), ..) => Cost::Unpriced,
@@ -184,11 +202,18 @@ impl Cost {
                 micros,
                 currency,
                 partial,
-            } => json!({
-                "status": if *partial { "partial" } else { "priced" },
-                "amount": Micros(*micros).exact(),
-                "currency": currency,
-            }),
+                book,
+            } => {
+                let mut view = json!({
+                    "status": if *partial { "partial" } else { "priced" },
+                    "amount": Micros(*micros).exact(),
+                    "currency": currency,
+                });
+                if let Some(book) = book {
+                    view["book"] = json!(book);
+                }
+                view
+            }
             Cost::None => Value::Null,
             other => json!({ "status": other.status() }),
         }
@@ -588,11 +613,13 @@ mod tests {
                 micros: 1234,
                 currency: "USD".into(),
                 partial: false,
+                book: Some("openai-2026-08".into()),
             },
             Cost::Priced {
                 micros: 1,
                 currency: "USD".into(),
                 partial: true,
+                book: None,
             },
             Cost::Unpriced,
             Cost::Free,
@@ -602,6 +629,7 @@ mod tests {
                 cost.status(),
                 cost.micros(),
                 cost.currency().map(String::from),
+                cost.book().map(String::from),
             );
             assert_eq!(back, cost);
         }
@@ -609,7 +637,8 @@ mod tests {
             Cost::Priced {
                 micros: 1234,
                 currency: "USD".into(),
-                partial: false
+                partial: false,
+                book: None,
             }
             .header()
             .as_deref(),

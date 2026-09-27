@@ -20,7 +20,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use llmr::audio::{SpeechRequest, TranscriptionRequest};
 use llmr::image::{ImageRequest, Picture};
-use llmr::{EmbedRequest, ModelId, Usage};
+use llmr::{EmbedRequest, ModelId, Units, Usage};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
@@ -95,8 +95,9 @@ impl Call {
         routed: &MediaRouted<T>,
         served: &ModelId,
         usage: &Usage,
+        units: &Units,
     ) -> Cost {
-        let cost = gateway.cost(&routed.route, served, usage);
+        let cost = gateway.cost_with(&routed.route, served, usage, units);
         for (route, why) in &routed.fell_through {
             tracing::warn!(model = %self.asked, route = %route, why = %why, "fell through");
         }
@@ -280,7 +281,13 @@ pub async fn embeddings(
         .map_err(|e| call.failed(e))?;
 
     let reply = &routed.value;
-    let cost = call.answered(&gateway, &routed, &reply.model, &reply.usage);
+    let cost = call.answered(
+        &gateway,
+        &routed,
+        &reply.model,
+        &reply.usage,
+        &Units::none(),
+    );
     let data: Vec<Value> = reply
         .vectors
         .iter()
@@ -396,7 +403,14 @@ pub async fn images(
         .map_err(|e| call.failed(e))?;
 
     let reply = &routed.value;
-    let cost = call.answered(&gateway, &routed, &reply.model, &reply.usage);
+    let pictures = u64::try_from(reply.pictures.len()).unwrap_or(u64::MAX);
+    let cost = call.answered(
+        &gateway,
+        &routed,
+        &reply.model,
+        &reply.usage,
+        &Units::none().with_images(pictures),
+    );
     let data: Vec<Value> = reply
         .pictures
         .iter()
@@ -504,7 +518,15 @@ pub async fn speech(
         .await
         .map_err(|e| call.failed(e))?;
 
-    let cost = call.answered(&gateway, &routed, &routed.value.model, &routed.value.usage);
+    // What was read aloud, for a model sold by the character.
+    let characters = u64::try_from(input.chars().count()).unwrap_or(u64::MAX);
+    let cost = call.answered(
+        &gateway,
+        &routed,
+        &routed.value.model,
+        &routed.value.usage,
+        &Units::none().with_characters(characters),
+    );
     let media_type = routed.value.media_type.clone();
     let mut response = routed.value.data.clone().into_response();
     if let Ok(value) = HeaderValue::from_str(&media_type) {
@@ -663,7 +685,14 @@ pub async fn transcriptions(
         .map_err(|e| call.failed(e))?;
 
     let reply = &routed.value;
-    let cost = call.answered(&gateway, &routed, &reply.model, &reply.usage);
+    // How long the recording was, for a model sold by the second, when the vendor said.
+    let mut units = Units::none();
+    if let Some(seconds) = reply.seconds.filter(|s| s.is_finite() && *s >= 0.0) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let millis = (seconds * 1000.0).round() as u64;
+        units = units.with_audio_millis(millis);
+    }
+    let cost = call.answered(&gateway, &routed, &reply.model, &reply.usage, &units);
     if text_reply {
         let mut response = reply.text.clone().into_response();
         response.headers_mut().insert(

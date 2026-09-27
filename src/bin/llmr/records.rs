@@ -220,6 +220,23 @@ pub struct Provider {
 }
 
 impl Provider {
+    /// A provider record with nothing but its id, type and base URL, for a test.
+    #[cfg(test)]
+    pub fn for_test(id: &str, provider_type: ProviderType, base_url: Option<&str>) -> Provider {
+        Provider {
+            id: id.into(),
+            provider_type,
+            base_url: base_url.map(Into::into),
+            reach: None,
+            timeout_secs: 5,
+            enabled: true,
+            credential: None,
+            credential_hint: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
     /// Where the data goes: what was set, else the type's default.
     pub fn effective_reach(&self) -> Option<Reach> {
         self.reach.or(self.provider_type.info().default_reach)

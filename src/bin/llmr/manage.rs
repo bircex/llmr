@@ -66,12 +66,23 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
             "/manage/routes/{name}",
             get(read_route).put(put_route).delete(delete_route),
         )
+        .route("/manage/prices", get(prices_status))
+        .route("/manage/prices/sync", post(sync_prices))
+        .route(
+            "/manage/prices/held/{vendor}/{*model}",
+            post(settle_held_price),
+        )
+        .route("/manage/providers/{id}/prices", get(provider_prices))
+        .route(
+            "/manage/providers/{id}/prices/{*model}",
+            put(put_price).delete(delete_price),
+        )
         .route("/manage/usage", get(usage_totals).delete(forget_usage))
         .route("/manage/usage/requests", get(usage_requests))
 }
 
 /// Reads the store again, builds a new gateway, and swaps it in.
-async fn reload(state: &AppState) -> Result<(), ApiError> {
+pub(crate) async fn reload(state: &AppState) -> Result<(), ApiError> {
     let gateway = state
         .db
         .run(|store| Ok(Gateway::build(&Snapshot::read(store)?)))
@@ -112,11 +123,233 @@ fn body<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ApiError> {
         .map_err(|e| ApiError::invalid(format!("the body could not be read: {e}")))
 }
 
+// ----- prices ------------------------------------------------------------------------
+
+fn sync_view(state: &AppState, record: &crate::prices::SyncState) -> Value {
+    let config = &state.prices.config;
+    json!({
+        "enabled": config.enabled,
+        "source": config.source,
+        "every_hours": config.every.as_secs() / 3600,
+        "last_attempt": record.last_attempt,
+        "last_success": record.last_success,
+        "last_error": record.last_error,
+        "last": record.last,
+    })
+}
+
+/// `GET /manage/prices`: what the sync last did, the prices it is holding for a person, and
+/// every price set by hand.
+async fn prices_status(State(state): Shared) -> Answer {
+    let (record, synced, manual) = state
+        .db
+        .run(|store| {
+            Ok((
+                store.price_sync_state()?,
+                store.synced_prices()?,
+                store.price_overrides(None)?,
+            ))
+        })
+        .await?;
+    let held: Vec<Value> = synced.iter().filter_map(crate::prices::held_view).collect();
+    let manual: Vec<Value> = manual
+        .iter()
+        .map(|row| {
+            json!({
+                "provider": row.provider_id,
+                "model": row.model,
+                "rate": crate::prices::rate_view(&row.rate),
+                "note": row.note,
+                "book": row.book(),
+                "updated_at": row.updated_at,
+            })
+        })
+        .collect();
+    ok(json!({
+        "sync": sync_view(&state, &record),
+        "synced_models": synced.iter().filter(|r| r.rate.is_some()).count(),
+        "held": held,
+        "manual": manual,
+    }))
+}
+
+/// `POST /manage/prices/sync`: read the price list now, whatever the schedule says.
+async fn sync_prices(State(state): Shared) -> Answer {
+    match crate::prices::sync(&state).await {
+        Ok(summary) => ok(json!({ "synced": summary })),
+        Err(why) => Err(ApiError::bad_gateway("price_sync_failed", why)),
+    }
+}
+
+#[derive(Deserialize)]
+struct Settle {
+    decision: String,
+}
+
+/// `POST /manage/prices/held/{vendor}/{model}` with `{"decision": "accept"}` or `"reject"`.
+async fn settle_held_price(
+    State(state): Shared,
+    Path((vendor, model)): Path<(String, String)>,
+    raw: axum::body::Bytes,
+) -> Answer {
+    let settle: Settle = body(json_body(&raw)?)?;
+    let accept = match settle.decision.as_str() {
+        "accept" => true,
+        "reject" => false,
+        _ => {
+            return Err(ApiError::invalid_param(
+                "decision",
+                "accept, to apply the held price, or reject, to keep the one that applies",
+            ))
+        }
+    };
+    let model = model.trim_start_matches('/').to_string();
+    state
+        .db
+        .run(move |store| store.settle_held(&vendor, &model, accept))
+        .await?;
+    if accept {
+        reload(&state).await?;
+    }
+    no_content()
+}
+
+#[derive(Deserialize)]
+struct PriceQuery {
+    #[serde(default)]
+    all: bool,
+}
+
+/// `GET /manage/providers/{id}/prices`: what this provider charges for each of its models,
+/// and where each price came from. `?all=true` lists every model it has a price for.
+async fn provider_prices(
+    State(state): Shared,
+    Path(provider_id): Path<String>,
+    Query(query): Query<PriceQuery>,
+) -> Answer {
+    let (record, models, synced, manual) = {
+        let id = provider_id.clone();
+        state
+            .db
+            .run(move |store| {
+                Ok((
+                    store.provider(&id)?,
+                    store.models(Some(&id))?,
+                    store.synced_prices()?,
+                    store.price_overrides(Some(&id))?,
+                ))
+            })
+            .await?
+    };
+    let effective = crate::prices::Effective::compose(&record, &synced, &manual);
+    let mut names: std::collections::BTreeSet<String> =
+        models.iter().map(|m| m.model_id.clone()).collect();
+    if query.all {
+        if let Some(effective) = &effective {
+            names.extend(effective.origins.keys().cloned());
+        }
+    }
+    names.extend(manual.iter().map(|m| m.model.clone()));
+    let data: Vec<Value> = names
+        .iter()
+        .map(|model| {
+            let found = effective.as_ref().and_then(|e| {
+                let origin = e.origin(model)?;
+                Some((e.book.rates.get(model).copied()?, origin.clone()))
+            });
+            let note = manual
+                .iter()
+                .find(|m| m.model == *model)
+                .and_then(|m| m.note.clone());
+            match found {
+                Some((rate, (origin, book))) => json!({
+                    "model": model,
+                    "rate": crate::prices::rate_view(&rate),
+                    "source": origin.as_str(),
+                    "book": book,
+                    "note": note,
+                }),
+                None => json!({
+                    "model": model,
+                    "rate": null,
+                    "source": null,
+                    "book": null,
+                }),
+            }
+        })
+        .collect();
+    ok(json!({
+        "provider": record.id,
+        "vendor_prices": crate::prices::vendor_of(&record).is_some(),
+        "data": data,
+    }))
+}
+
+/// `PUT /manage/providers/{id}/prices/{model}`: set a price by hand. It wins over the synced
+/// and shipped ones until it is deleted.
+async fn put_price(
+    State(state): Shared,
+    Path((provider_id, model)): Path<(String, String)>,
+    raw: axum::body::Bytes,
+) -> Answer {
+    let value = json_body(&raw)?;
+    let rate = crate::prices::rate_from(&value).map_err(ApiError::invalid)?;
+    let note = match value.get("note") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(note)) => Some(note.clone()),
+        Some(_) => return Err(ApiError::invalid_param("note", "note is text")),
+    };
+    let model = model.trim_start_matches('/').to_string();
+    if model.is_empty() {
+        return Err(ApiError::invalid_param("model", "the model id is empty"));
+    }
+    let row = state
+        .db
+        .run(move |store| store.put_price_override(&provider_id, &model, &rate, note.as_deref()))
+        .await?;
+    reload(&state).await?;
+    ok(json!({
+        "provider": row.provider_id,
+        "model": row.model,
+        "rate": crate::prices::rate_view(&row.rate),
+        "source": "manual",
+        "book": row.book(),
+        "note": row.note,
+    }))
+}
+
+/// `DELETE /manage/providers/{id}/prices/{model}`: the synced or shipped price applies again.
+async fn delete_price(
+    State(state): Shared,
+    Path((provider_id, model)): Path<(String, String)>,
+) -> Answer {
+    let model = model.trim_start_matches('/').to_string();
+    state
+        .db
+        .run(move |store| store.delete_price_override(&provider_id, &model))
+        .await?;
+    reload(&state).await?;
+    no_content()
+}
+
 // ----- status and types --------------------------------------------------------------
 
 async fn status(State(state): Shared) -> Answer {
     let gateway = state.live.current();
-    let providers = state.db.run(|store| store.providers()).await?;
+    let (providers, record, held) = state
+        .db
+        .run(|store| {
+            Ok((
+                store.providers()?,
+                store.price_sync_state()?,
+                store
+                    .synced_prices()?
+                    .iter()
+                    .filter(|row| row.held.is_some())
+                    .count(),
+            ))
+        })
+        .await?;
     let problems: Vec<Value> = gateway
         .problems()
         .iter()
@@ -133,6 +366,12 @@ async fn status(State(state): Shared) -> Answer {
         },
         "models_enabled": gateway.enabled().count(),
         "route_sets": gateway.served().count(),
+        "prices": {
+            "sync": state.prices.config.enabled,
+            "last_success": record.last_success,
+            "last_error": record.last_error,
+            "held": held,
+        },
     }))
 }
 
@@ -1120,9 +1359,244 @@ mod tests {
                 keys: Vec::new(),
                 started: std::time::Instant::now(),
                 recorder: crate::usage::Recorder::start(db.clone()).0,
+                prices: crate::prices::Sync::new(crate::prices::Config::off()),
             }),
             1024 * 1024,
         )
+    }
+
+    /// What the sync would do to the shipped tables with a real copy of the list, read
+    /// from `LLMR_PRICE_LIST`. Run by hand: `LLMR_PRICE_LIST=... cargo test ... -- --ignored`.
+    #[test]
+    #[ignore = "reads a price list from disk"]
+    fn a_real_price_list_against_the_shipped_tables() {
+        let path = std::env::var("LLMR_PRICE_LIST").unwrap();
+        let parsed = crate::prices::parse_source(&std::fs::read(path).unwrap()).unwrap();
+        let books: Vec<llmr::PriceBook> = ["anthropic", "openai", "gemini"]
+            .iter()
+            .filter_map(|v| crate::prices::shipped(v))
+            .collect();
+        let shipped = |vendor: &str, model: &str| {
+            books
+                .iter()
+                .find(|b| b.provider == vendor)
+                .and_then(|b| b.rates.get(model))
+                .copied()
+        };
+        let (changes, summary) =
+            crate::prices::plan(&std::collections::BTreeMap::new(), &shipped, &parsed.rows);
+        println!("{summary:?}");
+        for change in changes {
+            match change {
+                crate::prices::Change::Hold {
+                    vendor, model, why, ..
+                } => {
+                    println!("HOLD {vendor}/{model}: {why}");
+                }
+                crate::prices::Change::Apply {
+                    vendor,
+                    model,
+                    rate,
+                    was: Some(was),
+                } => {
+                    println!("CHANGE {vendor}/{model}: {was:?} -> {rate:?}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A gateway whose price sync reads from `source`.
+    fn gateway_pricing_from(source: &str) -> axum::Router {
+        let key = MasterKey::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
+        let db = Db::new(Store::in_memory(key).unwrap());
+        let mut config = crate::prices::Config::off();
+        config.source = source.to_string();
+        app(
+            Arc::new(AppState {
+                live: Live::new(Gateway::empty()),
+                db: db.clone(),
+                keys: Vec::new(),
+                started: std::time::Instant::now(),
+                recorder: crate::usage::Recorder::start(db.clone()).0,
+                prices: crate::prices::Sync::new(config),
+            }),
+            1024 * 1024,
+        )
+    }
+
+    /// A price list that says what `list` holds, and fails when it holds nothing.
+    async fn price_list(list: Arc<std::sync::Mutex<Value>>) -> String {
+        let router = axum::Router::new().route(
+            "/prices.json",
+            axum::routing::get(move || {
+                let list = list.clone();
+                async move {
+                    let body = list.lock().unwrap().clone();
+                    if body.is_null() {
+                        (StatusCode::INTERNAL_SERVER_ERROR, "down".to_string())
+                    } else {
+                        (StatusCode::OK, body.to_string())
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        format!("http://{address}/prices.json")
+    }
+
+    #[tokio::test]
+    async fn prices_sync_hold_settle_and_can_be_set_by_hand() {
+        let anthropic = |input: f64, output: f64| {
+            json!({ "litellm_provider": "anthropic", "mode": "chat",
+                    "input_cost_per_token": input, "output_cost_per_token": output,
+                    "cache_read_input_token_cost": input / 10.0,
+                    "cache_creation_input_token_cost": input * 1.25 })
+        };
+        let list = Arc::new(std::sync::Mutex::new(json!({
+            // A fifth off the shipped price: applied.
+            "claude-haiku-4-5": anthropic(8e-07, 4e-06),
+            // Four fifths off: held for a person.
+            "claude-opus-5": anthropic(1e-06, 5e-06),
+            // Not in the shipped table: applied.
+            "claude-new": anthropic(3e-06, 1.5e-05),
+            // Priced in bands: passed over.
+            "claude-banded": { "litellm_provider": "anthropic", "mode": "chat",
+                "input_cost_per_token": 1e-06, "input_cost_per_token_above_200k_tokens": 2e-06 },
+        })));
+        let source = price_list(list.clone()).await;
+        let app = gateway_pricing_from(&source);
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/manage/providers",
+            Some(json!({ "id": "anthropic", "type": "anthropic", "credential": "sk-test" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let (status, body) = call(&app, "POST", "/manage/prices/sync", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["synced"]["applied"], 2);
+        assert_eq!(body["synced"]["changed"], 1);
+        assert_eq!(body["synced"]["held"], 1);
+        assert_eq!(body["synced"]["skipped"], 1);
+
+        let (_, prices) = call(
+            &app,
+            "GET",
+            "/manage/providers/anthropic/prices?all=true",
+            None,
+        )
+        .await;
+        let find = |prices: &Value, model: &str| {
+            prices["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["model"] == model)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        let haiku = find(&prices, "claude-haiku-4-5");
+        assert_eq!(haiku["source"], "synced");
+        assert_eq!(haiku["rate"]["input"], "0.800000");
+        assert!(haiku["book"].as_str().unwrap().starts_with("synced-"));
+        assert_eq!(find(&prices, "claude-opus-5")["source"], "shipped");
+        assert_eq!(find(&prices, "claude-new")["source"], "synced");
+        assert_eq!(find(&prices, "claude-banded"), Value::Null);
+
+        let (_, status_view) = call(&app, "GET", "/manage/prices", None).await;
+        assert_eq!(status_view["held"][0]["model"], "claude-opus-5");
+        assert!(status_view["held"][0]["why"]
+            .as_str()
+            .unwrap()
+            .contains("input would go from 5.000000 to 1.000000"));
+        assert!(status_view["sync"]["last_success"].is_i64());
+
+        // Accepted: it applies.
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/manage/prices/held/anthropic/claude-opus-5",
+            Some(json!({ "decision": "accept" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, prices) = call(
+            &app,
+            "GET",
+            "/manage/providers/anthropic/prices?all=true",
+            None,
+        )
+        .await;
+        assert_eq!(find(&prices, "claude-opus-5")["rate"]["input"], "1.000000");
+
+        // Set by hand: it wins, and deleting it gives back what applied before.
+        let (status, set) = call(
+            &app,
+            "PUT",
+            "/manage/providers/anthropic/prices/claude-sonnet-5",
+            Some(json!({ "input": "1.50", "output": "7.50", "note": "negotiated" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{set}");
+        assert_eq!(set["source"], "manual");
+        let (_, prices) = call(&app, "GET", "/manage/providers/anthropic/prices", None).await;
+        let sonnet = find(&prices, "claude-sonnet-5");
+        assert_eq!(
+            (sonnet["source"].clone(), sonnet["note"].clone()),
+            (json!("manual"), json!("negotiated"))
+        );
+        let (status, _) = call(
+            &app,
+            "DELETE",
+            "/manage/providers/anthropic/prices/claude-sonnet-5",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, prices) = call(
+            &app,
+            "GET",
+            "/manage/providers/anthropic/prices?all=true",
+            None,
+        )
+        .await;
+        assert_eq!(find(&prices, "claude-sonnet-5")["source"], "shipped");
+
+        // Floats are refused, so no rounding gets in.
+        let (status, _) = call(
+            &app,
+            "PUT",
+            "/manage/providers/anthropic/prices/claude-sonnet-5",
+            Some(json!({ "input": 1.5 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // The list goes down: the sync says so, and the prices in place stay.
+        *list.lock().unwrap() = Value::Null;
+        let (status, failed) = call(&app, "POST", "/manage/prices/sync", None).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(failed["error"]["code"], "price_sync_failed");
+        let (_, status_view) = call(&app, "GET", "/manage/status", None).await;
+        assert!(status_view["prices"]["last_error"].is_string());
+        let (_, prices) = call(
+            &app,
+            "GET",
+            "/manage/providers/anthropic/prices?all=true",
+            None,
+        )
+        .await;
+        assert_eq!(
+            find(&prices, "claude-haiku-4-5")["rate"]["input"],
+            "0.800000"
+        );
     }
 
     async fn call(

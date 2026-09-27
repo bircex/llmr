@@ -31,6 +31,7 @@ mod gateway;
 mod manage;
 mod media;
 mod openai;
+mod prices;
 mod records;
 mod server;
 mod store;
@@ -187,6 +188,7 @@ async fn serve() -> ExitCode {
         keys,
         started: std::time::Instant::now(),
         recorder,
+        prices: prices::Sync::new(prices::Config::from_env()),
     });
     let app = server::app(state.clone(), max_body_mb * 1024 * 1024);
 
@@ -208,6 +210,9 @@ async fn serve() -> ExitCode {
     // In the background, so a slow vendor does not hold up the port opening. Free: every
     // provider answers from its model list, never from a billable call.
     tokio::spawn(survey(current));
+    // Prices from the public list, on its schedule. Never on the request path, and a failure
+    // leaves the last good prices in place.
+    tokio::spawn(prices::keep_current(state.clone()));
 
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
