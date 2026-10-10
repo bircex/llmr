@@ -11,7 +11,8 @@
 //!
 //! | Variable | |
 //! |---|---|
-//! | `LLMR_MASTER_KEY` | Required. The key credentials are sealed with; `llmr keygen` makes one |
+//! | `LLMR_MASTER_KEY` | The key credentials are sealed with; `llmr keygen` makes one. This or the next is required |
+//! | `LLMR_MASTER_KEY_FILE` | A file holding the key instead, made with a new key on first start when absent |
 //! | `LLMR_DATA_DIR` | Where the database lives. `/var/lib/llmr`, a volume in the image |
 //! | `LLMR_TOKEN` | Optional. Tokens callers must present, comma separated. Unset: no check |
 //! | `LLMR_LISTEN` | Address and port. `0.0.0.0:8080` |
@@ -138,17 +139,23 @@ async fn survey(gateway: Arc<Gateway>) {
     }
 }
 
+/// The master key: `LLMR_MASTER_KEY` when set, otherwise the file `LLMR_MASTER_KEY_FILE` names,
+/// which is made with a new key the first time. A key given directly always wins.
+fn master_key() -> Result<MasterKey, String> {
+    let set = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    if let Some(text) = set("LLMR_MASTER_KEY") {
+        return MasterKey::from_base64(&text);
+    }
+    if let Some(path) = set("LLMR_MASTER_KEY_FILE") {
+        return MasterKey::load_or_create(&PathBuf::from(path));
+    }
+    Err("neither LLMR_MASTER_KEY nor LLMR_MASTER_KEY_FILE is set. The key seals every stored credential: make one with `docker run --rm ghcr.io/bircex/llmr keygen`, or name a file for llmr to keep one in, and keep a copy somewhere safe: without it the stored credentials cannot be read".to_string())
+}
+
 async fn serve() -> ExitCode {
-    let key = match std::env::var("LLMR_MASTER_KEY") {
-        Ok(text) if !text.trim().is_empty() => match MasterKey::from_base64(&text) {
-            Ok(key) => key,
-            Err(e) => return fail(&e),
-        },
-        _ => {
-            return fail(
-                "LLMR_MASTER_KEY is not set. It seals every stored credential; make one with `docker run --rm ghcr.io/bircex/llmr keygen` and keep a copy somewhere safe: without it the stored credentials cannot be read",
-            )
-        }
+    let key = match master_key() {
+        Ok(key) => key,
+        Err(e) => return fail(&e),
     };
 
     let dir =

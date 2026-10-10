@@ -6,6 +6,17 @@ and a count of releases in that month from 0, so `2026.9.0`, then `2026.9.1`, th
 user depends on says so under **Breaking**. Releases before `2026.9.0` used semantic
 versioning.
 
+## Unreleased
+
+### Added
+
+- `LLMR_MASTER_KEY_FILE`: the master key can live in a file instead of the environment. When the
+  file does not exist, llmr makes a new key there on first start and reads it on every start
+  after, so a stack can start with no key set by hand. The file is created only if absent,
+  never replaced, so processes starting together agree on one key, and on Unix only its owner
+  can read it. `LLMR_MASTER_KEY` still wins when both are set. The image prepares
+  `/var/lib/llmr-key`, owned by its user, to mount a volume for the key apart from the database.
+
 ## 2026.9.0 — 2026-09-27
 
 llmr stops being a library and becomes a service: one Docker image, managed over REST, with

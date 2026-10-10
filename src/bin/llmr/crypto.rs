@@ -5,8 +5,14 @@
 //! safe for any number of values, which is the reason for the X variant: there is no counter
 //! to keep, so no counter to lose.
 //!
-//! The master key comes from `LLMR_MASTER_KEY` and never touches the database. A copy of the
-//! database alone opens nothing. Losing the key loses every stored credential, by design.
+//! The master key comes from `LLMR_MASTER_KEY`, or from the file `LLMR_MASTER_KEY_FILE` names,
+//! and never touches the database. A copy of the database alone opens nothing. Losing the key
+//! loses every stored credential, by design.
+
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write as _};
+use std::path::Path;
+use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -49,6 +55,53 @@ impl MasterKey {
     /// A new random key, base64 encoded.
     pub fn generate() -> String {
         STANDARD.encode(XChaCha20Poly1305::generate_key(&mut OsRng))
+    }
+
+    /// The key kept in the file at `path`, made and kept there first when there is none.
+    ///
+    /// This is what lets a stack start with no key configured by hand: the file sits on a
+    /// volume, is written once and is read on every later start. It is created with
+    /// `create_new`, so of several processes starting together exactly one writes and the
+    /// rest read what it wrote, and it is never replaced. On Unix only its owner can read it.
+    ///
+    /// # Errors
+    ///
+    /// When the file cannot be created or read, or holds something that is not a key.
+    pub fn load_or_create(path: &Path) -> Result<Self, String> {
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            fs::create_dir_all(dir)
+                .map_err(|e| format!("cannot create the directory {}: {e}", dir.display()))?;
+        }
+
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(path) {
+            Ok(mut file) => file
+                .write_all(Self::generate().as_bytes())
+                .and_then(|()| file.sync_all())
+                .map_err(|e| format!("cannot write {}: {e}", path.display()))?,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
+        }
+
+        // The process that created the file may still be writing it: a key is whole once it
+        // decodes, so give it a moment rather than reading half of one as a wrong key.
+        let mut last = String::new();
+        for _ in 0..50 {
+            let text = fs::read_to_string(path)
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            match Self::from_base64(text.trim()) {
+                Ok(key) => return Ok(key),
+                Err(e) => last = e,
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Err(format!("{}: {last}", path.display()))
     }
 
     /// Nonce and ciphertext, in one value.
@@ -129,5 +182,78 @@ mod tests {
         let error = MasterKey::from_base64(&STANDARD.encode([7u8; 16])).unwrap_err();
         assert!(error.contains("16 bytes"), "{error}");
         assert!(MasterKey::from_base64("not base64!").is_err());
+    }
+
+    /// A path in a directory of its own under the system temp dir, removed by the caller.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        std::env::temp_dir()
+            .join(format!(
+                "llmr-key-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ))
+            .join(name)
+    }
+
+    fn sealed_by(key: &MasterKey) -> Vec<u8> {
+        key.seal(b"sk-test").unwrap()
+    }
+
+    #[test]
+    fn a_missing_key_file_is_made_and_read_back_on_the_next_start() {
+        let path = scratch("master_key");
+        let first = MasterKey::load_or_create(&path).unwrap();
+        let second = MasterKey::load_or_create(&path).unwrap();
+
+        // The same key: what one start sealed, the next one opens.
+        assert_eq!(second.open(&sealed_by(&first)).unwrap(), b"sk-test");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn processes_starting_together_agree_on_one_key() {
+        let path = scratch("master_key");
+        let keys: Vec<_> = (0..16)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || MasterKey::load_or_create(&path).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect();
+
+        let sealed = sealed_by(&keys[0]);
+        for key in &keys {
+            assert_eq!(key.open(&sealed).unwrap(), b"sk-test");
+        }
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_key_file_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = scratch("master_key");
+        MasterKey::load_or_create(&path).unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_key_file_holding_something_else_is_an_error_not_a_new_key() {
+        let path = scratch("master_key");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "not a key").unwrap();
+
+        assert!(MasterKey::load_or_create(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not a key");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

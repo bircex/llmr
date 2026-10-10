@@ -36,7 +36,8 @@ docker run -d --name llmr -p 127.0.0.1:8080:8080 \
 
 | Environment | |
 |---|---|
-| `LLMR_MASTER_KEY` | **Required.** Seals every stored credential. `llmr keygen` makes one. Keep a copy: without it, stored credentials cannot be read, and llmr refuses to start with a different one |
+| `LLMR_MASTER_KEY` | **Required**, or the next. Seals every stored credential. `llmr keygen` makes one. Keep a copy: without it, stored credentials cannot be read, and llmr refuses to start with a different one |
+| `LLMR_MASTER_KEY_FILE` | Instead of `LLMR_MASTER_KEY`: a file that holds the key. When absent, llmr makes a new key there on first start and reads it back after. Put it on its own volume, such as `/var/lib/llmr-key/master_key`, not beside the database |
 | `LLMR_TOKEN` | Optional. Tokens callers must present as `Authorization: Bearer <token>`, comma separated. Unset, nothing is checked: keep the port on a network only your panel and apps can reach |
 | `LLMR_LISTEN` | `0.0.0.0:8080` |
 | `LLMR_MAX_BODY_MB` | `32`. Images, documents and recordings arrive inline |

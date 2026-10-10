@@ -29,12 +29,15 @@ RUN --mount=type=cache,id=cargo-registry-${TARGETPLATFORM},target=/usr/local/car
     --mount=type=cache,id=cargo-target-${TARGETPLATFORM},target=/src/target,sharing=locked \
     cargo build --release --locked --features server --bin llmr \
  && install -D target/release/llmr /out/llmr \
- && mkdir -p /out/data
+ && mkdir -p /out/data /out/key
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /out/llmr /usr/local/bin/llmr
 # Owned by the runtime user, so a named volume mounted here starts out writable.
 COPY --from=build --chown=65532:65532 /out/data /var/lib/llmr
+# Where LLMR_MASTER_KEY_FILE can keep the key, apart from the database. A named volume mounted
+# here starts with this owner, so the non-root user can create the key on first start.
+COPY --from=build --chown=65532:65532 /out/key /var/lib/llmr-key
 ENV LLMR_DATA_DIR=/var/lib/llmr
 VOLUME ["/var/lib/llmr"]
 EXPOSE 8080

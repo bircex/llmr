@@ -65,7 +65,8 @@ writable by uid `65532`: `chown 65532:65532 /srv/llmr`.
 
 | Variable | Default | |
 |---|---|---|
-| `LLMR_MASTER_KEY` | required | Seals stored credentials. See above |
+| `LLMR_MASTER_KEY` | required, or the next | Seals stored credentials. See above |
+| `LLMR_MASTER_KEY_FILE` | unset | A file holding the key instead. Made with a new key on first start when absent, then read on every start. Keep it on its own volume (the image prepares `/var/lib/llmr-key` for one) so a copy of the database never carries its key |
 | `LLMR_TOKEN` | unset | Tokens callers must present, comma separated. Unset, nothing is checked |
 | `LLMR_LISTEN` | `0.0.0.0:8080` | Address and port inside the container |
 | `LLMR_DATA_DIR` | `/var/lib/llmr` | Where the database lives |
